@@ -27,31 +27,44 @@ The Liquid Glass runtime patches live in `src/ApolloLiquidGlass.xm` and
 `src/ApolloLiquidGlassIconPicker.xm`, alongside the other `src/Apollo*.xm`
 modules.
 
-## Bundled icons
-
-| Icon | Default | Dark | Clear Light | Clear Dark |
-|---|---|---|---|---|
-| **Canon**      | ![](icons/igerman00/default.png)  | ![](icons/igerman00/dark.png)  | ![](icons/igerman00/clear-light.png)  | ![](icons/igerman00/clear-dark.png)  |
-| **OG**         | ![](icons/jryng/default.png)      | ![](icons/jryng/dark.png)      | ![](icons/jryng/clear-light.png)      | ![](icons/jryng/clear-dark.png)      |
-| **metalnakls** | ![](icons/metalnakls/default.png) | ![](icons/metalnakls/dark.png) | ![](icons/metalnakls/clear-light.png) | ![](icons/metalnakls/clear-dark.png) |
-| **harunatsu**  | ![](icons/harunatsu/default.png)  | ![](icons/harunatsu/dark.png)  | ![](icons/harunatsu/clear-light.png)  | ![](icons/harunatsu/clear-dark.png)  |
-| **Sunset**     | ![](icons/bajader/default.png)    | ![](icons/bajader/dark.png)    | ![](icons/bajader/clear-light.png)    | ![](icons/bajader/clear-dark.png)    |
-
 ## Adding a new group
 
-Groups are defined in `icons.json` under the top-level `"groups"` key. Each
-entry has an `id`, a `title` shown in the picker, and a `presentation`:
+Groups (icon packs) are defined in `icons.json` under the top-level `"groups"`
+key. Each group renders as a tappable "icon pack" card in the injected section;
+tapping one pushes a 2-up grid of every icon in that group. Each entry has:
 
-- `"inline"` — icon rows appear directly in the injected section.
-- `"push"` — a single disclosure row that navigates to a full list.
+- `id` — stable identifier, also used to derive generated C symbol names.
+- `title` — shown on the pack card and as the pushed screen's nav title.
+- `coverIconIDs` *(optional)* — ordered icon IDs to sample for the pack
+  card's fan artwork. Falls back to the first few icons in the group if
+  omitted, or if none of the listed IDs are registered on a given IPA.
+- `description` *(optional)* — a short sentence shown as a header above the
+  pack's icon grid.
+- `author` *(optional)* — pack-level curator credit, shown on the pack card
+  (distinct from each icon's own per-icon `"designer"`).
 
-Icons are assigned to groups via their `"group"` field. Icons without a
-`"group"` field fall into the first group.
+Every icon must declare a `"group"` field naming one of these group ids —
+there is no default/fallback group, so the generator fails if an
+icon's `"group"` is missing or doesn't match a defined group.
+
+## Featuring specific icons
+
+A top-level `"featured"` key lists icon IDs (must already exist in
+`"icons"`) to surface as one-tap shortcut rows above the pack list:
+
+```json
+"featured": ["jryng", "helios"]
+```
+
+Omit the key or leave it empty for no Featured section — this is fully
+backward compatible with registries that predate it. A featured ID that
+doesn't exist in `"icons"` fails the generator (it's a config typo,
+not something to silently drop).
 
 After editing `icons.json`:
 
 ```bash
-make lg-previews   # regenerates generated/LiquidGlassIconPreviews.gen.h with the new group and its icons
+make lg-previews   # regenerates generated/LiquidGlassIconPreviews.gen.h with the new group/featured icons
 ```
 
 Then rebuild the tweak. Unless you add a new icon, running `rebuild_assets.py`
@@ -72,7 +85,7 @@ is not needed — the preview PNGs for existing icons are already in Assets.car.
    ```
    liquid-glass/icons/<id>/<id>.icon/        # paste the .icon package here
    ```
-3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and optionally `group` (defaults to the first group if omitted). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file.
+3. Append the icon to **`liquid-glass/icons.json`** — set `id`, `displayName`, `designer`, and `group` (required, must name one of the ids in `"groups"`). This is the only registration step — the generated header, the icon picker, and `patch.sh` all read from this file.
 4. Generate the 104×104 @2x PNG previews from the `.icon` package:
    ```bash
    python3 liquid-glass/scripts/generate_icon_previews.py --icons <id>

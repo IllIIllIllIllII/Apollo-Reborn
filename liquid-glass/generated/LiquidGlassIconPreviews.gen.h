@@ -8,27 +8,25 @@ typedef struct {
     const char *designer;
 } LGIconRowEntry;
 
-typedef enum {
-    LGGroupPresentationInline = 0,
-    LGGroupPresentationPush   = 1,
-} LGGroupPresentation;
-
 typedef struct {
     const char          *groupID;
     const char          *title;
-    LGGroupPresentation  presentation;
+    const char          *description;
+    const char          *author;
     const LGIconRowEntry *entries;
     size_t               entryCount;
+    const char *const   *coverIconIDs;
+    size_t               coverIconIDCount;
 } LGIconGroupDef;
 
-static const LGIconRowEntry kLGGroupEntries_community[] = {
+static const LGIconRowEntry kLGGroupEntries_original[] = {
     { "igerman00", "Canon", "iGerman00" },
     { "jryng", "OG", "jryng" },
     { "metalnakls", "metalnakls", "metalnakls" },
     { "harunatsu", "harunatsu", "harunatsu91202024" },
 };
 
-static const LGIconRowEntry kLGGroupEntries_new_variants[] = {
+static const LGIconRowEntry kLGGroupEntries_variants[] = {
     { "jryng-morty", "Wubalubadubdub", "jryng" },
     { "jryng-duck", "Wilson", "jryng" },
     { "jryng-antenna", "Irradiate", "jryng" },
@@ -82,6 +80,9 @@ static const LGIconRowEntry kLGGroupEntries_custom[] = {
     { "bajader-glitched", "Glitched", "bajader" },
     { "paulo1manso-modern", "Modern", "paulo1manso" },
     { "paulo1manso-modern-alt", "Modern Alt", "paulo1manso" },
+};
+
+static const LGIconRowEntry kLGGroupEntries_helios[] = {
     { "helios", "Helios", "IllIIllIllIllII" },
     { "helios-halo", "Helios Halo", "IllIIllIllIllII" },
     { "helios-cryo", "Helios Cryo", "IllIIllIllIllII" },
@@ -92,12 +93,47 @@ static const LGIconRowEntry kLGGroupEntries_custom[] = {
     { "helios-ultra-halo", "Helios Ultra Halo", "IllIIllIllIllII" },
 };
 
-static const LGIconGroupDef kLGIconGroups[] = {
-    { "community", "Liquid Glass", LGGroupPresentationInline, kLGGroupEntries_community, 4 },
-    { "new-variants", "New Variants", LGGroupPresentationPush, kLGGroupEntries_new_variants, 45 },
-    { "custom", "Custom", LGGroupPresentationPush, kLGGroupEntries_custom, 13 },
+static const char *const kLGGroupCover_original[] = {
+    "igerman00",
+    "jryng",
+    "harunatsu",
 };
 
-static const size_t kLGIconGroupCount = 3;
+static const char *const kLGGroupCover_variants[] = {
+    "lilacvibes-pride",
+    "bajader-sunset",
+    "jryng-antenna",
+};
+
+static const char *const kLGGroupCover_custom[] = {
+    "bajader-glitched",
+    "bajader-aperture-science",
+    "paulo1manso-modern",
+};
+
+static const char *const kLGGroupCover_helios[] = {
+    "helios-ultra",
+    "helios-cryo",
+    "helios",
+};
+
+static const LGIconGroupDef kLGIconGroups[] = {
+    { "original", "Original", "The original Apollo icon in Liquid Glass, crafted by the community.", "", kLGGroupEntries_original, 4, kLGGroupCover_original, 3 },
+    { "variants", "Variants", "Dozens of colorful variants and one-off designs from the original Apollo app, recreated in Liquid Glass.", "jryng, bajader & lilacvibes", kLGGroupEntries_variants, 45, kLGGroupCover_variants, 3 },
+    { "custom", "Custom", "Original, fully custom icon designs.", "bajader, paulo1manso & IllIIllIllIllII", kLGGroupEntries_custom, 5, kLGGroupCover_custom, 3 },
+    { "helios", "Helios", "Icons inspired by the Hyper Suit 4000 icon from Apollo, and the Modern icons by paulo1manso.", "IllIIllIllIllII", kLGGroupEntries_helios, 8, kLGGroupCover_helios, 3 },
+};
+
+static const size_t kLGIconGroupCount = 4;
+
+static const LGIconRowEntry kLGFeaturedEntries[] = {
+    { "jryng", "OG", "jryng" },
+    { "helios", "Helios", "IllIIllIllIllII" },
+    { "bajader-aperture-science", "Aperture Science", "bajader" },
+    { "paulo1manso-modern", "Modern", "paulo1manso" },
+    { "lilacvibes-progress", "Progress Pride", "lilacvibes" },
+};
+
+static const size_t kLGFeaturedEntryCount = 5;
 
 static const char *const kLGPrimaryIconIDCString = "jryng";
