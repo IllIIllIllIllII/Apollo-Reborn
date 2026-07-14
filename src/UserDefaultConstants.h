@@ -276,6 +276,10 @@ static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
 // API-key accounts may opt into Reddit's modern web Chat; API-key-free
 // accounts always use it because legacy /message no longer contains Chat.
 static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
+// API-key accounts may independently opt into Reddit's current web Modmail;
+// API-key-free accounts always use it because Apollo's native new-Modmail
+// endpoints require OAuth credentials they deliberately do not have.
+static NSString *const UDKeyUseModernRedditModmail = @"UseModernRedditModmail";
 // Legacy NSUserDefaults location of the harvested "name=value; ..." Cookie
 // header. The cookie is now stored in the keychain (ApolloWebJSON.m); this key
 // is retained only so ApolloWebJSONLoadPersistedCredentials can migrate an older

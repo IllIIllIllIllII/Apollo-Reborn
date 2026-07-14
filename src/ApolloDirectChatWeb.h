@@ -7,6 +7,7 @@ __BEGIN_DECLS
 BOOL ApolloModernChatIsAvailable(void);
 BOOL ApolloModernChatIsRequiredForActiveAccount(void);
 BOOL ApolloModernChatShouldOpen(void);
+BOOL ApolloModernModmailShouldOpen(void);
 UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role);
 NSDictionary<NSString *, id> * _Nullable ApolloModernChatCachedStatus(void);
 extern NSString * const ApolloModernChatStatusDidChangeNotification;

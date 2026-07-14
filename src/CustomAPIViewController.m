@@ -94,7 +94,8 @@ typedef NS_ENUM(NSInteger, ApolloAPIKeyRow) {
     kAPIKeyRowWebJSONSwitch   = 10,
     kAPIKeyRowWebSessionLogin = 11,
     kAPIKeyRowModernChat      = 12,
-    kAPIKeyRowWidgetSetupCode = 13,
+    kAPIKeyRowModernModmail   = 13,
+    kAPIKeyRowWidgetSetupCode = 14,
 };
 
 // Map a displayed (visible) API Keys row to its canonical index (ApolloAPIKeyRow).
@@ -695,10 +696,14 @@ typedef NS_ENUM(NSInteger, Tag) {
                               withRowAnimation:UITableViewRowAnimationNone];
     }
     // The active account can change while this settings controller is off
-    // screen. Re-evaluate whether modern Chat is optional or mandatory.
+    // screen. Re-evaluate whether the modern mailboxes are optional or mandatory.
     NSInteger modernChatRow = kAPIKeyRowModernChat - (sWebJSONEnabled ? 0 : 1);
     if (modernChatRow >= 0 && [self.tableView numberOfRowsInSection:SectionAPIKeys] > modernChatRow) {
-        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:modernChatRow inSection:SectionAPIKeys]]
+        NSArray<NSIndexPath *> *modernMailboxPaths = @[
+            [NSIndexPath indexPathForRow:modernChatRow inSection:SectionAPIKeys],
+            [NSIndexPath indexPathForRow:modernChatRow + 1 inSection:SectionAPIKeys],
+        ];
+        [self.tableView reloadRowsAtIndexPaths:modernMailboxPaths
                               withRowAnimation:UITableViewRowAnimationNone];
     }
     // Refresh the Info Row, Apollo AI, Inline Media and Rich Link Previews status
@@ -746,10 +751,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     switch (section) {
         case SectionBackupRestore: return 4;
         // 7 text fields + Universal OAuth switch + Can't sign in? + API key setup
-        // guide + Web JSON switch + Copy Widget Setup Code (+ Web Session Login row,
-        // only while Web JSON mode is on). Widget Setup Code is the last canonical
-        // row, so the count is its index + 1, minus the Web Session Login row when
-        // the mode is off.
+        // guide + Web JSON switch + the modern Chat/Modmail choices + Copy Widget
+        // Setup Code (+ Web Session Login row, only while Web JSON mode is on).
+        // Widget Setup Code is the last canonical row, so the count is its index
+        // + 1, minus the Web Session Login row when the mode is off.
         case SectionAPIKeys: return kAPIKeyRowWidgetSetupCode + (sWebJSONEnabled ? 1 : 0);
         // General base rows. The two deleted-comments toggles now live on the
         // "Deleted Comments" sub-screen behind the disclosure row (row 3), and
@@ -1145,9 +1150,22 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                               label:@"Use Modern Reddit Chat"
                                                              detail:required
                                                                     ? @"Required for the active API-key-free account because Reddit no longer exposes Direct Chat through the legacy message API."
-                                                                    : @"Off keeps Apollo's legacy Direct Chat. On uses Reddit's current Chat with requests, group chats, media, and chat mod mail. Requires a web-session sign-in."
+                                                                    : @"Off keeps Apollo's legacy Direct Chat. On uses Reddit's current Chat with requests, group chats, and media. Requires a web-session sign-in."
                                                                  on:selected
                                                              action:@selector(modernRedditChatSwitchToggled:)];
+            ((UISwitch *)cell.accessoryView).enabled = !required;
+            return cell;
+        }
+        case kAPIKeyRowModernModmail: {
+            BOOL required = ApolloModernChatIsRequiredForActiveAccount();
+            BOOL selected = required || [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditModmail];
+            UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_API_ModernModmail"
+                                                              label:@"Use Modern Moderator Mail"
+                                                             detail:required
+                                                                    ? @"Required for the active API-key-free account because Apollo's native Moderator Mail requires Reddit API credentials."
+                                                                    : @"Off keeps Apollo's native Moderator Mail. On uses Reddit's current Modmail with the active web-session account."
+                                                                 on:selected
+                                                             action:@selector(modernRedditModmailSwitchToggled:)];
             ((UISwitch *)cell.accessoryView).enabled = !required;
             return cell;
         }
@@ -2463,6 +2481,10 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
+}
+
+- (void)modernRedditModmailSwitchToggled:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditModmail];
 }
 
 - (void)_applyWebJSONEnabled:(BOOL)enabled {

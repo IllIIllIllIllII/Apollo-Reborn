@@ -444,9 +444,9 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
-    if (ApolloModernChatIsRequiredForActiveAccount() &&
+    if (ApolloModernModmailShouldOpen() &&
         indexPath.section == state.moderatorMailSection && indexPath.row == state.moderatorMailRow) {
-        ChatsFilterLog(@"Moderator Mail tapped by API-key-free account -> opening authenticated web Modmail");
+        ChatsFilterLog(@"Moderator Mail tapped -> opening modern authenticated web Modmail");
         UIViewController *controller = ApolloCreateModernModmailViewController();
         [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
         dispatch_async(dispatch_get_main_queue(), ^{
