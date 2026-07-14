@@ -54,6 +54,28 @@ static NSString *ApolloDirectChatHexFromColor(UIColor *color,
     return fallback;
 }
 
+// Theme Builder V2's typography choices are all Apple system designs. Convert
+// the active UIFont design into its CSS system-family counterpart so the web
+// clients follow the same per-theme font without bundling or downloading font
+// files. Font weight and italic styling remain controlled by Reddit's markup.
+static NSString *ApolloDirectChatThemeFontFamily(void) {
+    UIFont *base = [UIFont systemFontOfSize:16.0];
+    UIFont *active = ApolloThemeRuntimeFont(base) ?: base;
+    NSString *identity = [NSString stringWithFormat:@"%@ %@",
+                          active.fontName ?: @"", active.familyName ?: @""].lowercaseString;
+    if ([identity containsString:@"rounded"]) {
+        return @"ui-rounded,\"SF Pro Rounded\",-apple-system,BlinkMacSystemFont,sans-serif";
+    }
+    if ([identity containsString:@"newyork"] || [identity containsString:@"new york"] ||
+        [identity containsString:@"serif"]) {
+        return @"ui-serif,\"New York\",Georgia,serif";
+    }
+    if ([identity containsString:@"mono"]) {
+        return @"ui-monospace,\"SF Mono\",Menlo,monospace";
+    }
+    return @"-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",sans-serif";
+}
+
 // Apollo's AppColorTheme values and role colors were runtime-mapped for Theme
 // Builder (docs/theme-builder-RE.md). Reuse that exact palette here so Chat
 // follows every stock theme as well as arbitrary Theme Builder colors instead
@@ -76,6 +98,7 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatThemePalette(UITrai
             @"bar": ApolloDirectChatHexFromColor(ApolloThemeRuntimeColor(ApolloThemeTokenBarBackground), traits, dark ? @"#131516" : @"#FBFBFB"),
             @"secondaryText": ApolloDirectChatHexFromColor(ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel), traits, dark ? @"#84878C" : @"#919191"),
             @"text": ApolloDirectChatHexFromColor(ApolloThemeRuntimeColor(ApolloThemeTokenLabel), traits, dark ? @"#F2F2F7" : @"#0D1117"),
+            @"font": ApolloDirectChatThemeFontFamily(),
             @"mode": mode,
         };
     }
@@ -138,6 +161,7 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatThemePalette(UITrai
         @"bar": ApolloDirectChatHex(roles[@"bar"]),
         @"secondaryText": dark ? @"#84878C" : @"#919191",
         @"text": dark ? @"#F2F2F7" : @"#0D1117",
+        @"font": ApolloDirectChatThemeFontFamily(),
         @"mode": mode,
     };
 }
@@ -189,15 +213,22 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // the real device width and cannot crop the right edge. Compact phones
         // stay near 100%; wider iPhones receive a gradual boost capped at 112%.
         "const mailTextScale=()=>location.pathname.startsWith('/mail/')?Math.min(112,Math.max(100,100+((document.documentElement.clientWidth||innerWidth)-350)*0.15)):100;"
+        // Reddit wraps the entire Modmail thread in p-md (roughly 17 points on
+        // a current-size iPhone). Remove that artificial outer gutter so the
+        // subject, messages, and composer use the whole screen. Preserve only
+        // WebKit's real safe area on landscape/notched devices. Scope this by
+        // route so the modern Chat layout remains untouched.
+        "const mailFullWidth=()=>location.pathname.startsWith('/mail/')?'#main-content.flex.gap-md.p-md{padding-left:env(safe-area-inset-left,0px)!important;padding-right:env(safe-area-inset-right,0px)!important;}':'';"
         "const css=()=>`:host,:root{"
-            "--apollo-chat-accent:${palette.accent};--apollo-chat-bg:${palette.primary};--apollo-chat-surface:${palette.secondary};--apollo-chat-raised:${palette.tertiary};--apollo-chat-border:${palette.separator};--apollo-chat-text:${palette.text};--apollo-chat-muted:${palette.secondaryText};"
-            "--color-neutral-background:${palette.primary}!important;--color-neutral-background-container:${palette.secondary}!important;--color-neutral-background-weak:${palette.tertiary}!important;--color-neutral-background-hover:${palette.tertiary}!important;--color-neutral-background-selected:${palette.tertiary}!important;"
-            "--color-neutral-border:${palette.separator}!important;--color-neutral-border-weak:${palette.separator}!important;--color-neutral-content:${palette.text}!important;--color-neutral-content-strong:${palette.text}!important;--color-neutral-content-weak:${palette.secondaryText}!important;"
+            "--apollo-chat-accent:${palette.accent};--apollo-chat-bg:${palette.primary};--apollo-chat-surface:${palette.secondary};--apollo-chat-raised:${palette.tertiary};--apollo-chat-border:${palette.separator};--apollo-chat-text:${palette.text};--apollo-chat-muted:${palette.secondaryText};--apollo-chat-font:${palette.font};"
+            "--font-sans:var(--apollo-chat-font)!important;--font-family-sans:var(--apollo-chat-font)!important;font-family:var(--apollo-chat-font)!important;"
+            "--color-neutral-background:${palette.primary}!important;--color-neutral-background-container:${palette.secondary}!important;--color-neutral-background-strong:${palette.secondary}!important;--color-neutral-background-strong-hover:${palette.tertiary}!important;--color-neutral-background-weak:${palette.tertiary}!important;--color-neutral-background-hover:${palette.tertiary}!important;--color-neutral-background-selected:${palette.tertiary}!important;--color-neutral-background-disabled:${palette.tertiary}!important;"
+            "--color-neutral-border:${palette.separator}!important;--color-neutral-border-weak:${palette.separator}!important;--color-neutral-border-medium:${palette.separator}!important;--color-neutral-border-strong:${palette.separator}!important;--color-neutral-content:${palette.text}!important;--color-neutral-content-strong:${palette.text}!important;--color-neutral-content-weak:${palette.secondaryText}!important;--color-neutral-content-disabled:${palette.secondaryText}!important;"
             "--color-primary:${palette.accent}!important;--color-primary-hover:${palette.accent}!important;--color-primary-visited:${palette.accent}!important;--color-primary-background:${palette.accent}!important;--color-secondary:${palette.text}!important;--color-secondary-background:${palette.tertiary}!important;"
             "--color-tone-1:${palette.text}!important;--color-tone-2:${palette.secondaryText}!important;--color-tone-3:${palette.secondaryText}!important;--color-tone-4:${palette.separator}!important;--color-tone-5:${palette.tertiary}!important;--color-tone-6:${palette.secondary}!important;--color-tone-7:${palette.primary}!important;"
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
-        "}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${mailTextScale()}%!important;text-size-adjust:${mailTextScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
-        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}`;"
+        "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${mailTextScale()}%!important;text-size-adjust:${mailTextScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
+        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailFullWidth()}`;"
         "const themeRoots=()=>{for(const r of roots()){let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)continue;target.appendChild(s);}s.textContent=css();}};"
         "const fixGiphy=()=>{let grids=0;for(const r of roots())for(const container of r.querySelectorAll('.gifs-container')){const media=[...container.querySelectorAll(':scope > img,:scope > video')];if(media.length<2)continue;container.setAttribute('data-apollo-giphy-grid','');container.style.setProperty('display','grid','important');container.style.setProperty('grid-template-columns','repeat(2,minmax(0,1fr))','important');container.style.setProperty('grid-auto-rows','104px','important');container.style.setProperty('gap','6px','important');container.style.setProperty('width','100%','important');container.style.setProperty('height','auto','important');container.style.setProperty('box-sizing','border-box','important');for(const m of media){m.style.setProperty('width','100%','important');m.style.setProperty('min-width','0','important');m.style.setProperty('height','104px','important');m.style.setProperty('max-width','none','important');m.style.setProperty('object-fit','cover','important');m.style.setProperty('margin','0','important');m.style.setProperty('overflow','hidden','important');m.style.setProperty('border-radius','10px','important');}grids++;}return grids;};"
         "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase(),rect=a.getBoundingClientRect();if(area.includes('chats')||rect.top<180){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
