@@ -12,6 +12,7 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloLinkPreviewCache.h"
 #import "ApolloDeletedCommentsSettingsViewController.h"
+#import "ApolloDirectChatWeb.h"
 #import "ApolloLinkPreviewSettingsViewController.h"
 #import "InlineMediaSettingsViewController.h"
 #import "InfoRowSettingsViewController.h"
@@ -92,7 +93,8 @@ typedef NS_ENUM(NSInteger, ApolloAPIKeyRow) {
     kAPIKeyRowSetupGuide      = 9,
     kAPIKeyRowWebJSONSwitch   = 10,
     kAPIKeyRowWebSessionLogin = 11,
-    kAPIKeyRowWidgetSetupCode = 12,
+    kAPIKeyRowModernChat      = 12,
+    kAPIKeyRowWidgetSetupCode = 13,
 };
 
 // Map a displayed (visible) API Keys row to its canonical index (ApolloAPIKeyRow).
@@ -692,6 +694,13 @@ typedef NS_ENUM(NSInteger, Tag) {
         [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:kAPIKeyRowWebSessionLogin inSection:SectionAPIKeys]]
                               withRowAnimation:UITableViewRowAnimationNone];
     }
+    // The active account can change while this settings controller is off
+    // screen. Re-evaluate whether modern Chat is optional or mandatory.
+    NSInteger modernChatRow = kAPIKeyRowModernChat - (sWebJSONEnabled ? 0 : 1);
+    if (modernChatRow >= 0 && [self.tableView numberOfRowsInSection:SectionAPIKeys] > modernChatRow) {
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:modernChatRow inSection:SectionAPIKeys]]
+                              withRowAnimation:UITableViewRowAnimationNone];
+    }
     // Refresh the Info Row, Apollo AI, Inline Media and Rich Link Previews status
     // subtitles after returning from their subviews.
     [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 4)]
@@ -1127,6 +1136,19 @@ typedef NS_ENUM(NSInteger, Tag) {
                 cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
                 cell.detailTextLabel.text = @"Not signed in — tap to add a web-session account";
             }
+            return cell;
+        }
+        case kAPIKeyRowModernChat: {
+            BOOL required = ApolloModernChatIsRequiredForActiveAccount();
+            BOOL selected = required || [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat];
+            UITableViewCell *cell = [self switchCellWithIdentifier:@"Cell_API_ModernChat"
+                                                              label:@"Use Modern Reddit Chat"
+                                                             detail:required
+                                                                    ? @"Required for the active API-key-free account because Reddit no longer exposes Direct Chat through the legacy message API."
+                                                                    : @"Off keeps Apollo's legacy Direct Chat. On uses Reddit's current Chat with requests, group chats, media, and chat mod mail. Requires a web-session sign-in."
+                                                                 on:selected
+                                                             action:@selector(modernRedditChatSwitchToggled:)];
+            ((UISwitch *)cell.accessoryView).enabled = !required;
             return cell;
         }
         case kAPIKeyRowWidgetSetupCode: {
@@ -2437,6 +2459,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         return;
     }
     [self _applyWebJSONEnabled:sender.isOn];
+}
+
+- (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
 }
 
 - (void)_applyWebJSONEnabled:(BOOL)enabled {

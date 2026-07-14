@@ -1,9 +1,9 @@
 // ApolloChatsFilter.xm
 //
-// Feature 2 of the chat upgrade: add a "Direct Chat" filter row to the inbox "Boxes"
-// list, directly above "Messages". Tapping it opens the normal messages list but filtered
-// to direct/group chats (Reddit bridges chat into private messages with the subject
-// "[direct chat room]"; group chats use a "chat room" subject too).
+// Add a "Direct Chat" row to the inbox "Boxes" list, directly above
+// "Messages". API-key-free accounts open Reddit's authenticated modern Chat
+// client because current Chat is no longer mirrored through /message. API-key
+// accounts can choose modern Chat or keep Apollo's legacy filtered list.
 //
 // Boxes screen = _TtC6Apollo23InboxListViewController (a UITableViewController whose
 // data-source methods are ObjC-visible). The "Messages" row maps to InboxType.messages and
@@ -11,13 +11,13 @@
 // IGListKit listAdapter). We:
 //   1. Detect the Messages section by the stock cell's text (layout is account-dependent).
 //   2. Add one extra row at the top of that section, styled "Direct Chat".
-//   3. On tap, set a one-shot flag and invoke the *real* Messages row so Apollo opens the
-//      messages list normally; the flag marks that VC to filter its list to chats.
-//   4. In the messages list, filter the IGListKit objects to chat-subject messages.
+//   3. On tap, open modern Reddit Chat when selected/required; otherwise invoke
+//      the real Messages row as a legacy fallback.
+//   4. In that fallback, filter the IGListKit objects to chat-subject messages.
 
 #import "ApolloCommon.h"
+#import "ApolloDirectChatWeb.h"
 #import "ApolloState.h"
-#import "ApolloWebJSON.h" // ApolloWebJSONHasUsableSession — Direct Chat row hidden in keyless mode
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
@@ -35,17 +35,14 @@ static NSInteger sMessagesRow = -1;         // detected row index of "Messages" 
 static const BOOL sDirectChatRowEnabled = YES;
 static BOOL sNextInboxIsChatFilter = NO;    // armed when the Direct Chat row is tapped
 static char kChatFilterKey;                 // on InboxViewController: this list is chat-filtered
+static __weak id sLatestBoxesController = nil;
+static char kInboxAllChatHeaderKey;
+static char kInboxAllOriginalHeaderKey;
+static char kInboxAllStatusObserverKey;
 
-// Whether the Direct Chat row should exist for the ACTIVE account right now.
-// Reddit's web JSON API omits the chat-bridge t4 messages entirely under
-// cookie auth (verified live: /message/messages.json returns zero children on
-// a session whose OAuth counterpart has chats), so in API-Key-Free mode the
-// row would only ever open an empty list. Hide it for cookie accounts; OAuth
-// accounts keep it. Re-evaluated per table callback, so it tracks account
-// switches whenever the Boxes list reloads.
-static BOOL ApolloDirectChatRowActive(void) {
-    return sDirectChatRowEnabled && !ApolloWebJSONHasUsableSession();
-}
+// Modern Chat makes the row useful for cookie-auth API-free accounts as well as
+// OAuth accounts, so it remains present for every signed-in account.
+static BOOL ApolloDirectChatRowActive(void) { return sDirectChatRowEnabled; }
 
 #pragma mark - helpers
 
@@ -79,6 +76,178 @@ static void ApolloRestyleAsDirectChat(UITableViewCell *cell) {
         UIImage *glyph = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"];
         if (icon && glyph) icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
+}
+
+// Apollo builds the Boxes sections synchronously from currentUser.isMod / the
+// moderated-subreddits array. During an API-key-free sign-in the account-change
+// notification can arrive before those models finish hydrating, so refresh the
+// already-visible root a couple of times after a switch. This lets Moderator
+// Mail appear without requiring a relaunch.
+static UITableView *ApolloBoxesTableView(id controller) {
+    if (!controller) return nil;
+    Ivar ivar = class_getInstanceVariable([controller class], "tableView");
+    id value = ivar ? object_getIvar(controller, ivar) : nil;
+    return [value isKindOfClass:[UITableView class]] ? value : nil;
+}
+
+static void ApolloRefreshBoxesForModeratorState(NSString *reason) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        id controller = sLatestBoxesController;
+        UITableView *tableView = ApolloBoxesTableView(controller);
+        if (!tableView) return;
+        [tableView reloadData];
+        ChatsFilterLog(@"reloaded Boxes after moderator state update (%@)", reason ?: @"unknown");
+    });
+}
+
+#pragma mark - Inbox (All): unified modern Chat entry
+
+@interface ApolloInboxAllChatHeaderView : UIControl
+@property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) UIImageView *chatIconView;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
+@property (nonatomic, strong) UILabel *unreadBadgeLabel;
+@property (nonatomic, strong) UIImageView *chevronView;
+- (void)apollo_refreshForTraits:(UITraitCollection *)traits;
+@end
+
+@implementation ApolloInboxAllChatHeaderView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    self.cardView = [UIView new];
+    self.cardView.userInteractionEnabled = NO;
+    self.cardView.layer.cornerRadius = 14.0;
+    self.cardView.layer.borderWidth = 0.5;
+    [self addSubview:self.cardView];
+
+    self.chatIconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bubble.left.and.bubble.right.fill"]];
+    self.chatIconView.contentMode = UIViewContentModeScaleAspectFit;
+    [self.cardView addSubview:self.chatIconView];
+
+    self.titleLabel = [UILabel new];
+    self.titleLabel.text = @"Reddit Chat";
+    self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    [self.cardView addSubview:self.titleLabel];
+
+    self.detailLabel = [UILabel new];
+    self.detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    self.detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [self.cardView addSubview:self.detailLabel];
+
+    self.unreadBadgeLabel = [UILabel new];
+    self.unreadBadgeLabel.text = @"NEW";
+    self.unreadBadgeLabel.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightBold];
+    self.unreadBadgeLabel.textAlignment = NSTextAlignmentCenter;
+    self.unreadBadgeLabel.layer.cornerRadius = 9.0;
+    self.unreadBadgeLabel.clipsToBounds = YES;
+    [self.cardView addSubview:self.unreadBadgeLabel];
+
+    self.chevronView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+    self.chevronView.contentMode = UIViewContentModeScaleAspectFit;
+    [self.cardView addSubview:self.chevronView];
+
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.cardView.frame = CGRectInset(self.bounds, 12.0, 7.0);
+    CGFloat height = self.cardView.bounds.size.height;
+    self.chatIconView.frame = CGRectMake(16.0, (height - 30.0) / 2.0, 30.0, 30.0);
+    self.chevronView.frame = CGRectMake(self.cardView.bounds.size.width - 28.0, (height - 17.0) / 2.0, 10.0, 17.0);
+    self.unreadBadgeLabel.frame = CGRectMake(self.cardView.bounds.size.width - 82.0, 13.0, 42.0, 18.0);
+    CGFloat textRight = self.unreadBadgeLabel.hidden ? self.chevronView.frame.origin.x - 12.0 : self.unreadBadgeLabel.frame.origin.x - 8.0;
+    self.titleLabel.frame = CGRectMake(58.0, 11.0, MAX(20.0, textRight - 58.0), 24.0);
+    self.detailLabel.frame = CGRectMake(58.0, 36.0, MAX(20.0, self.chevronView.frame.origin.x - 70.0), 21.0);
+}
+
+- (void)apollo_refreshForTraits:(UITraitCollection *)traits {
+    NSDictionary *status = ApolloModernChatCachedStatus();
+    BOOL unread = [status[@"hasUnread"] boolValue];
+    NSString *preview = [status[@"preview"] isKindOfClass:[NSString class]] ? status[@"preview"] : nil;
+    if (preview.length > 0) {
+        self.detailLabel.text = preview;
+    } else if (unread) {
+        self.detailLabel.text = @"You have a new Chat message";
+    } else {
+        self.detailLabel.text = @"Direct chats, requests & mod mail";
+    }
+    self.unreadBadgeLabel.hidden = !unread;
+
+    UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
+    UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
+    UIColor *separator = ApolloModernChatThemeColor(traits, @"separator");
+    UIColor *text = ApolloModernChatThemeColor(traits, @"text");
+    UIColor *secondaryText = ApolloModernChatThemeColor(traits, @"secondaryText");
+    self.cardView.backgroundColor = raised;
+    self.cardView.layer.borderColor = separator.CGColor;
+    self.chatIconView.tintColor = accent;
+    self.chevronView.tintColor = secondaryText;
+    self.titleLabel.textColor = text;
+    self.detailLabel.textColor = secondaryText;
+    self.unreadBadgeLabel.backgroundColor = accent;
+    self.unreadBadgeLabel.textColor = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
+    [self setNeedsLayout];
+}
+
+@end
+
+static BOOL ApolloInboxControllerIsAll(id controller) {
+    Ivar ivar = class_getInstanceVariable([controller class], "inboxType");
+    if (ivar) {
+        uint8_t raw = *((uint8_t *)(__bridge void *)controller + ivar_getOffset(ivar));
+        if (raw == 0) return YES; // Apollo.InboxType.inbox is the first enum case.
+    }
+    return [((UIViewController *)controller).title isEqualToString:@"Inbox"];
+}
+
+static UITableView *ApolloInboxControllerTableView(id controller) {
+    Ivar ivar = class_getInstanceVariable([controller class], "tableNode");
+    id tableNode = ivar ? object_getIvar(controller, ivar) : nil;
+    if ([tableNode respondsToSelector:@selector(view)]) {
+        id view = ((id (*)(id, SEL))objc_msgSend)(tableNode, @selector(view));
+        if ([view isKindOfClass:[UITableView class]]) return view;
+    }
+    return nil;
+}
+
+static void ApolloInstallInboxAllChatHeader(id controller) {
+    if (!ApolloInboxControllerIsAll(controller)) return;
+    UITableView *tableView = ApolloInboxControllerTableView(controller);
+    if (!tableView) return;
+
+    ApolloInboxAllChatHeaderView *header = objc_getAssociatedObject(controller, &kInboxAllChatHeaderKey);
+    if (!ApolloModernChatShouldOpen()) {
+        if (header) {
+            tableView.tableHeaderView = objc_getAssociatedObject(controller, &kInboxAllOriginalHeaderKey);
+            objc_setAssociatedObject(controller, &kInboxAllChatHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    if (!header) {
+        UIView *original = tableView.tableHeaderView;
+        objc_setAssociatedObject(controller, &kInboxAllOriginalHeaderKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        CGFloat oldHeight = original ? CGRectGetHeight(original.frame) : 0.0;
+        CGFloat width = CGRectGetWidth(tableView.bounds) ?: CGRectGetWidth(((UIViewController *)controller).view.bounds);
+        UIView *wrapper = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, oldHeight + 82.0)];
+        if (original) {
+            original.frame = CGRectMake(0, 0, width, oldHeight);
+            [wrapper addSubview:original];
+        }
+        header = [[ApolloInboxAllChatHeaderView alloc] initWithFrame:CGRectMake(0, oldHeight, width, 82.0)];
+        header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [header addTarget:controller action:NSSelectorFromString(@"apollo_openModernChatFromAllInbox") forControlEvents:UIControlEventTouchUpInside];
+        [wrapper addSubview:header];
+        tableView.tableHeaderView = wrapper;
+        objc_setAssociatedObject(controller, &kInboxAllChatHeaderKey, header, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ChatsFilterLog(@"installed modern Chat entry in Inbox (All)");
+    }
+    [header apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
 }
 
 #pragma mark - Boxes list: add the Direct Chat row
@@ -125,6 +294,22 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
 }
 
 %hook _TtC6Apollo23InboxListViewController
+
+- (void)viewDidLoad {
+    %orig;
+    sLatestBoxesController = self;
+}
+
+- (void)redditAccountChangedWithNotification:(id)notification {
+    %orig;
+    sLatestBoxesController = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (sLatestBoxesController == self) ApolloRefreshBoxesForModeratorState(@"account switch +0.75s");
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (sLatestBoxesController == self) ApolloRefreshBoxesForModeratorState(@"account switch +2s");
+    });
+}
 
 - (long long)tableView:(UITableView *)tableView numberOfRowsInSection:(long long)section {
     if (ApolloDirectChatRowActive()) ApolloWarnIfUnhandledRowDelegates(self);   // one-shot future-proofing canary
@@ -184,6 +369,17 @@ static NSInteger ApolloRealMessagesRow(NSInteger displayedRow) {
     if (ApolloDirectChatRowActive() && sMessagesSection >= 0 && indexPath.section == sMessagesSection) {
         NSInteger realRow = ApolloRealMessagesRow(indexPath.row);
         if (realRow < 0) {
+            if (ApolloModernChatShouldOpen()) {
+                ChatsFilterLog(@"Direct Chat tapped -> opening modern Reddit Chat");
+                UIViewController *controller = ApolloCreateModernChatViewController();
+                [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (NSIndexPath *selectedPath in ([tableView indexPathsForSelectedRows] ?: @[])) {
+                        [tableView deselectRowAtIndexPath:selectedPath animated:NO];
+                    }
+                });
+                return;
+            }
             ChatsFilterLog(@"Direct Chat tapped -> opening filtered messages list");
             sNextInboxIsChatFilter = YES;   // one-shot: the next InboxViewController filters to chats
             realRow = sMessagesRow;          // open the real Messages list (which we then filter)
@@ -256,14 +452,40 @@ static BOOL sChatFilterActive = NO;
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue])
         ((UIViewController *)self).title = @"Direct Chat";   // after %orig so Apollo doesn't override it
+    if (ApolloInboxControllerIsAll(self) && ![objc_getAssociatedObject(self, &kInboxAllStatusObserverKey) boolValue]) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:NSSelectorFromString(@"apollo_modernChatStatusChanged:")
+                                                     name:ApolloModernChatStatusDidChangeNotification
+                                                   object:nil];
+        objc_setAssociatedObject(self, &kInboxAllStatusObserverKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloInstallInboxAllChatHeader(self); });
+    }
 }
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = YES;
+    ApolloInstallInboxAllChatHeader(self);
 }
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = NO;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    %orig;
+}
+
+%new
+- (void)apollo_modernChatStatusChanged:(NSNotification *)notification {
+    ApolloInstallInboxAllChatHeader(self);
+}
+
+%new
+- (void)apollo_openModernChatFromAllInbox {
+    if (!ApolloModernChatShouldOpen()) return;
+    UIViewController *chat = ApolloCreateModernChatViewController();
+    [((UIViewController *)self).navigationController pushViewController:chat animated:YES];
 }
 %end
 

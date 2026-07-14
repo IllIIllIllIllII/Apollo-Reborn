@@ -273,6 +273,9 @@ static NSString *const UDKeyPostFilterNameSubstrings = @"PostFilterNameSubstring
 // Web JSON spike (see ApolloWebJSON.m). Master switch for re-pointing
 // whitelisted listing reads at cookie-authenticated www.reddit.com JSON.
 static NSString *const UDKeyWebJSONEnabled = @"WebJSONEnabled";
+// API-key accounts may opt into Reddit's modern web Chat; API-key-free
+// accounts always use it because legacy /message no longer contains Chat.
+static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
 // Legacy NSUserDefaults location of the harvested "name=value; ..." Cookie
 // header. The cookie is now stored in the keychain (ApolloWebJSON.m); this key
 // is retained only so ApolloWebJSONLoadPersistedCredentials can migrate an older
