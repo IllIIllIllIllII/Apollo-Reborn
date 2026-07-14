@@ -273,7 +273,10 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // Modmail before revealing anything to the user.
 @property (nonatomic, assign) BOOL modmailWarmupPending;
 @property (nonatomic, strong) UIColor *originalNavigationTintColor;
+@property (nonatomic, assign) BOOL didCaptureOriginalNavigationTintColor;
 @property (nonatomic, assign) ApolloModernMailboxKind mailboxKind;
+- (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
+- (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 @end
 
 @implementation ApolloDirectChatWebViewController
@@ -385,16 +388,13 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    if (!self.originalNavigationTintColor) {
-        self.originalNavigationTintColor = self.navigationController.navigationBar.tintColor;
-    }
     [self apollo_applyActiveTheme];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
     [super viewWillDisappear:animated];
-    if (self.originalNavigationTintColor) {
+    if (self.didCaptureOriginalNavigationTintColor) {
         self.navigationController.navigationBar.tintColor = self.originalNavigationTintColor;
     }
 }
@@ -409,6 +409,15 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 }
 
 - (void)apollo_applyActiveTheme {
+    // UINavigationBar is shared by Apollo's whole navigation stack. Capture
+    // its actual pre-chat value before the first theme application mutates it,
+    // including a legitimate nil/default tint, so popping is a true restore.
+    if (!self.didCaptureOriginalNavigationTintColor && self.navigationController) {
+        self.originalNavigationTintColor = self.navigationController.navigationBar.tintColor;
+        self.didCaptureOriginalNavigationTintColor = YES;
+        ApolloLog(@"[DirectChatWeb] Captured original navigation tint before applying mailbox theme");
+    }
+
     NSDictionary *palette = ApolloDirectChatThemePalette(self.traitCollection);
     UIColor *accent = ApolloDirectChatPaletteColor(palette, @"accent");
     UIColor *background = ApolloDirectChatPaletteColor(palette, @"primary");
@@ -489,9 +498,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 }
 
 - (void)apollo_revealChat {
-    BOOL expectedRoute = self.mailboxKind == ApolloModernMailboxKindModmail
-        ? [self.webView.URL.path hasPrefix:@"/mail"]
-        : [self.webView.URL.path hasPrefix:@"/chat"];
+    BOOL expectedRoute = [self apollo_urlMatchesMailboxRoute:self.webView.URL];
     if (self.didRevealChat || !expectedRoute) return;
     self.didRevealChat = YES;
     [self.spinner stopAnimating];
@@ -514,7 +521,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 
 - (void)apollo_captureChatStatus {
     if (self.mailboxKind != ApolloModernMailboxKindChat || !self.webView.URL ||
-        ![self.webView.URL.path hasPrefix:@"/chat"]) return;
+        ![self apollo_urlMatchesMailboxRoute:self.webView.URL]) return;
     NSString *script =
         @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
          "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
@@ -645,14 +652,48 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     }];
 }
 
+- (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url {
+    if (!url) return NO;
+    NSString *host = url.host.lowercaseString ?: @"";
+    BOOL redditHost = [host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"];
+    if (!redditHost) return NO;
+
+    NSString *path = url.path ?: @"";
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        return [path isEqualToString:@"/mail"] || [path hasPrefix:@"/mail/"];
+    }
+    return [path isEqualToString:@"/chat"] || [path hasPrefix:@"/chat/"];
+}
+
+- (void)apollo_routeURLOutsideMailbox:(NSURL *)url {
+    if (!url) return;
+    if (ApolloRouteResolvedURLViaApolloScheme(url)) {
+        ApolloLog(@"[DirectChatWeb] Routed Reddit link through Apollo: %@", url.absoluteString);
+        return;
+    }
+
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) {
+        ApolloPresentWebURLFromViewController(self, url);
+    } else {
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    }
+    ApolloLog(@"[DirectChatWeb] Routed link outside isolated mailbox: %@", url.absoluteString);
+}
+
 - (WKWebView *)webView:(WKWebView *)webView
     createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
                forNavigationAction:(WKNavigationAction *)navigationAction
                     windowFeatures:(WKWindowFeatures *)windowFeatures {
     // Reddit's “Open chat in full screen” control opens a new browsing context.
-    // Keep it inside Apollo's isolated, already-authenticated web view.
+    // Keep mailbox routes inside the isolated web view, but never load a post,
+    // profile, or third-party target into the cookie-seeded browsing context.
     if (!navigationAction.targetFrame && navigationAction.request.URL) {
-        [webView loadRequest:navigationAction.request];
+        if ([self apollo_urlMatchesMailboxRoute:navigationAction.request.URL]) {
+            [webView loadRequest:navigationAction.request];
+        } else {
+            [self apollo_routeURLOutsideMailbox:navigationAction.request.URL];
+        }
     }
     return nil;
 }
@@ -667,6 +708,16 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     if (redditHomeLogo && navigationAction.navigationType == WKNavigationTypeLinkActivated) {
         ApolloLog(@"[DirectChatWeb] Blocked Reddit home-logo navigation inside Chat");
         decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+    if (url && navigationAction.navigationType == WKNavigationTypeLinkActivated &&
+        ![self apollo_urlMatchesMailboxRoute:url]) {
+        // User-selected links leave the mailbox through Apollo's native Reddit
+        // router or in-app browser. Apart from avoiding the false expired-state
+        // overlay, this prevents third-party pages inheriting Reddit cookies in
+        // the private WKWebView used for Chat and Modmail.
+        decisionHandler(WKNavigationActionPolicyCancel);
+        [self apollo_routeURLOutsideMailbox:url];
         return;
     }
     decisionHandler(WKNavigationActionPolicyAllow);
@@ -703,9 +754,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
         [webView loadRequest:request];
         return;
     }
-    BOOL expectedRoute = self.mailboxKind == ApolloModernMailboxKindModmail
-        ? [webView.URL.path hasPrefix:@"/mail"]
-        : ([webView.URL.path isEqualToString:@"/chat"] || [webView.URL.path hasPrefix:@"/chat/"]);
+    BOOL expectedRoute = [self apollo_urlMatchesMailboxRoute:webView.URL];
     if (expectedRoute) {
         // Apply the active Apollo palette before the loading cover is removed;
         // users never see Reddit's stock colors flash during hydration.
@@ -713,9 +762,17 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
         [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
         return;
     }
-    [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
-    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
-        [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
+    // An unexpected route only proves authentication failed during the initial
+    // mailbox bootstrap. Once the mailbox was revealed, never cover a valid
+    // page with a false “session expired” state; link-activated departures are
+    // already cancelled and handed to Apollo above.
+    if (!self.didRevealChat) {
+        [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
+        if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+            [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
+        }
+    } else {
+        ApolloLog(@"[DirectChatWeb] Ignored post-reveal non-mailbox navigation: %@", webView.URL.absoluteString);
     }
 }
 
