@@ -667,8 +667,27 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url {
     if (!url) return;
-    if (ApolloRouteResolvedURLViaApolloScheme(url)) {
-        ApolloLog(@"[DirectChatWeb] Routed Reddit link through Apollo: %@", url.absoluteString);
+    NSURL *apolloURL = ApolloURLByConvertingResolvedURLToApolloScheme(url);
+    if (apolloURL) {
+        // Chat/Modmail hide Apollo's tab bar so their bottom composers remain
+        // usable. Remove the web mailbox from the stack before handing a Reddit
+        // destination to Apollo; otherwise the native subreddit/comments/profile
+        // controller inherits that hidden tab bar and looks like a partial UI.
+        UINavigationController *navigationController = self.navigationController;
+        if (navigationController.topViewController == self) {
+            [navigationController popViewControllerAnimated:NO];
+        }
+        if (ApolloRouteResolvedURLViaApolloScheme(url)) {
+            ApolloLog(@"[DirectChatWeb] Closed mailbox and routed Reddit link through Apollo: %@", url.absoluteString);
+            return;
+        }
+
+        // The converter recognized Reddit but Apollo's native handler was not
+        // available. Use the now-visible native controller as browser presenter
+        // rather than trying to present from the mailbox we just removed.
+        UIViewController *presenter = navigationController.topViewController ?: self;
+        ApolloPresentWebURLFromViewController(presenter, url);
+        ApolloLog(@"[DirectChatWeb] Native Reddit routing unavailable; used Apollo browser: %@", url.absoluteString);
         return;
     }
 
