@@ -39,6 +39,10 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 // and for re-authenticating a known-expired session (already dead, so there's
 // nothing worth preserving).
 @property (nonatomic) BOOL clearsExistingSessionBeforeLoad;
+// Non-empty only when this controller was opened from the expired-session
+// prompt. Cancel must re-arm that account's one-shot prompt latch so tapping
+// the failed feature again can offer re-authentication instead of spinning.
+@property (nonatomic, copy) NSString *reauthenticationUsername;
 // Consecutive harvest attempts that found an incomplete session (see the
 // completeness gate in _harvestAndFinishForUser:).
 @property (nonatomic) NSUInteger harvestAttempts;
@@ -83,6 +87,13 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
     return vc;
 }
 
++ (instancetype)loginControllerForReauthenticationOfUsername:(NSString *)username {
+    ApolloWebSessionLoginViewController *vc = [self loginControllerForAdditionalAccount];
+    vc.reauthenticationUsername = [[username ?: @"" stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    return vc;
+}
+
 #pragma mark - Expired-session re-auth entry point
 
 + (UIWindow *)_apolloKeyWindow {
@@ -116,12 +127,17 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
                                             handler:^(UIAlertAction *a) {
         // The expired session is already known-bad, so clear it before
         // reloading — same rationale as adding an additional account.
-        ApolloWebSessionLoginViewController *vc = [ApolloWebSessionLoginViewController loginControllerForAdditionalAccount];
+        ApolloWebSessionLoginViewController *vc =
+            [ApolloWebSessionLoginViewController loginControllerForReauthenticationOfUsername:username];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
         UIViewController *presenter = [[self _apolloKeyWindow] visibleViewController] ?: top;
         [presenter presentViewController:nav animated:YES completion:nil];
     }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Later" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Later"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(UIAlertAction *a) {
+        ApolloWebJSONNoteSessionReauthenticationDeferred(username);
+    }]];
     [top presentViewController:alert animated:YES completion:nil];
 }
 
@@ -175,7 +191,10 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
         __weak typeof(self) weakSelf = self;
         [self _clearRedditCookiesWithCompletion:^{
             typeof(self) s = weakSelf;
-            if (!s) return;
+            // Cancel may happen while WebKit is still deleting cookies. Do not
+            // resurrect navigation on a controller the user already dismissed;
+            // this was the other half of the cancel-then-spinner loop.
+            if (!s || s.finished) return;
             s.awaitingLogin = YES; // cookies are gone, so /login will show the form, not auto-authenticate
             ApolloLog(@"[WebJSON] Loading login URL: %@", s.loginURL);
             [s.webView loadRequest:[NSURLRequest requestWithURL:s.loginURL]];
@@ -347,13 +366,30 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 // clean (the persistent store survives app uninstall in the simulator).
 - (void)_clearRedditCookiesWithCompletion:(void (^)(void))completion {
     WKHTTPCookieStore *store = self.webView.configuration.websiteDataStore.httpCookieStore;
+    // WebKit occasionally drops a cookie-deletion completion when a previous
+    // login controller was dismissed during the same operation. Never make the
+    // next attempt wait forever: complete once either every deletion returns or
+    // a short safety timeout expires. The subsequent /login load is authoritative
+    // and will still show whether a stale cookie survived.
+    __block BOOL finished = NO;
+    void (^finishOnce)(NSString *) = ^(NSString *reason) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (finished) return;
+            finished = YES;
+            if (reason.length > 0) ApolloLog(@"[WebJSON] Reddit cookie clear %@", reason);
+            if (completion) completion();
+        });
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        finishOnce(@"timed out after 4s; continuing to the login page");
+    });
     [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
         NSMutableArray<NSHTTPCookie *> *redditCookies = [NSMutableArray array];
         for (NSHTTPCookie *c in cookies) {
             if ([c.domain.lowercaseString hasSuffix:@"reddit.com"]) [redditCookies addObject:c];
         }
         if (redditCookies.count == 0) {
-            dispatch_async(dispatch_get_main_queue(), completion);
+            finishOnce(@"completed (no Reddit cookies present)");
             return;
         }
         // WKHTTPCookieStore completion handlers run serially on the main thread,
@@ -361,7 +397,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         __block NSUInteger remaining = redditCookies.count;
         for (NSHTTPCookie *c in redditCookies) {
             [store deleteCookie:c completionHandler:^{
-                if (--remaining == 0) dispatch_async(dispatch_get_main_queue(), completion);
+                if (--remaining == 0) finishOnce(@"completed");
             }];
         }
     }];
@@ -471,6 +507,12 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     self.finished = YES;
     [self.authPollTimer invalidate];
     self.authPollTimer = nil;
+    self.webView.navigationDelegate = nil;
+    [self.webView stopLoading];
+    [self.spinner stopAnimating];
+    if (self.reauthenticationUsername.length > 0) {
+        ApolloWebJSONNoteSessionReauthenticationDeferred(self.reauthenticationUsername);
+    }
     [self _dismiss];
 }
 
@@ -674,7 +716,7 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
 void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyHandler)(void)) {
     apiKeyHandler = [apiKeyHandler copy];
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Add Account"
-                                                                     message:nil
+                                                                     message:@"Choose whether this Reddit account should use an API key or API-Key-Free Mode."
                                                               preferredStyle:UIAlertControllerStyleActionSheet];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Sign In With API Key"
                                               style:UIAlertActionStyleDefault
@@ -685,13 +727,12 @@ void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyH
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *a) {
         if (!sWebJSONEnabled) {
-            UIAlertController *alert = [UIAlertController
-                alertControllerWithTitle:@"API-Key-Free Mode Is Off"
-                                  message:@"Turn on \"API-Key-Free Mode\" in Settings → API Keys first — otherwise a web-session account has no working way to authenticate and every request will hang."
-                           preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [host presentViewController:alert animated:YES completion:nil];
-            return;
+            // The user just explicitly chose the key-free path, so make that
+            // choice effective immediately instead of sending them away to
+            // discover a separate master switch and then retry the whole flow.
+            sWebJSONEnabled = YES;
+            [[NSUserDefaults standardUserDefaults] setBool:YES forKey:UDKeyWebJSONEnabled];
+            ApolloLog(@"[WebJSON] Enabled API-Key-Free Mode from the sign-in chooser");
         }
         BOOL hasExistingWebSession = ApolloWebSessionUsernames().count > 0;
         ApolloWebSessionLoginViewController *vc = hasExistingWebSession

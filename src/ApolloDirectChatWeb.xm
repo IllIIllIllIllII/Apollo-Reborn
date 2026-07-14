@@ -10,6 +10,7 @@
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloWebSessionLoginViewController.h"
 #import "ApolloWebSessionStore.h"
 #import "UserDefaultConstants.h"
 
@@ -189,10 +190,11 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
             "--color-primary:${palette.accent}!important;--color-primary-hover:${palette.accent}!important;--color-primary-visited:${palette.accent}!important;--color-primary-background:${palette.accent}!important;--color-secondary:${palette.text}!important;--color-secondary-background:${palette.tertiary}!important;"
             "--color-tone-1:${palette.text}!important;--color-tone-2:${palette.secondaryText}!important;--color-tone-3:${palette.secondaryText}!important;--color-tone-4:${palette.separator}!important;--color-tone-5:${palette.tertiary}!important;--color-tone-6:${palette.secondary}!important;--color-tone-7:${palette.primary}!important;"
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
-        "}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}`;"
+        "}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
+        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}`;"
         "const themeRoots=()=>{for(const r of roots()){let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)continue;target.appendChild(s);}s.textContent=css();}};"
         "const fixGiphy=()=>{let grids=0;for(const r of roots())for(const container of r.querySelectorAll('.gifs-container')){const media=[...container.querySelectorAll(':scope > img,:scope > video')];if(media.length<2)continue;container.setAttribute('data-apollo-giphy-grid','');container.style.setProperty('display','grid','important');container.style.setProperty('grid-template-columns','repeat(2,minmax(0,1fr))','important');container.style.setProperty('grid-auto-rows','104px','important');container.style.setProperty('gap','6px','important');container.style.setProperty('width','100%','important');container.style.setProperty('height','auto','important');container.style.setProperty('box-sizing','border-box','important');for(const m of media){m.style.setProperty('width','100%','important');m.style.setProperty('min-width','0','important');m.style.setProperty('height','104px','important');m.style.setProperty('max-width','none','important');m.style.setProperty('object-fit','cover','important');m.style.setProperty('margin','0','important');m.style.setProperty('overflow','hidden','important');m.style.setProperty('border-radius','10px','important');}grids++;}return grids;};"
-        "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase();if(area.includes('chats')){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
+        "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase(),rect=a.getBoundingClientRect();if(area.includes('chats')||rect.top<180){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
         "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),blockedHomeLinks:blockRedditHomeLogo()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
         "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>window.__apolloChatEnhancementSweep?.(),700);"
@@ -213,6 +215,11 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     return pairs;
 }
 
+typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
+    ApolloModernMailboxKindChat = 0,
+    ApolloModernMailboxKindModmail,
+};
+
 @interface ApolloDirectChatWebViewController : UIViewController <WKNavigationDelegate, WKUIDelegate>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -223,14 +230,20 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic, assign) BOOL didRevealChat;
 @property (nonatomic, assign) NSUInteger readinessGeneration;
+// A fresh, isolated WKWebView can leave Reddit's Modmail bundle waiting
+// forever when /mail/all is its very first document. Prime the authenticated
+// reddit.com client through the known-good Chat route, then replace it with
+// Modmail before revealing anything to the user.
+@property (nonatomic, assign) BOOL modmailWarmupPending;
 @property (nonatomic, strong) UIColor *originalNavigationTintColor;
+@property (nonatomic, assign) ApolloModernMailboxKind mailboxKind;
 @end
 
 @implementation ApolloDirectChatWebViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Reddit Chat";
+    self.title = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Reddit Chat";
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.view.clipsToBounds = YES;
@@ -275,7 +288,9 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
         [self.loadingView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
     ]];
 
-    UIImageView *iconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bubble.left.and.bubble.right.fill"]];
+    NSString *iconName = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? @"shield.lefthalf.filled" : @"bubble.left.and.bubble.right.fill";
+    UIImageView *iconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:iconName]];
     self.loadingIconView = iconView;
     iconView.translatesAutoresizingMaskIntoConstraints = NO;
     iconView.contentMode = UIViewContentModeScaleAspectFit;
@@ -286,7 +301,8 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     ]];
 
     self.loadingTitleLabel = [UILabel new];
-    self.loadingTitleLabel.text = @"Opening Reddit Chat";
+    self.loadingTitleLabel.text = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? @"Opening Moderator Mail" : @"Opening Reddit Chat";
     self.loadingTitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
     self.loadingTitleLabel.textColor = UIColor.labelColor;
     self.loadingTitleLabel.textAlignment = NSTextAlignmentCenter;
@@ -339,7 +355,7 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
-    [self apollo_captureChatStatus];
+    if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
     [super viewWillDisappear:animated];
     if (self.originalNavigationTintColor) {
         self.navigationController.navigationBar.tintColor = self.originalNavigationTintColor;
@@ -400,25 +416,46 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 - (void)apollo_showLoadingWithDetail:(NSString *)detail {
     self.didRevealChat = NO;
     self.readinessGeneration += 1;
-    self.loadingTitleLabel.text = @"Opening Reddit Chat";
+    self.loadingTitleLabel.text = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? @"Opening Moderator Mail" : @"Opening Reddit Chat";
     self.loadingDetailLabel.text = detail.length ? detail : @"Preparing your private session…";
     self.loadingView.hidden = NO;
     self.loadingView.alpha = 1.0;
     self.webView.alpha = 0.0;
     self.webView.userInteractionEnabled = NO;
     [self.spinner startAnimating];
+
+    // WebKit can occasionally stop delivering navigation callbacks after a
+    // cancelled authentication flow or an unresponsive Reddit web process.
+    // A retryable error is always better than a permanent activity indicator.
+    NSUInteger generation = self.readinessGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || self.didRevealChat || generation != self.readinessGeneration) return;
+        NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Reddit Chat";
+        ApolloLog(@"[DirectChatWeb] %@ loading watchdog fired", surface);
+        [self.webView stopLoading];
+        [self apollo_showLoadError:[NSString stringWithFormat:@"%@ took too long to respond. Tap refresh to try again.", surface]];
+    });
 }
 
 - (void)apollo_showLoadError:(NSString *)detail {
+    self.readinessGeneration += 1;
+    self.modmailWarmupPending = NO;
     self.loadingView.hidden = NO;
     self.loadingView.alpha = 1.0;
-    self.loadingTitleLabel.text = @"Chat couldn’t be opened";
+    self.loadingTitleLabel.text = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? @"Moderator Mail couldn’t be opened" : @"Chat couldn’t be opened";
     self.loadingDetailLabel.text = detail ?: @"Try refreshing or signing in again.";
     [self.spinner stopAnimating];
 }
 
 - (void)apollo_revealChat {
-    if (self.didRevealChat || ![self.webView.URL.path hasPrefix:@"/chat"]) return;
+    BOOL expectedRoute = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? [self.webView.URL.path hasPrefix:@"/mail"]
+        : [self.webView.URL.path hasPrefix:@"/chat"];
+    if (self.didRevealChat || !expectedRoute) return;
     self.didRevealChat = YES;
     [self.spinner stopAnimating];
     self.webView.userInteractionEnabled = YES;
@@ -428,15 +465,19 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     } completion:^(BOOL finished) {
         self.loadingView.hidden = YES;
     }];
-    ApolloLog(@"[DirectChatWeb] Revealed hydrated mobile Chat UI");
-    [self apollo_captureChatStatus];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat";
+    ApolloLog(@"[DirectChatWeb] Revealed hydrated mobile %@ UI", surface);
+    if (self.mailboxKind == ApolloModernMailboxKindChat) {
         [self apollo_captureChatStatus];
-    });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self apollo_captureChatStatus];
+        });
+    }
 }
 
 - (void)apollo_captureChatStatus {
-    if (!self.webView.URL || ![self.webView.URL.path hasPrefix:@"/chat"]) return;
+    if (self.mailboxKind != ApolloModernMailboxKindChat || !self.webView.URL ||
+        ![self.webView.URL.path hasPrefix:@"/chat"]) return;
     NSString *script =
         @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
          "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
@@ -452,7 +493,8 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     ApolloWebSessionEntry *session = ApolloActiveWebSession();
     self.username = ApolloActiveWebSessionUsername() ?: @"";
     if (session.cookieHeader.length == 0) {
-        [self apollo_showLoadError:@"Sign in to Reddit again, then reopen Direct Chat."];
+        NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Direct Chat";
+        [self apollo_showLoadError:[NSString stringWithFormat:@"Sign in to Reddit again, then reopen %@.", surface]];
         ApolloLog(@"[DirectChatWeb] Cannot load: active account has no web session");
         return;
     }
@@ -477,14 +519,22 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
         [store setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
     }];
     dispatch_group_notify(group, dispatch_get_main_queue(), ^{
-        ApolloLog(@"[DirectChatWeb] Seeded %lu cookies for u/%@; loading mobile Chat Requests",
-                  (unsigned long)pairs.count, self.username);
+        BOOL modmail = self.mailboxKind == ApolloModernMailboxKindModmail;
+        self.modmailWarmupPending = modmail;
+        ApolloLog(@"[DirectChatWeb] Seeded %lu cookies for u/%@; loading mobile %@",
+                  (unsigned long)pairs.count, self.username, modmail ? @"Modmail warm-up" : @"Chat Requests");
         // `/chat` restores Reddit's last Threads room. `/chat/requests` is the
         // stable modern direct-message request route discovered through the
         // hydrated desktop client, and it accepts the same authenticated Reddit
         // cookies directly. Start mobile/device-width here so none of the old
         // desktop feed/drawer handoff is needed during ordinary use.
-        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://www.reddit.com/chat/requests"]];
+        // Reddit moved the official Modmail surface into www.reddit.com/mail;
+        // unlike Apollo's OAuth-only /api/mod endpoints this page accepts the
+        // same signed-in web cookie as the rest of API-Key-Free Mode. A fresh
+        // web process needs one authenticated same-origin document first, so
+        // Modmail deliberately starts on the hidden Chat Requests warm-up.
+        NSString *urlString = @"https://www.reddit.com/chat/requests";
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
         request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         [self.webView loadRequest:request];
     });
@@ -497,19 +547,32 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     // own Threads/back control before revealing the page. This preserves the
     // authenticated SPA state while taking the user straight to their existing
     // conversations instead of leaving them on a dead-end empty screen.
-    NSString *script =
-        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
-         "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
-         "const text=e=>(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
-         "const controls=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button],input,textarea,[contenteditable=true],h1,h2,h3,p')]);"
-         "const empty=location.pathname.startsWith('/chat/requests')&&controls.some(e=>visible(e)&&text(e)==='no requests yet');"
-         "if(empty&&!window.__apolloEmptyRequestsHandled){window.__apolloEmptyRequestsHandled=true;const clickables=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button]')]).filter(visible);"
-         "let back=clickables.find(e=>{const r=e.getBoundingClientRect();if(r.left>130||r.top>180)return false;const marker=[text(e),e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase();return /(^|\\s)(back|threads?)(\\s|$)/.test(marker)||!!e.querySelector('[icon-name*=back i],[name*=back i],[aria-label*=back i]');});"
-         "if(!back)back=clickables.filter(e=>{const r=e.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;return cx<90&&cy>55&&cy<180&&r.width<180&&r.height<100;}).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top)[0];"
-         "if(back){back.click();return 'redirected';}location.replace('/chat');return 'redirected';}"
-         "const ready=controls.some(e=>{if(!visible(e))return false;const t=text(e),a=(e.getAttribute('aria-label')||'').trim().toLowerCase();"
-         "if(t==='view request'||t==='go to messages'||t==='start new chat'||t==='accept'||t==='additional requests'||t==='threads'||t==='chats')return true;"
-         "const room=location.pathname.startsWith('/chat/room/');return room&&(e.matches('input,textarea,[contenteditable=true]')||a==='send message'||a==='message');});return ready?'ready':'waiting';})()";
+    NSString *script;
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        // Current (2026) Reddit Modmail lives at /mail/all. Its first navigation
+        // finishes before the mailbox custom element paints, so keep the Apollo
+        // loading cover up until a real folder/control or conversation is visible.
+        script =
+            @"(()=>{const body=(document.body?.innerText||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+             "const signedOut=(body.includes('log in')||body.includes('sign in'))&&!body.includes('mark all as read')&&!body.includes('recently updated');"
+             "if(signedOut)return 'signedOut';"
+             "const ready=location.pathname.startsWith('/mail')&&(body.includes('mark all as read')||body.includes('recently updated')||body.includes('all mail')||body.includes('in progress')||!!document.querySelector('modmail-mailbox-wrapper'));"
+             "return ready?'ready':'waiting';})()";
+    } else {
+        script =
+            @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+             "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
+             "const text=e=>(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+             "const controls=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button],input,textarea,[contenteditable=true],h1,h2,h3,p')]);"
+             "const empty=location.pathname.startsWith('/chat/requests')&&controls.some(e=>visible(e)&&text(e)==='no requests yet');"
+             "if(empty&&!window.__apolloEmptyRequestsHandled){window.__apolloEmptyRequestsHandled=true;const clickables=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button]')]).filter(visible);"
+             "let back=clickables.find(e=>{const r=e.getBoundingClientRect();if(r.left>130||r.top>180)return false;const marker=[text(e),e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase();return /(^|\\s)(back|threads?)(\\s|$)/.test(marker)||!!e.querySelector('[icon-name*=back i],[name*=back i],[aria-label*=back i]');});"
+             "if(!back)back=clickables.filter(e=>{const r=e.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;return cx<90&&cy>55&&cy<180&&r.width<180&&r.height<100;}).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top)[0];"
+             "if(back){back.click();return 'redirected';}location.replace('/chat');return 'redirected';}"
+             "const ready=controls.some(e=>{if(!visible(e))return false;const t=text(e),a=(e.getAttribute('aria-label')||'').trim().toLowerCase();"
+             "if(t==='view request'||t==='go to messages'||t==='start new chat'||t==='accept'||t==='additional requests'||t==='threads'||t==='chats')return true;"
+             "const room=location.pathname.startsWith('/chat/room/');return room&&(e.matches('input,textarea,[contenteditable=true]')||a==='send message'||a==='message');});return ready?'ready':'waiting';})()";
+    }
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
@@ -521,9 +584,22 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
         if (!error && [result isEqual:@"redirected"] && attempt == 0) {
             ApolloLog(@"[DirectChatWeb] No pending requests; returning to the Threads list");
         }
+        if (!error && [result isEqual:@"signedOut"]) {
+            [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
+            [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
+            return;
+        }
         if (attempt >= 59) {
-            ApolloLog(@"[DirectChatWeb] Chat readiness probe timed out; revealing current route");
-            [self apollo_revealChat];
+            NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat";
+            ApolloLog(@"[DirectChatWeb] %@ readiness probe timed out", surface);
+            if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+                [self apollo_showLoadError:@"Moderator Mail took too long to finish loading. Tap refresh to try again."];
+            } else {
+                // Chat's markup changes frequently; if its expected route did
+                // finish, preserve the prior behavior and reveal it rather
+                // than treating an unknown new ready marker as a hard failure.
+                [self apollo_revealChat];
+            }
             return;
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -560,8 +636,14 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 }
 
 - (void)apollo_reloadChat {
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        [self.webView stopLoading];
+        [self apollo_seedAndLoad];
+        return;
+    }
     if (self.webView.URL) {
-        [self apollo_showLoadingWithDetail:@"Refreshing your chat…"];
+        [self apollo_showLoadingWithDetail:self.mailboxKind == ApolloModernMailboxKindModmail
+            ? @"Refreshing Moderator Mail…" : @"Refreshing your chat…"];
         [self.webView reloadFromOrigin];
     } else {
         [self apollo_seedAndLoad];
@@ -574,15 +656,30 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     ApolloLog(@"[DirectChatWeb] Loaded %@%@ for u/%@", webView.URL.host ?: @"unknown host", webView.URL.path ?: @"", self.username);
-    BOOL isFullChatRoute = [webView.URL.path isEqualToString:@"/chat"] || [webView.URL.path hasPrefix:@"/chat/"];
-    if (isFullChatRoute) {
+    if (self.mailboxKind == ApolloModernMailboxKindModmail &&
+        self.modmailWarmupPending && [webView.URL.path hasPrefix:@"/chat"]) {
+        self.modmailWarmupPending = NO;
+        ApolloLog(@"[DirectChatWeb] Modmail same-origin warm-up complete; loading /mail/all");
+        NSMutableURLRequest *request = [NSMutableURLRequest
+            requestWithURL:[NSURL URLWithString:@"https://www.reddit.com/mail/all"]];
+        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        [webView loadRequest:request];
+        return;
+    }
+    BOOL expectedRoute = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? [webView.URL.path hasPrefix:@"/mail"]
+        : ([webView.URL.path isEqualToString:@"/chat"] || [webView.URL.path hasPrefix:@"/chat/"]);
+    if (expectedRoute) {
         // Apply the active Apollo palette before the loading cover is removed;
         // users never see Reddit's stock colors flash during hydration.
         [self apollo_applyActiveTheme];
         [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
         return;
     }
-    [self apollo_showLoadError:@"Your Reddit Chat session expired. Sign in again, then retry."];
+    [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
+    }
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
@@ -595,6 +692,11 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
     if (error.code != NSURLErrorCancelled)
         [self apollo_showLoadError:@"Check your connection, then tap refresh."];
     ApolloLog(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
+}
+
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    ApolloLog(@"[DirectChatWeb] Reddit web process terminated for u/%@", self.username);
+    [self apollo_showLoadError:@"Reddit stopped responding. Tap refresh to reconnect."];
 }
 
 @end
@@ -628,6 +730,13 @@ UIViewController *ApolloCreateModernChatViewController(void) {
     // Apollo's translucent tab bar otherwise covers Reddit's composer and send
     // button. This must be set before the navigation push so UIKit reserves the
     // full chat screen and keyboard-safe bottom inset correctly.
+    controller.hidesBottomBarWhenPushed = YES;
+    return controller;
+}
+
+UIViewController *ApolloCreateModernModmailViewController(void) {
+    ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
+    controller.mailboxKind = ApolloModernMailboxKindModmail;
     controller.hidesBottomBarWhenPushed = YES;
     return controller;
 }

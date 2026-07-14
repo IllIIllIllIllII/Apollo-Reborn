@@ -28,6 +28,11 @@ NS_ASSUME_NONNULL_BEGIN
 // adding.
 + (instancetype)loginControllerForAdditionalAccount;
 
+// Expiry recovery variant. It still clears Reddit's shared web cookies before
+// loading, but remembers which stored account requested re-authentication so a
+// Cancel can re-arm that account's expiry prompt for the next retry.
++ (instancetype)loginControllerForReauthenticationOfUsername:(nullable NSString *)username;
+
 // Presents (from the topmost view controller) a one-shot "session expired"
 // alert for `username` offering to re-harvest its cookie, then launches the
 // login flow (clearing the dead session first, same as
@@ -63,7 +68,8 @@ extern "C" {
 //   • "Sign In With API Key"          → invokes apiKeyHandler
 //   • "Sign In Without API Key (Experimental)" → presents ApolloWebSessionLoginViewController
 //   • "Cancel"
-// Only call this when sWebJSONEnabled is YES (the caller is responsible for that gate).
+// Choosing API-Key-Free Mode enables its master switch immediately when needed;
+// callers should present this chooser regardless of the current switch state.
 void ApolloWebSessionPresentSignInChooser(UIViewController *host, void (^apiKeyHandler)(void));
 
 #ifdef __cplusplus

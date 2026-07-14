@@ -27,11 +27,43 @@
 
 #define ChatsFilterLog(fmt, ...) ApolloLog(@"[ChatsFilter] " fmt, ##__VA_ARGS__)
 
-static NSInteger sMessagesSection = -1;     // detected section index of the "Messages" row
-static NSInteger sMessagesRow = -1;         // detected row index of "Messages" within that section
-// "Direct Chat" Boxes row. The earlier "3 Direct Chat / Messages gone" turned out to be the tweak
-// double-loading (a stale baked LC_LOAD_DYLIB + the injected copy), so EVERY hook ran twice and
-// numberOfRows added +1 twice (1 real row -> 3). With a single load this inserts one row correctly.
+// Row discovery must be scoped to each InboxListViewController. Apollo can keep
+// more than one Boxes controller alive while accounts/tabs change; global row
+// coordinates make one controller rewrite another controller's section.
+@interface ApolloBoxesRowState : NSObject
+@property (nonatomic, assign) NSInteger messagesSection;
+@property (nonatomic, assign) NSInteger messagesRow;
+@property (nonatomic, assign) NSInteger moderatorMailSection;
+@property (nonatomic, assign) NSInteger moderatorMailRow;
+@property (nonatomic, assign) NSInteger nativeDirectChatSection;
+@property (nonatomic, assign) NSInteger nativeDirectChatRow;
+@end
+
+@implementation ApolloBoxesRowState
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _messagesSection = _messagesRow = -1;
+        _moderatorMailSection = _moderatorMailRow = -1;
+        _nativeDirectChatSection = _nativeDirectChatRow = -1;
+    }
+    return self;
+}
+@end
+
+static char kApolloBoxesRowStateKey;
+static ApolloBoxesRowState *ApolloBoxesState(id controller, BOOL create) {
+    ApolloBoxesRowState *state = objc_getAssociatedObject(controller, &kApolloBoxesRowStateKey);
+    if (!state && create) {
+        state = [ApolloBoxesRowState new];
+        objc_setAssociatedObject(controller, &kApolloBoxesRowStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return state;
+}
+
+// Current Apollo builds already expose a native Direct Chat row for some
+// accounts. Reuse it instead of adding a duplicate; insertion remains as a
+// compatibility fallback for builds/account states where Apollo omits it.
 static const BOOL sDirectChatRowEnabled = YES;
 static BOOL sNextInboxIsChatFilter = NO;    // armed when the Direct Chat row is tapped
 static char kChatFilterKey;                 // on InboxViewController: this list is chat-filtered
@@ -76,6 +108,32 @@ static void ApolloRestyleAsDirectChat(UITableViewCell *cell) {
         UIImage *glyph = [UIImage systemImageNamed:@"bubble.left.and.bubble.right"];
         if (icon && glyph) icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
+}
+
+static void ApolloRememberSpecialBoxesCell(ApolloBoxesRowState *state,
+                                            UITableViewCell *cell,
+                                            NSIndexPath *indexPath) {
+    if (!cell || !indexPath) return;
+    NSString *text = ApolloCellText(cell);
+    if ([text isEqualToString:@"Moderator Mail"] || [text isEqualToString:@"Mod Mail"]) {
+        state.moderatorMailSection = indexPath.section;
+        state.moderatorMailRow = indexPath.row;
+        ChatsFilterLog(@"Moderator Mail at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
+    } else if ([text isEqualToString:@"Direct Chat"]) {
+        state.nativeDirectChatSection = indexPath.section;
+        state.nativeDirectChatRow = indexPath.row;
+        ChatsFilterLog(@"native Direct Chat at s=%ld r=%ld", (long)indexPath.section, (long)indexPath.row);
+    }
+}
+
+static BOOL ApolloBoxesHasNativeDirectChat(ApolloBoxesRowState *state) {
+    return state.nativeDirectChatSection >= 0 &&
+           state.nativeDirectChatSection == state.messagesSection &&
+           state.nativeDirectChatRow >= 0;
+}
+
+static BOOL ApolloBoxesUsesInsertedDirectChat(ApolloBoxesRowState *state) {
+    return state.messagesSection >= 0 && !ApolloBoxesHasNativeDirectChat(state);
 }
 
 // Apollo builds the Boxes sections synchronously from currentUser.isMod / the
@@ -298,11 +356,16 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
 - (void)viewDidLoad {
     %orig;
     sLatestBoxesController = self;
+    ApolloBoxesState(self, YES);
 }
 
 - (void)redditAccountChangedWithNotification:(id)notification {
     %orig;
     sLatestBoxesController = self;
+    // Section membership changes with moderator status. Force a fresh probe so
+    // stale coordinates from the previous account cannot route the wrong row.
+    objc_setAssociatedObject(self, &kApolloBoxesRowStateKey,
+                             [ApolloBoxesRowState new], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (sLatestBoxesController == self) ApolloRefreshBoxesForModeratorState(@"account switch +0.75s");
     });
@@ -314,7 +377,9 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
 - (long long)tableView:(UITableView *)tableView numberOfRowsInSection:(long long)section {
     if (ApolloDirectChatRowActive()) ApolloWarnIfUnhandledRowDelegates(self);   // one-shot future-proofing canary
     long long n = %orig;
-    if (ApolloDirectChatRowActive() && sMessagesSection >= 0 && section == sMessagesSection) {
+    ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
+    if (ApolloDirectChatRowActive() && ApolloBoxesUsesInsertedDirectChat(state) &&
+        section == state.messagesSection) {
         n += 1;   // + our Direct Chat row
     }
     return n;
@@ -323,52 +388,76 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
 // Map a displayed row (with our inserted Direct Chat row) back to Apollo's real row in the
 // Messages section. The Direct Chat row sits AT sMessagesRow (just above Messages); rows below it
 // shift down by one. Returns -1 for the Direct Chat slot itself.
-static NSInteger ApolloRealMessagesRow(NSInteger displayedRow) {
-    if (displayedRow < sMessagesRow) return displayedRow;     // rows above Messages: unchanged
-    if (displayedRow == sMessagesRow) return -1;              // our inserted Direct Chat row
+static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger displayedRow) {
+    if (!ApolloBoxesUsesInsertedDirectChat(state)) return displayedRow;
+    if (displayedRow < state.messagesRow) return displayedRow;     // rows above Messages: unchanged
+    if (displayedRow == state.messagesRow) return -1;              // our inserted Direct Chat row
     return displayedRow - 1;                                  // rows at/after Messages: shifted down
 }
 
 - (id)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (!ApolloDirectChatRowActive()) return %orig;   // Direct Chat row disabled / keyless — leave Boxes untouched
+    ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
     // Detection pass: until we know which section/row holds "Messages", just observe.
-    if (sMessagesSection < 0) {
+    if (state.messagesSection < 0) {
         UITableViewCell *cell = %orig;
         NSString *text = ApolloCellText(cell);
+        ApolloRememberSpecialBoxesCell(state, cell, indexPath);
         ChatsFilterLog(@"probe s=%ld r=%ld text=%@ cls=%@", (long)indexPath.section, (long)indexPath.row, text, NSStringFromClass([cell class]));
         if ([text isEqualToString:@"Messages"]) {
-            sMessagesSection = indexPath.section;
-            sMessagesRow = indexPath.row;
-            ChatsFilterLog(@"Messages at s=%ld r=%ld; inserting Direct Chat row + reloading", (long)sMessagesSection, (long)sMessagesRow);
+            state.messagesSection = indexPath.section;
+            state.messagesRow = indexPath.row;
+            BOOL native = ApolloBoxesHasNativeDirectChat(state);
+            ChatsFilterLog(@"Messages at s=%ld r=%ld; %@ Direct Chat row + reloading",
+                           (long)state.messagesSection, (long)state.messagesRow,
+                           native ? @"reusing native" : @"inserting");
             UITableView *tv = tableView;
             dispatch_async(dispatch_get_main_queue(), ^{ [tv reloadData]; });
         }
         return cell;
     }
 
-    if (indexPath.section == sMessagesSection) {
-        NSInteger realRow = ApolloRealMessagesRow(indexPath.row);
+    if (indexPath.section == state.messagesSection) {
+        // When Apollo already provides this row, leave the data-source mapping
+        // untouched. didSelect below decides whether it opens Apollo's legacy
+        // chat or the new authenticated Reddit Chat.
+        if (ApolloBoxesHasNativeDirectChat(state)) return %orig;
+        NSInteger realRow = ApolloRealMessagesRow(state, indexPath.row);
         if (realRow < 0) {
             // our inserted Direct Chat row: borrow the Messages cell and restyle it
-            NSIndexPath *real = [NSIndexPath indexPathForRow:sMessagesRow inSection:sMessagesSection];
+            NSIndexPath *real = [NSIndexPath indexPathForRow:state.messagesRow inSection:state.messagesSection];
             UITableViewCell *cell = %orig(tableView, real);
-            ChatsFilterLog(@"cellFor displayed=%ld -> DirectChat (borrow r%ld, was '%@')", (long)indexPath.row, (long)sMessagesRow, ApolloCellText(cell));
+            ChatsFilterLog(@"cellFor displayed=%ld -> DirectChat (borrow r%ld, was '%@')", (long)indexPath.row, (long)state.messagesRow, ApolloCellText(cell));
             ApolloRestyleAsDirectChat(cell);
             return cell;
         }
         // every other row maps to its real Apollo row (Messages, and anything after it)
-        NSIndexPath *real = [NSIndexPath indexPathForRow:realRow inSection:sMessagesSection];
+        NSIndexPath *real = [NSIndexPath indexPathForRow:realRow inSection:state.messagesSection];
         UITableViewCell *cell = %orig(tableView, real);
         ChatsFilterLog(@"cellFor displayed=%ld -> real r%ld text='%@'", (long)indexPath.row, (long)realRow, ApolloCellText(cell));
         return cell;
     }
-    return %orig;
+    UITableViewCell *cell = %orig;
+    ApolloRememberSpecialBoxesCell(state, cell, indexPath);
+    return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (ApolloDirectChatRowActive() && sMessagesSection >= 0 && indexPath.section == sMessagesSection) {
-        NSInteger realRow = ApolloRealMessagesRow(indexPath.row);
-        if (realRow < 0) {
+    ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
+    if (ApolloModernChatIsRequiredForActiveAccount() &&
+        indexPath.section == state.moderatorMailSection && indexPath.row == state.moderatorMailRow) {
+        ChatsFilterLog(@"Moderator Mail tapped by API-key-free account -> opening authenticated web Modmail");
+        UIViewController *controller = ApolloCreateModernModmailViewController();
+        [((UIViewController *)self).navigationController pushViewController:controller animated:YES];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [tableView deselectRowAtIndexPath:indexPath animated:NO];
+        });
+        return;
+    }
+    if (ApolloDirectChatRowActive() && state.messagesSection >= 0 && indexPath.section == state.messagesSection) {
+        BOOL nativeChatRow = ApolloBoxesHasNativeDirectChat(state) && indexPath.row == state.nativeDirectChatRow;
+        NSInteger realRow = ApolloRealMessagesRow(state, indexPath.row);
+        if (nativeChatRow || realRow < 0) {
             if (ApolloModernChatShouldOpen()) {
                 ChatsFilterLog(@"Direct Chat tapped -> opening modern Reddit Chat");
                 UIViewController *controller = ApolloCreateModernChatViewController();
@@ -380,11 +469,16 @@ static NSInteger ApolloRealMessagesRow(NSInteger displayedRow) {
                 });
                 return;
             }
+            if (nativeChatRow) {
+                ChatsFilterLog(@"Direct Chat tapped -> preserving Apollo legacy Chat");
+                %orig;
+                return;
+            }
             ChatsFilterLog(@"Direct Chat tapped -> opening filtered messages list");
             sNextInboxIsChatFilter = YES;   // one-shot: the next InboxViewController filters to chats
-            realRow = sMessagesRow;          // open the real Messages list (which we then filter)
+            realRow = state.messagesRow;          // open the real Messages list (which we then filter)
         }
-        %orig(tableView, [NSIndexPath indexPathForRow:realRow inSection:sMessagesSection]);
+        %orig(tableView, [NSIndexPath indexPathForRow:realRow inSection:state.messagesSection]);
         // We handed Apollo the REAL indexPath, so its own deselect-on-return clears the wrong row.
         // Defer to after the push settles and clear ALL selected rows (the index remap can leave
         // more than one marked) so the tapped row doesn't stay highlighted.
@@ -405,10 +499,12 @@ static NSInteger ApolloRealMessagesRow(NSInteger displayedRow) {
 // one. Map our displayed index path back to Apollo's real row; the Direct Chat row borrows the
 // Messages row's height. (Raised by @nickclyde in review.)
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (ApolloDirectChatRowActive() && sMessagesSection >= 0 && indexPath.section == sMessagesSection) {
-        NSInteger realRow = ApolloRealMessagesRow(indexPath.row);
-        if (realRow < 0) realRow = sMessagesRow;   // Direct Chat row -> same height as the Messages row
-        return %orig(tableView, [NSIndexPath indexPathForRow:realRow inSection:sMessagesSection]);
+    ApolloBoxesRowState *state = ApolloBoxesState(self, YES);
+    if (ApolloDirectChatRowActive() && ApolloBoxesUsesInsertedDirectChat(state) &&
+        indexPath.section == state.messagesSection) {
+        NSInteger realRow = ApolloRealMessagesRow(state, indexPath.row);
+        if (realRow < 0) realRow = state.messagesRow;   // Direct Chat row -> same height as the Messages row
+        return %orig(tableView, [NSIndexPath indexPathForRow:realRow inSection:state.messagesSection]);
     }
     return %orig;
 }
