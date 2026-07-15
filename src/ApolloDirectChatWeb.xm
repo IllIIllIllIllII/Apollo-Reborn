@@ -300,6 +300,10 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, strong) UILabel *loadingDetailLabel;
 @property (nonatomic, strong) UIImageView *loadingIconView;
 @property (nonatomic, copy) NSString *username;
+// A validated same-origin Reddit path supplied by a notification deep link.
+// Keeping only the path (never an arbitrary URL) preserves the isolated
+// cookie store's security boundary.
+@property (nonatomic, copy) NSString *initialDestinationPath;
 @property (nonatomic, assign) BOOL didRevealChat;
 @property (nonatomic, assign) NSUInteger readinessGeneration;
 @property (nonatomic, assign) BOOL modmailThreadTransitionPending;
@@ -323,9 +327,27 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
                                       lastSignature:(NSString *)lastSignature
                                       stableSamples:(NSUInteger)stableSamples;
 - (void)apollo_finishModmailThreadTransitionForGeneration:(NSUInteger)generation;
+- (void)apollo_revealChat;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 @end
+
+static NSString *ApolloValidatedModernMailboxPath(ApolloModernMailboxKind kind,
+                                                   NSString *candidate) {
+    if (![candidate isKindOfClass:[NSString class]] || candidate.length == 0) return nil;
+
+    NSString *decoded = [candidate stringByRemovingPercentEncoding] ?: candidate;
+    if (![decoded hasPrefix:@"/"] || [decoded hasPrefix:@"//"] ||
+        [decoded containsString:@"\\"] || [decoded containsString:@".."] ||
+        [decoded containsString:@"?"] || [decoded containsString:@"#"]) {
+        return nil;
+    }
+
+    BOOL valid = kind == ApolloModernMailboxKindModmail
+        ? ([decoded isEqualToString:@"/mail"] || [decoded hasPrefix:@"/mail/"])
+        : ([decoded isEqualToString:@"/chat"] || [decoded hasPrefix:@"/chat/"]);
+    return valid ? decoded : nil;
+}
 
 static const void *kApolloMailboxReturnControllerKey = &kApolloMailboxReturnControllerKey;
 static const void *kApolloMailboxReturnAnchorKey = &kApolloMailboxReturnAnchorKey;
@@ -629,7 +651,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url {
-    if (!self.didRevealChat || ![self apollo_isModmailConversationURL:url]) return;
+    if (![self apollo_isModmailConversationURL:url]) return;
     if (self.modmailThreadTransitionPending) return;
 
     self.modmailThreadTransitionGeneration += 1;
@@ -646,9 +668,17 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)apollo_finishModmailThreadTransitionForGeneration:(NSUInteger)generation {
     if (!self.modmailThreadTransitionPending ||
         generation != self.modmailThreadTransitionGeneration) return;
+    BOOL initialNotificationDestination = !self.didRevealChat;
     self.modmailThreadTransitionPending = NO;
     self.webView.userInteractionEnabled = YES;
-    [UIView performWithoutAnimation:^{ self.webView.alpha = 1.0; }];
+    if (initialNotificationDestination) {
+        // Exact-thread notification links arrive before the mailbox has ever
+        // been revealed. Reuse the normal reveal path so it removes the native
+        // loading cover as well as exposing the now-stable web document.
+        [self apollo_revealChat];
+    } else {
+        [UIView performWithoutAnimation:^{ self.webView.alpha = 1.0; }];
+    }
     ApolloLog(@"[DirectChatWeb] Revealed stable Modmail conversation");
 }
 
@@ -784,7 +814,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         // same signed-in web cookie as the rest of API-Key-Free Mode. A fresh
         // web process needs one authenticated same-origin document first, so
         // Modmail deliberately starts on the hidden Chat Requests warm-up.
-        NSString *urlString = @"https://www.reddit.com/chat/requests";
+        NSString *chatPath = !modmail && self.initialDestinationPath.length > 0
+            ? self.initialDestinationPath : @"/chat/requests";
+        NSString *urlString = [@"https://www.reddit.com" stringByAppendingString:chatPath];
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
         request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         [self.webView loadRequest:request];
@@ -1033,9 +1065,11 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     if (self.mailboxKind == ApolloModernMailboxKindModmail &&
         self.modmailWarmupPending && [webView.URL.path hasPrefix:@"/chat"]) {
         self.modmailWarmupPending = NO;
-        ApolloLog(@"[DirectChatWeb] Modmail same-origin warm-up complete; loading /mail/all");
+        NSString *modmailPath = self.initialDestinationPath.length > 0
+            ? self.initialDestinationPath : @"/mail/all";
+        ApolloLog(@"[DirectChatWeb] Modmail same-origin warm-up complete; loading requested mailbox route");
         NSMutableURLRequest *request = [NSMutableURLRequest
-            requestWithURL:[NSURL URLWithString:@"https://www.reddit.com/mail/all"]];
+            requestWithURL:[NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:modmailPath]]];
         request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         [webView loadRequest:request];
         return;
@@ -1126,7 +1160,13 @@ BOOL ApolloModernModmailShouldOpen(void) {
 }
 
 UIViewController *ApolloCreateModernChatViewController(void) {
+    return ApolloCreateModernChatViewControllerForPath(nil);
+}
+
+UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinationPath) {
     ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
+    controller.initialDestinationPath = ApolloValidatedModernMailboxPath(
+        ApolloModernMailboxKindChat, destinationPath);
     // Apollo's translucent tab bar otherwise covers Reddit's composer and send
     // button. This must be set before the navigation push so UIKit reserves the
     // full chat screen and keyboard-safe bottom inset correctly.
@@ -1135,8 +1175,14 @@ UIViewController *ApolloCreateModernChatViewController(void) {
 }
 
 UIViewController *ApolloCreateModernModmailViewController(void) {
+    return ApolloCreateModernModmailViewControllerForPath(nil);
+}
+
+UIViewController *ApolloCreateModernModmailViewControllerForPath(NSString *destinationPath) {
     ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
     controller.mailboxKind = ApolloModernMailboxKindModmail;
+    controller.initialDestinationPath = ApolloValidatedModernMailboxPath(
+        ApolloModernMailboxKindModmail, destinationPath);
     controller.hidesBottomBarWhenPushed = YES;
     return controller;
 }
