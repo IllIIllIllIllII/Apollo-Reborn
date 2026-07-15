@@ -732,6 +732,18 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
             [navigationController popViewControllerAnimated:NO];
         }
         if (ApolloRouteResolvedURLViaApolloScheme(url)) {
+            // Returning to the mailbox explicitly hides the tab bar on iOS 18+
+            // so its composer gets the full safe area. That controller-level
+            // state is sticky across later pushes; explicitly reverse it for
+            // every native destination rather than relying only on
+            // hidesBottomBarWhenPushed being NO after stack reinsertion.
+            UITabBarController *tabBarController = navigationController.tabBarController;
+            if (@available(iOS 18.0, *)) {
+                [tabBarController setTabBarHidden:NO animated:NO];
+            } else {
+                tabBarController.tabBar.hidden = NO;
+            }
+
             UIViewController *destination = navigationController.topViewController;
             if (destination && destination != self &&
                 ![navigationController.viewControllers containsObject:self]) {
