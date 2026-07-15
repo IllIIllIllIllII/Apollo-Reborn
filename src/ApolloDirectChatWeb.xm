@@ -710,23 +710,63 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     NSURL *apolloURL = ApolloURLByConvertingResolvedURLToApolloScheme(url);
     if (apolloURL) {
         // Chat/Modmail hide Apollo's tab bar so their bottom composers remain
-        // usable. Remove the web mailbox from the stack before handing a Reddit
+        // usable. Temporarily remove the web mailbox before handing a Reddit
         // destination to Apollo; otherwise the native subreddit/comments/profile
         // controller inherits that hidden tab bar and looks like a partial UI.
+        // Once Apollo has pushed the native destination, put this exact controller
+        // back immediately beneath it. The destination keeps its normal native
+        // chrome, while Back returns to the same Chat/Modmail document and scroll
+        // position instead of skipping all the way back to Inbox.
         UINavigationController *navigationController = self.navigationController;
         if (navigationController.topViewController == self) {
             [navigationController popViewControllerAnimated:NO];
         }
         if (ApolloRouteResolvedURLViaApolloScheme(url)) {
-            ApolloLog(@"[DirectChatWeb] Closed mailbox and routed Reddit link through Apollo: %@", url.absoluteString);
+            UIViewController *destination = navigationController.topViewController;
+            if (destination && destination != self &&
+                ![navigationController.viewControllers containsObject:self]) {
+                void (^restoreMailboxBelowDestination)(void) = ^{
+                    NSMutableArray<UIViewController *> *stack =
+                        [navigationController.viewControllers mutableCopy];
+                    NSUInteger destinationIndex = [stack indexOfObjectIdenticalTo:destination];
+                    if (destinationIndex == NSNotFound ||
+                        [stack containsObject:self]) return;
+
+                    // Do not let setViewControllers: reapply this intermediate
+                    // controller's hidden-tab-bar preference to the visible native
+                    // destination. It is restored immediately so returning to the
+                    // mailbox still reserves the full composer-safe screen.
+                    BOOL hidesBottomBar = self.hidesBottomBarWhenPushed;
+                    self.hidesBottomBarWhenPushed = NO;
+                    [stack insertObject:self atIndex:destinationIndex];
+                    [navigationController setViewControllers:stack animated:NO];
+                    self.hidesBottomBarWhenPushed = hidesBottomBar;
+                    ApolloLog(@"[DirectChatWeb] Preserved mailbox beneath native Reddit destination %@",
+                              NSStringFromClass(destination.class));
+                };
+
+                id<UIViewControllerTransitionCoordinator> coordinator = destination.transitionCoordinator;
+                if (coordinator && coordinator.isAnimated) {
+                    [coordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+                        restoreMailboxBelowDestination();
+                    }];
+                } else {
+                    restoreMailboxBelowDestination();
+                }
+            }
+            ApolloLog(@"[DirectChatWeb] Routed Reddit link through Apollo with mailbox return path: %@",
+                      url.absoluteString);
             return;
         }
 
         // The converter recognized Reddit but Apollo's native handler was not
-        // available. Use the now-visible native controller as browser presenter
-        // rather than trying to present from the mailbox we just removed.
-        UIViewController *presenter = navigationController.topViewController ?: self;
-        ApolloPresentWebURLFromViewController(presenter, url);
+        // available. Restore the mailbox before presenting Apollo's browser so
+        // dismissing the browser also returns to the original mailbox state.
+        if (navigationController &&
+            ![navigationController.viewControllers containsObject:self]) {
+            [navigationController pushViewController:self animated:NO];
+        }
+        ApolloPresentWebURLFromViewController(self, url);
         ApolloLog(@"[DirectChatWeb] Native Reddit routing unavailable; used Apollo browser: %@", url.absoluteString);
         return;
     }
