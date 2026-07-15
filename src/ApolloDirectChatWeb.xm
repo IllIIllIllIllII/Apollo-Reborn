@@ -297,8 +297,15 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, strong) UIColor *originalNavigationTintColor;
 @property (nonatomic, assign) BOOL didCaptureOriginalNavigationTintColor;
 @property (nonatomic, assign) ApolloModernMailboxKind mailboxKind;
+// While a native Reddit destination sits above this controller, temporarily
+// report that the mailbox does not hide Apollo's tab bar. UIKit re-evaluates
+// every controller in a tab's navigation stack when that tab is selected; if
+// this remained YES, merely switching away and back would hide the tab bar on
+// the still-visible native subreddit/comments/profile controller.
+@property (nonatomic, assign) BOOL nativeReturnPathActive;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
+- (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 @end
 
 @implementation ApolloDirectChatWebViewController
@@ -409,6 +416,9 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    if (self.nativeReturnPathActive) {
+        [self apollo_prepareForMailboxReturnAnimated:animated];
+    }
     [super viewWillAppear:animated];
     [self apollo_applyActiveTheme];
 }
@@ -732,15 +742,15 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
                     if (destinationIndex == NSNotFound ||
                         [stack containsObject:self]) return;
 
-                    // Do not let setViewControllers: reapply this intermediate
-                    // controller's hidden-tab-bar preference to the visible native
-                    // destination. It is restored immediately so returning to the
-                    // mailbox still reserves the full composer-safe screen.
-                    BOOL hidesBottomBar = self.hidesBottomBarWhenPushed;
+                    // Keep the intermediate mailbox from hiding the native
+                    // destination's tab bar, including when the user switches to
+                    // another tab and selects Inbox again. viewWillAppear: and the
+                    // Inbox-tab delegate hook restore this preference immediately
+                    // before the mailbox becomes visible again.
+                    self.nativeReturnPathActive = YES;
                     self.hidesBottomBarWhenPushed = NO;
                     [stack insertObject:self atIndex:destinationIndex];
                     [navigationController setViewControllers:stack animated:NO];
-                    self.hidesBottomBarWhenPushed = hidesBottomBar;
                     ApolloLog(@"[DirectChatWeb] Preserved mailbox beneath native Reddit destination %@",
                               NSStringFromClass(destination.class));
                 };
@@ -762,6 +772,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
         // The converter recognized Reddit but Apollo's native handler was not
         // available. Restore the mailbox before presenting Apollo's browser so
         // dismissing the browser also returns to the original mailbox state.
+        [self apollo_prepareForMailboxReturnAnimated:NO];
         if (navigationController &&
             ![navigationController.viewControllers containsObject:self]) {
             [navigationController pushViewController:self animated:NO];
@@ -778,6 +789,22 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
         [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
     }
     ApolloLog(@"[DirectChatWeb] Routed link outside isolated mailbox: %@", url.absoluteString);
+}
+
+- (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated {
+    self.nativeReturnPathActive = NO;
+    self.hidesBottomBarWhenPushed = YES;
+
+    // On iOS 18+ this is the public transition-safe way to restore the full
+    // composer area. The property above remains the source of truth for older
+    // versions and for subsequent navigation-controller transitions.
+    UITabBarController *tabBarController = self.tabBarController ?: self.navigationController.tabBarController;
+    if (@available(iOS 18.0, *)) {
+        [tabBarController setTabBarHidden:YES animated:animated];
+    } else {
+        tabBarController.tabBar.hidden = YES;
+    }
+    ApolloLog(@"[DirectChatWeb] Restored composer-safe mailbox chrome");
 }
 
 - (WKWebView *)webView:(WKWebView *)webView
@@ -939,6 +966,36 @@ UIViewController *ApolloCreateModernModmailViewController(void) {
     return controller;
 }
 
+// Apollo's Inbox tab normally restores whatever controller is already at the
+// top of its navigation stack. For a native destination opened from a modern
+// mailbox, selecting Inbox is more useful as a direct return to that mailbox.
+// Pop the temporary native destination before UIKit selects the tab, and bypass
+// Apollo's normal repeated-tab behavior so it cannot continue on to Boxes.
+%hook _TtC6Apollo13SceneDelegate
+
+- (BOOL)tabBarController:(UITabBarController *)tabBarController
+ shouldSelectViewController:(UIViewController *)viewController {
+    if ([viewController isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navigationController = (UINavigationController *)viewController;
+        NSArray<UIViewController *> *stack = navigationController.viewControllers;
+        for (UIViewController *candidate in [stack reverseObjectEnumerator]) {
+            if (![candidate isKindOfClass:[ApolloDirectChatWebViewController class]]) continue;
+            ApolloDirectChatWebViewController *mailbox = (ApolloDirectChatWebViewController *)candidate;
+            if (!mailbox.nativeReturnPathActive) continue;
+
+            [mailbox apollo_prepareForMailboxReturnAnimated:NO];
+            [navigationController popToViewController:mailbox animated:NO];
+            ApolloLog(@"[DirectChatWeb] Inbox tab returned directly to preserved %@",
+                      mailbox.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
+            return YES;
+        }
+    }
+    return %orig(tabBarController, viewController);
+}
+
+%end
+
 %ctor {
+    %init;
     ApolloLog(@"[DirectChatWeb] module loaded");
 }
