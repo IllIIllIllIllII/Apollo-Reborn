@@ -208,6 +208,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "window.__apolloChatPalette=palette;window.__apolloChatShadowRoots=window.__apolloChatShadowRoots||[];"
         "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);for(const r of window.__apolloChatShadowRoots)visit(r);return out;};"
         "const mailRoute=()=>location.pathname.startsWith('/mail/');"
+        "const chatListRoute=()=>/^\\/chat\\/?$/.test(location.pathname);"
         // Reddit renders both mailbox surfaces smaller than Apollo's native
         // typography. Enlarge text through WebKit autosizing instead of page
         // zoom so rows still reflow at the real device width. Modmail stays more
@@ -250,6 +251,12 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // this to the large user-avatar wrapper and Reddit's default-avatar
         // path so custom avatars and every message/header avatar stay native.
         "const fixDefaultProfileAvatars=()=>{if(mailRoute())return 0;let fixed=0;for(const r of roots())for(const img of r.querySelectorAll('img')){let u;try{u=new URL(img.currentSrc||img.src,location.href);}catch(e){continue;}const redditStatic=u.hostname==='redditstatic.com'||u.hostname.endsWith('.redditstatic.com');if(!redditStatic||!u.pathname.startsWith('/avatars/defaults/'))continue;const avatar=img.closest('.user-avatar');if(!avatar)continue;const inner=img.parentElement,shell=inner?.parentElement;if(!inner||!shell||!avatar.contains(shell))continue;shell.style.setProperty('width','auto','important');shell.style.setProperty('aspect-ratio','1 / 1','important');shell.style.setProperty('flex','0 0 auto','important');inner.style.setProperty('width','100%','important');inner.style.setProperty('height','100%','important');img.style.setProperty('display','block','important');img.style.setProperty('width','100%','important');img.style.setProperty('height','100%','important');img.style.setProperty('aspect-ratio','1 / 1','important');img.style.setProperty('object-fit','cover','important');fixed++;}return fixed;};"
+        // Reddit's Threads list hard-codes its semantic row text to 12px. At
+        // iPhone width that still resolves to only 13.7 points after our page
+        // text adjustment, noticeably smaller than Apollo and Reddit's own
+        // conversation view. Enlarge only the stable list-row classes; room
+        // messages keep their already-correct native sizing.
+        "const fixChatListTypography=()=>{if(!chatListRoute())return 0;let fixed=0;for(const r of roots()){for(const e of r.querySelectorAll('.room-name')){e.style.setProperty('font-size','15px','important');e.style.setProperty('line-height','20px','important');fixed++;}for(const e of r.querySelectorAll('.last-message')){e.style.setProperty('font-size','14px','important');e.style.setProperty('line-height','20px','important');fixed++;}for(const e of r.querySelectorAll('.last-message-time')){e.style.setProperty('font-size','12px','important');e.style.setProperty('line-height','20px','important');fixed++;}}return fixed;};"
         "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase(),rect=a.getBoundingClientRect();if(area.includes('chats')||rect.top<180){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
         // Reddit currently leaves Preview genuinely disabled even after the
         // reply textarea contains text. Preserve its own preview renderer and
@@ -259,7 +266,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // dialog. Fit only that dialog into the actual visual viewport so its
         // close button and final help rows are both reachable on every iPhone.
         "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
-        "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),defaultProfileAvatars:fixDefaultProfileAvatars(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
+        "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
         "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});}"
         "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>window.__apolloChatEnhancementSweep?.(),700);"
@@ -295,6 +302,8 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic, assign) BOOL didRevealChat;
 @property (nonatomic, assign) NSUInteger readinessGeneration;
+@property (nonatomic, assign) BOOL modmailThreadTransitionPending;
+@property (nonatomic, assign) NSUInteger modmailThreadTransitionGeneration;
 // A fresh, isolated WKWebView can leave Reddit's Modmail bundle waiting
 // forever when /mail/all is its very first document. Prime the authenticated
 // reddit.com client through the known-good Chat route, then replace it with
@@ -307,6 +316,13 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // tab's navigation controller. This flag marks the temporary return path.
 @property (nonatomic, assign) BOOL nativeReturnPathActive;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
+- (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
+- (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url;
+- (void)apollo_waitForModmailThreadStabilityAttempt:(NSUInteger)attempt
+                                         generation:(NSUInteger)generation
+                                      lastSignature:(NSString *)lastSignature
+                                      stableSamples:(NSUInteger)stableSamples;
+- (void)apollo_finishModmailThreadTransitionForGeneration:(NSUInteger)generation;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 @end
@@ -558,6 +574,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)apollo_showLoadingWithDetail:(NSString *)detail {
     self.didRevealChat = NO;
     self.readinessGeneration += 1;
+    self.modmailThreadTransitionPending = NO;
+    self.modmailThreadTransitionGeneration += 1;
     self.loadingTitleLabel.text = self.mailboxKind == ApolloModernMailboxKindModmail
         ? @"Opening Moderator Mail" : @"Opening Reddit Chat";
     self.loadingDetailLabel.text = detail.length ? detail : @"Preparing your private session…";
@@ -584,6 +602,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)apollo_showLoadError:(NSString *)detail {
     self.readinessGeneration += 1;
+    self.modmailThreadTransitionPending = NO;
+    self.modmailThreadTransitionGeneration += 1;
     self.modmailWarmupPending = NO;
     self.loadingView.hidden = NO;
     self.loadingView.alpha = 1.0;
@@ -591,6 +611,97 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         ? @"Moderator Mail couldn’t be opened" : @"Chat couldn’t be opened";
     self.loadingDetailLabel.text = detail ?: @"Try refreshing or signing in again.";
     [self.spinner stopAnimating];
+}
+
+- (BOOL)apollo_isModmailConversationURL:(NSURL *)url {
+    if (self.mailboxKind != ApolloModernMailboxKindModmail || !url) return NO;
+    NSString *host = url.host.lowercaseString ?: @"";
+    BOOL redditHost = [host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"];
+    if (!redditHost) return NO;
+
+    // List routes are /mail/<folder>; a real conversation adds its opaque ID
+    // as the third non-empty path component (/mail/all/3jbwht).
+    NSUInteger componentCount = 0;
+    for (NSString *component in [url.path componentsSeparatedByString:@"/"]) {
+        if (component.length > 0) componentCount += 1;
+    }
+    return componentCount >= 3 && [url.path hasPrefix:@"/mail/"];
+}
+
+- (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url {
+    if (!self.didRevealChat || ![self apollo_isModmailConversationURL:url]) return;
+    if (self.modmailThreadTransitionPending) return;
+
+    self.modmailThreadTransitionGeneration += 1;
+    self.modmailThreadTransitionPending = YES;
+    self.webView.userInteractionEnabled = NO;
+    // Leave Apollo's navigation bar in place and cover only Reddit's document
+    // with the already-themed native background. The user sees one stable
+    // surface rather than Reddit's placeholder avatars, partial messages, and
+    // several automatic scroll corrections.
+    [UIView performWithoutAnimation:^{ self.webView.alpha = 0.0; }];
+    ApolloLog(@"[DirectChatWeb] Covering Modmail conversation while it hydrates: %@", url.path);
+}
+
+- (void)apollo_finishModmailThreadTransitionForGeneration:(NSUInteger)generation {
+    if (!self.modmailThreadTransitionPending ||
+        generation != self.modmailThreadTransitionGeneration) return;
+    self.modmailThreadTransitionPending = NO;
+    self.webView.userInteractionEnabled = YES;
+    [UIView performWithoutAnimation:^{ self.webView.alpha = 1.0; }];
+    ApolloLog(@"[DirectChatWeb] Revealed stable Modmail conversation");
+}
+
+- (void)apollo_waitForModmailThreadStabilityAttempt:(NSUInteger)attempt
+                                         generation:(NSUInteger)generation
+                                      lastSignature:(NSString *)lastSignature
+                                      stableSamples:(NSUInteger)stableSamples {
+    if (!self.modmailThreadTransitionPending ||
+        generation != self.modmailThreadTransitionGeneration) return;
+
+    // A Modmail navigation finishes before its web components, message data,
+    // lazy avatars, composer, and final scroll position finish settling. Probe
+    // the document's real structure and geometry. Six identical ready samples
+    // keep the cover up across the rapid hydration passes visible in recordings
+    // while avoiding a fixed delay on already-cached conversations.
+    NSString *script =
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "const all=roots.flatMap(r=>[...r.querySelectorAll('*')]);const rect=e=>{const b=e?.getBoundingClientRect?.();return b?[Math.round(b.x),Math.round(b.y),Math.round(b.width),Math.round(b.height)]:[];};"
+         "const thread=all.find(e=>e.tagName==='MODMAIL-THREAD-WRAPPER');const composer=all.find(e=>e.tagName==='SHREDDIT-COMPOSER');const textarea=all.find(e=>e.tagName==='TEXTAREA'&&e.getBoundingClientRect().height>0);"
+         "const images=all.filter(e=>e.tagName==='IMG'&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0);const imagesReady=images.every(e=>e.complete&&e.naturalWidth>0&&e.naturalHeight>0);"
+         "const fontsReady=!document.fonts||document.fonts.status==='loaded';const scrolling=document.scrollingElement;const text=(document.body?.innerText||'').replace(/\\s+/g,' ').trim();"
+         "const ready=document.readyState==='complete'&&!!thread&&!!composer&&!!textarea&&imagesReady&&fontsReady;"
+         "const signature=[all.length,text.length,scrolling?.scrollTop||0,scrolling?.scrollHeight||0,document.body?.scrollHeight||0,rect(thread).join(','),rect(composer).join(','),images.map(e=>[e.naturalWidth,e.naturalHeight,rect(e).join(',')].join(':')).join(';')].join('|');"
+         "return {ready,signature};})()";
+
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || !self.modmailThreadTransitionPending ||
+            generation != self.modmailThreadTransitionGeneration) return;
+
+        BOOL ready = !error && [result isKindOfClass:[NSDictionary class]] && [result[@"ready"] boolValue];
+        NSString *signature = ready && [result[@"signature"] isKindOfClass:[NSString class]]
+            ? result[@"signature"] : nil;
+        NSUInteger nextStableSamples = ready && signature.length > 0 &&
+            [signature isEqualToString:lastSignature] ? stableSamples + 1 : 0;
+        if (ready && nextStableSamples >= 6) {
+            [self apollo_finishModmailThreadTransitionForGeneration:generation];
+            return;
+        }
+        if (attempt >= 49) {
+            ApolloLog(@"[DirectChatWeb] Modmail conversation stability probe timed out; revealing final available layout");
+            [self apollo_finishModmailThreadTransitionForGeneration:generation];
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self apollo_waitForModmailThreadStabilityAttempt:attempt + 1
+                                                   generation:generation
+                                                lastSignature:signature
+                                                stableSamples:nextStableSamples];
+        });
+    }];
 }
 
 - (void)apollo_revealChat {
@@ -865,6 +976,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                     decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = navigationAction.request.URL;
+    if (url && [self apollo_isModmailConversationURL:url]) {
+        [self apollo_beginModmailThreadTransitionToURL:url];
+    }
     NSString *host = url.host.lowercaseString ?: @"";
     BOOL redditHost = [host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"];
     BOOL redditHomeLogo = redditHost && [url.path isEqualToString:@"/"] && url.query.length == 0 && url.fragment.length == 0;
@@ -902,6 +1016,15 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    // Reddit occasionally starts a Modmail thread through location.assign
+    // without delivering a useful targetFrame in the policy callback. At this
+    // point the destination URL has already been installed on WKWebView, but
+    // the new document has not committed, so this remains early enough to hide
+    // every placeholder/hydration frame. The pending guard makes this a no-op
+    // when decidePolicyForNavigationAction: already covered the transition.
+    if ([self apollo_isModmailConversationURL:webView.URL]) {
+        [self apollo_beginModmailThreadTransitionToURL:webView.URL];
+    }
     if (!self.didRevealChat) [self.spinner startAnimating];
 }
 
@@ -922,6 +1045,21 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         // Apply the active Apollo palette before the loading cover is removed;
         // users never see Reddit's stock colors flash during hydration.
         [self apollo_applyActiveTheme];
+        if (self.modmailThreadTransitionPending &&
+            [self apollo_isModmailConversationURL:webView.URL]) {
+            [self apollo_waitForModmailThreadStabilityAttempt:0
+                                                   generation:self.modmailThreadTransitionGeneration
+                                                lastSignature:nil
+                                                stableSamples:0];
+            return;
+        }
+        if (self.modmailThreadTransitionPending) {
+            // A back/redirect may replace the intended conversation with a
+            // mailbox list. Never strand that valid destination behind the
+            // transition cover.
+            [self apollo_finishModmailThreadTransitionForGeneration:
+                self.modmailThreadTransitionGeneration];
+        }
         [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
         return;
     }
