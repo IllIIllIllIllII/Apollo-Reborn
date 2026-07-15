@@ -208,12 +208,12 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "window.__apolloChatPalette=palette;window.__apolloChatShadowRoots=window.__apolloChatShadowRoots||[];"
         "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);for(const r of window.__apolloChatShadowRoots)visit(r);return out;};"
         "const mailRoute=()=>location.pathname.startsWith('/mail/');"
-        // Reddit's Modmail mobile layout is unusually small inside Apollo's
-        // safe-area-constrained WKWebView. Enlarge typography through WebKit's
-        // text autosizing instead of pageZoom/viewport scaling: it reflows at
-        // the real device width and cannot crop the right edge. Compact phones
-        // stay near 100%; wider iPhones receive a gradual boost capped at 112%.
-        "const mailTextScale=()=>mailRoute()?Math.min(112,Math.max(100,100+((document.documentElement?.clientWidth||innerWidth)-350)*0.15)):100;"
+        // Reddit renders both mailbox surfaces smaller than Apollo's native
+        // typography. Enlarge text through WebKit autosizing instead of page
+        // zoom so rows still reflow at the real device width. Modmail stays more
+        // conservative because its dense editor already has large controls;
+        // Chat starts at 108% on compact phones and gradually reaches 116%.
+        "const textScale=()=>{const w=document.documentElement?.clientWidth||innerWidth||375;if(mailRoute())return Math.min(112,Math.max(100,100+(w-350)*0.15));return Math.min(116,Math.max(108,108+(w-350)*0.12));};"
         // Reddit wraps the entire Modmail thread in p-md (roughly 17 points on
         // a current-size iPhone). Remove that artificial outer gutter so the
         // subject, messages, and composer use the whole screen. Preserve only
@@ -232,7 +232,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
             "--color-primary:${palette.accent}!important;--color-primary-hover:${palette.accent}!important;--color-primary-visited:${palette.accent}!important;--color-primary-background:${palette.accent}!important;--color-secondary:${palette.text}!important;--color-secondary-background:${palette.tertiary}!important;"
             "--color-tone-1:${palette.text}!important;--color-tone-2:${palette.secondaryText}!important;--color-tone-3:${palette.secondaryText}!important;--color-tone-4:${palette.separator}!important;--color-tone-5:${palette.tertiary}!important;--color-tone-6:${palette.secondary}!important;--color-tone-7:${palette.primary}!important;"
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
-        "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${mailTextScale()}%!important;text-size-adjust:${mailTextScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
+        "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${textScale()}%!important;text-size-adjust:${textScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
         "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}`;"
         "const themeRoot=r=>{if(!r)return;let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)return;target.appendChild(s);}const next=css();if(s.textContent!==next)s.textContent=next;};"
         "let sweepScheduled=false;const scheduleSweep=()=>{if(sweepScheduled)return;sweepScheduled=true;requestAnimationFrame(()=>{sweepScheduled=false;window.__apolloChatEnhancementSweep?.();});};window.__apolloChatScheduleSweep=scheduleSweep;"
@@ -297,16 +297,63 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, strong) UIColor *originalNavigationTintColor;
 @property (nonatomic, assign) BOOL didCaptureOriginalNavigationTintColor;
 @property (nonatomic, assign) ApolloModernMailboxKind mailboxKind;
-// While a native Reddit destination sits above this controller, temporarily
-// report that the mailbox does not hide Apollo's tab bar. UIKit re-evaluates
-// every controller in a tab's navigation stack when that tab is selected; if
-// this remained YES, merely switching away and back would hide the tab bar on
-// the still-visible native subreddit/comments/profile controller.
+// A native Reddit destination opened from this mailbox lives in a different
+// tab's navigation controller. This flag marks the temporary return path.
 @property (nonatomic, assign) BOOL nativeReturnPathActive;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 @end
+
+static const void *kApolloMailboxReturnControllerKey = &kApolloMailboxReturnControllerKey;
+static const void *kApolloMailboxReturnAnchorKey = &kApolloMailboxReturnAnchorKey;
+
+static ApolloDirectChatWebViewController *ApolloMailboxReturnController(UINavigationController *navigationController) {
+    return objc_getAssociatedObject(navigationController, kApolloMailboxReturnControllerKey);
+}
+
+static UIViewController *ApolloMailboxReturnAnchor(UINavigationController *navigationController) {
+    return objc_getAssociatedObject(navigationController, kApolloMailboxReturnAnchorKey);
+}
+
+static void ApolloClearMailboxReturn(UINavigationController *navigationController) {
+    ApolloDirectChatWebViewController *mailbox = ApolloMailboxReturnController(navigationController);
+    mailbox.nativeReturnPathActive = NO;
+    objc_setAssociatedObject(navigationController, kApolloMailboxReturnControllerKey,
+                             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(navigationController, kApolloMailboxReturnAnchorKey,
+                             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloStoreMailboxReturn(UINavigationController *navigationController,
+                                     ApolloDirectChatWebViewController *mailbox,
+                                     UIViewController *anchor) {
+    ApolloClearMailboxReturn(navigationController);
+    mailbox.nativeReturnPathActive = YES;
+    mailbox.hidesBottomBarWhenPushed = YES;
+    objc_setAssociatedObject(navigationController, kApolloMailboxReturnControllerKey,
+                             mailbox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(navigationController, kApolloMailboxReturnAnchorKey,
+                             anchor, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController *navigationController) {
+    ApolloDirectChatWebViewController *mailbox = ApolloMailboxReturnController(navigationController);
+    UINavigationController *mailboxNavigationController = mailbox.navigationController;
+    UITabBarController *tabBarController = navigationController.tabBarController ?: mailbox.tabBarController;
+    if (!mailbox || !mailboxNavigationController || !tabBarController ||
+        ![mailboxNavigationController.viewControllers containsObject:mailbox]) {
+        ApolloClearMailboxReturn(navigationController);
+        return NO;
+    }
+
+    ApolloClearMailboxReturn(navigationController);
+    [mailbox apollo_prepareForMailboxReturnAnimated:NO];
+    tabBarController.selectedViewController = mailboxNavigationController;
+    ApolloLog(@"[DirectChatWeb] Native Back returned to preserved %@ without mutating Inbox navigation",
+              mailbox.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
+    return YES;
+}
 
 @implementation ApolloDirectChatWebViewController
 
@@ -719,64 +766,52 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     if (!url) return;
     NSURL *apolloURL = ApolloURLByConvertingResolvedURLToApolloScheme(url);
     if (apolloURL) {
-        // Chat/Modmail hide Apollo's tab bar so their bottom composers remain
-        // usable. Temporarily remove the web mailbox before handing a Reddit
-        // destination to Apollo; otherwise the native subreddit/comments/profile
-        // controller inherits that hidden tab bar and looks like a partial UI.
-        // Once Apollo has pushed the native destination, put this exact controller
-        // back immediately beneath it. The destination keeps its normal native
-        // chrome, while Back returns to the same Chat/Modmail document and scroll
-        // position instead of skipping all the way back to Inbox.
-        UINavigationController *navigationController = self.navigationController;
-        if (navigationController.topViewController == self) {
-            [navigationController popViewControllerAnimated:NO];
+        // Keep the hidden-tab mailbox and every Inbox controller completely out
+        // of native Reddit navigation. Rebuilding or temporarily removing this
+        // controller from the Inbox stack poisons UINavigationController's
+        // safe-area cache on iOS 26; every later Inbox destination then starts
+        // beneath the navigation bar. Route through Apollo's Posts tab instead.
+        UINavigationController *mailboxNavigationController = self.navigationController;
+        UITabBarController *tabBarController = self.tabBarController;
+        UINavigationController *routingNavigationController = nil;
+        for (UIViewController *candidate in tabBarController.viewControllers) {
+            if (candidate == mailboxNavigationController ||
+                ![candidate isKindOfClass:[UINavigationController class]]) continue;
+            routingNavigationController = (UINavigationController *)candidate;
+            break;
         }
-        if (ApolloRouteResolvedURLViaApolloScheme(url)) {
-            UIViewController *destination = navigationController.topViewController;
-            if (destination && destination != self &&
-                ![navigationController.viewControllers containsObject:self]) {
-                void (^restoreMailboxBelowDestination)(void) = ^{
-                    NSMutableArray<UIViewController *> *stack =
-                        [navigationController.viewControllers mutableCopy];
-                    NSUInteger destinationIndex = [stack indexOfObjectIdenticalTo:destination];
-                    if (destinationIndex == NSNotFound ||
-                        [stack containsObject:self]) return;
 
-                    // Keep the intermediate mailbox from hiding the native
-                    // destination's tab bar, including when the user switches to
-                    // another tab and selects Inbox again. viewWillAppear: and the
-                    // Inbox-tab delegate hook restore this preference immediately
-                    // before the mailbox becomes visible again.
-                    self.nativeReturnPathActive = YES;
-                    self.hidesBottomBarWhenPushed = NO;
-                    [stack insertObject:self atIndex:destinationIndex];
-                    [navigationController setViewControllers:stack animated:NO];
-                    ApolloLog(@"[DirectChatWeb] Preserved mailbox beneath native Reddit destination %@",
-                              NSStringFromClass(destination.class));
-                };
+        if (routingNavigationController) {
+            ApolloClearMailboxReturn(routingNavigationController);
+            tabBarController.selectedViewController = routingNavigationController;
+        }
 
-                id<UIViewControllerTransitionCoordinator> coordinator = destination.transitionCoordinator;
-                if (coordinator && coordinator.isAnimated) {
-                    [coordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
-                        restoreMailboxBelowDestination();
-                    }];
-                } else {
-                    restoreMailboxBelowDestination();
-                }
+        UIViewController *routingAnchorBeforeOpen = routingNavigationController.topViewController;
+        if (routingNavigationController && ApolloRouteResolvedURLViaApolloScheme(url)) {
+            UINavigationController *destinationNavigationController =
+                [tabBarController.selectedViewController isKindOfClass:[UINavigationController class]]
+                    ? (UINavigationController *)tabBarController.selectedViewController
+                    : routingNavigationController;
+            UIViewController *destination = destinationNavigationController.topViewController;
+            if (destinationNavigationController &&
+                destinationNavigationController != mailboxNavigationController && destination &&
+                destination != routingAnchorBeforeOpen) {
+                ApolloStoreMailboxReturn(destinationNavigationController, self, destination);
+                ApolloLog(@"[DirectChatWeb] Preserved mailbox while native Reddit destination %@ uses another tab",
+                          NSStringFromClass(destination.class));
             }
-            ApolloLog(@"[DirectChatWeb] Routed Reddit link through Apollo with mailbox return path: %@",
+            ApolloLog(@"[DirectChatWeb] Routed Reddit link through Apollo without changing the Inbox stack: %@",
                       url.absoluteString);
             return;
         }
 
         // The converter recognized Reddit but Apollo's native handler was not
-        // available. Restore the mailbox before presenting Apollo's browser so
-        // dismissing the browser also returns to the original mailbox state.
-        [self apollo_prepareForMailboxReturnAnimated:NO];
-        if (navigationController &&
-            ![navigationController.viewControllers containsObject:self]) {
-            [navigationController pushViewController:self animated:NO];
+        // available. Return to the still-intact mailbox before presenting
+        // Apollo's browser.
+        if (mailboxNavigationController && tabBarController) {
+            tabBarController.selectedViewController = mailboxNavigationController;
         }
+        [self apollo_prepareForMailboxReturnAnimated:NO];
         ApolloPresentWebURLFromViewController(self, url);
         ApolloLog(@"[DirectChatWeb] Native Reddit routing unavailable; used Apollo browser: %@", url.absoluteString);
         return;
@@ -962,52 +997,43 @@ UIViewController *ApolloCreateModernModmailViewController(void) {
     return controller;
 }
 
-// A mailbox restored into the navigation stack after opening native Reddit
-// content is not guaranteed to receive viewWillAppear: when that destination
-// is popped (UIKit can preserve the already-loaded view during the stack
-// insertion). Restore its per-controller tab-bar preference before the pop so
-// both the navigation-bar Back button and the interactive pop path return to a
-// composer-safe mailbox without creating sticky UITabBarController state.
+// Reddit content opened from a mailbox lives on another tab's native navigation
+// stack. Back removes that temporary destination normally, then selects the
+// untouched Inbox stack where the exact Chat/Modmail controller is still alive.
 %hook UINavigationController
 
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
-    NSArray<UIViewController *> *stack = self.viewControllers;
-    if (stack.count >= 2) {
-        UIViewController *candidate = stack[stack.count - 2];
-        if ([candidate isKindOfClass:[ApolloDirectChatWebViewController class]]) {
-            ApolloDirectChatWebViewController *mailbox =
-                (ApolloDirectChatWebViewController *)candidate;
-            if (mailbox.nativeReturnPathActive) {
-                [mailbox apollo_prepareForMailboxReturnAnimated:animated];
-            }
-        }
+    UIViewController *anchor = ApolloMailboxReturnAnchor(self);
+    if (anchor && self.topViewController == anchor) {
+        // Complete the native pop before changing tabs so the Posts stack is
+        // also back where the user left it when they return later.
+        UIViewController *popped = %orig(NO);
+        ApolloReturnToMailboxFromNavigationController(self);
+        return popped;
     }
     return %orig(animated);
 }
 
 %end
 
-// Apollo's Inbox tab normally restores whatever controller is already at the
-// top of its navigation stack. For a native destination opened from a modern
-// mailbox, selecting Inbox is more useful as a direct return to that mailbox.
-// Pop the temporary native destination before UIKit selects the tab, and bypass
-// Apollo's normal repeated-tab behavior so it cannot continue on to Boxes.
+// Selecting Inbox already reveals the untouched mailbox. Clear the optional
+// native-Back return marker so a later Back action in Posts behaves normally.
 %hook _TtC6Apollo13SceneDelegate
 
 - (BOOL)tabBarController:(UITabBarController *)tabBarController
  shouldSelectViewController:(UIViewController *)viewController {
-    if ([viewController isKindOfClass:[UINavigationController class]]) {
-        UINavigationController *navigationController = (UINavigationController *)viewController;
-        NSArray<UIViewController *> *stack = navigationController.viewControllers;
-        for (UIViewController *candidate in [stack reverseObjectEnumerator]) {
-            if (![candidate isKindOfClass:[ApolloDirectChatWebViewController class]]) continue;
-            ApolloDirectChatWebViewController *mailbox = (ApolloDirectChatWebViewController *)candidate;
-            if (!mailbox.nativeReturnPathActive) continue;
-
+    for (UIViewController *candidate in tabBarController.viewControllers) {
+        if (![candidate isKindOfClass:[UINavigationController class]]) continue;
+        UINavigationController *navigationController = (UINavigationController *)candidate;
+        ApolloDirectChatWebViewController *mailbox = ApolloMailboxReturnController(navigationController);
+        if (mailbox && viewController == mailbox.navigationController) {
+            ApolloClearMailboxReturn(navigationController);
             [mailbox apollo_prepareForMailboxReturnAnimated:NO];
-            [navigationController popToViewController:mailbox animated:NO];
             ApolloLog(@"[DirectChatWeb] Inbox tab returned directly to preserved %@",
                       mailbox.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
+            // Apollo treats Inbox selection as a request to reset that tab's
+            // stack. The mailbox is already the desired destination, so allow
+            // UIKit to select it without running Apollo's reset behavior.
             return YES;
         }
     }
