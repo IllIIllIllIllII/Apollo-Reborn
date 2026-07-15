@@ -205,20 +205,25 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
     NSMutableString *script = [NSMutableString stringWithString:@"(()=>{const palette="];
     [script appendString:json];
     [script appendString:@";"
-        "window.__apolloChatPalette=palette;"
-        "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);return out;};"
+        "window.__apolloChatPalette=palette;window.__apolloChatShadowRoots=window.__apolloChatShadowRoots||[];"
+        "const roots=()=>{const out=[];const visit=r=>{if(!r||out.includes(r))return;out.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);for(const r of window.__apolloChatShadowRoots)visit(r);return out;};"
+        "const mailRoute=()=>location.pathname.startsWith('/mail/');"
         // Reddit's Modmail mobile layout is unusually small inside Apollo's
         // safe-area-constrained WKWebView. Enlarge typography through WebKit's
         // text autosizing instead of pageZoom/viewport scaling: it reflows at
         // the real device width and cannot crop the right edge. Compact phones
         // stay near 100%; wider iPhones receive a gradual boost capped at 112%.
-        "const mailTextScale=()=>location.pathname.startsWith('/mail/')?Math.min(112,Math.max(100,100+((document.documentElement.clientWidth||innerWidth)-350)*0.15)):100;"
+        "const mailTextScale=()=>mailRoute()?Math.min(112,Math.max(100,100+((document.documentElement?.clientWidth||innerWidth)-350)*0.15)):100;"
         // Reddit wraps the entire Modmail thread in p-md (roughly 17 points on
         // a current-size iPhone). Remove that artificial outer gutter so the
         // subject, messages, and composer use the whole screen. Preserve only
         // WebKit's real safe area on landscape/notched devices. Scope this by
         // route so the modern Chat layout remains untouched.
-        "const mailLayout=()=>location.pathname.startsWith('/mail/')?'#main-content.flex.gap-md.p-md{padding-left:env(safe-area-inset-left,0px)!important;padding-right:env(safe-area-inset-right,0px)!important;}rpl-inbox-row .title{font-weight:600!important;color:var(--apollo-chat-text)!important;}':'';"
+        // Reddit reserves 57 points for its own header even after we hide that
+        // header. Zeroing the source variable lets every current mailbox shell
+        // (including its nested shadow-root layout) fill the WKWebView without
+        // imposing a fixed height that would fight the iOS keyboard viewport.
+        "const mailLayout=()=>mailRoute()?':host,:root,shreddit-app{--shreddit-header-height:0px!important;--shreddit-header-large-height:0px!important;}#main-content.flex.gap-md.p-md{padding-left:env(safe-area-inset-left,0px)!important;padding-right:env(safe-area-inset-right,0px)!important;padding-bottom:0!important;box-sizing:border-box!important;}rpl-inbox-row .title{font-weight:600!important;color:var(--apollo-chat-text)!important;}':'';"
         "const css=()=>`:host,:root{"
             "--apollo-chat-accent:${palette.accent};--apollo-chat-bg:${palette.primary};--apollo-chat-surface:${palette.secondary};--apollo-chat-raised:${palette.tertiary};--apollo-chat-border:${palette.separator};--apollo-chat-text:${palette.text};--apollo-chat-muted:${palette.secondaryText};--apollo-chat-font:${palette.font};"
             "--font-sans:var(--apollo-chat-font)!important;--font-family-sans:var(--apollo-chat-font)!important;font-family:var(--apollo-chat-font)!important;"
@@ -229,11 +234,28 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
         "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${mailTextScale()}%!important;text-size-adjust:${mailTextScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
         "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}`;"
-        "const themeRoots=()=>{for(const r of roots()){let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)continue;target.appendChild(s);}s.textContent=css();}};"
+        "const themeRoot=r=>{if(!r)return;let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)return;target.appendChild(s);}const next=css();if(s.textContent!==next)s.textContent=next;};"
+        "let sweepScheduled=false;const scheduleSweep=()=>{if(sweepScheduled)return;sweepScheduled=true;requestAnimationFrame(()=>{sweepScheduled=false;window.__apolloChatEnhancementSweep?.();});};window.__apolloChatScheduleSweep=scheduleSweep;"
+        "const observeRoot=r=>{if(!r||r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});}catch(e){}};"
+        "const themeRoots=()=>{for(const r of roots()){themeRoot(r);observeRoot(r);}};"
+        // Patch attachShadow at document start. Reddit constructs the thread
+        // composer as an SPA transition, so waiting for the periodic sweep
+        // made its font and spacing visibly jump after the thread appeared.
+        "window.__apolloChatNewShadowRoot=root=>{if(!window.__apolloChatShadowRoots.includes(root))window.__apolloChatShadowRoots.push(root);themeRoot(root);observeRoot(root);scheduleSweep();};"
+        "if(!Element.prototype.__apolloChatOriginalAttachShadow){const original=Element.prototype.attachShadow;Object.defineProperty(Element.prototype,'__apolloChatOriginalAttachShadow',{value:original});Element.prototype.attachShadow=function(init){const root=original.call(this,init);window.__apolloChatNewShadowRoot?.(root);return root;};}"
         "const fixGiphy=()=>{let grids=0;for(const r of roots())for(const container of r.querySelectorAll('.gifs-container')){const media=[...container.querySelectorAll(':scope > img,:scope > video')];if(media.length<2)continue;container.setAttribute('data-apollo-giphy-grid','');container.style.setProperty('display','grid','important');container.style.setProperty('grid-template-columns','repeat(2,minmax(0,1fr))','important');container.style.setProperty('grid-auto-rows','104px','important');container.style.setProperty('gap','6px','important');container.style.setProperty('width','100%','important');container.style.setProperty('height','auto','important');container.style.setProperty('box-sizing','border-box','important');for(const m of media){m.style.setProperty('width','100%','important');m.style.setProperty('min-width','0','important');m.style.setProperty('height','104px','important');m.style.setProperty('max-width','none','important');m.style.setProperty('object-fit','cover','important');m.style.setProperty('margin','0','important');m.style.setProperty('overflow','hidden','important');m.style.setProperty('border-radius','10px','important');}grids++;}return grids;};"
         "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase(),rect=a.getBoundingClientRect();if(area.includes('chats')||rect.top<180){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
-        "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),blockedHomeLinks:blockRedditHomeLogo()};};"
+        // Reddit currently leaves Preview genuinely disabled even after the
+        // reply textarea contains text. Preserve its own preview renderer and
+        // click handler; only repair the enabled state from the real input.
+        "const fixModmailPreview=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden';};const textarea=all.find(e=>e.tagName==='TEXTAREA'&&visible(e)&&e.type!=='hidden');const preview=all.find(e=>e.tagName==='BUTTON'&&(e.textContent||'').trim()==='Preview'&&visible(e));if(!textarea||!preview)return 0;const sync=()=>{const hasText=(textarea.value||'').trim().length>0;if(hasText){if(preview.disabled){preview.disabled=false;preview.removeAttribute('disabled');preview.style.setProperty('pointer-events','auto','important');preview.dataset.apolloPreviewEnabled='true';}}else if(preview.dataset.apolloPreviewEnabled==='true'){preview.disabled=true;preview.setAttribute('disabled','');preview.style.removeProperty('pointer-events');delete preview.dataset.apolloPreviewEnabled;}};if(!textarea.dataset.apolloPreviewListener){textarea.dataset.apolloPreviewListener='true';textarea.addEventListener('input',sync);textarea.addEventListener('change',sync);}sync();return preview.dataset.apolloPreviewEnabled==='true'?1:0;};"
+        // The sticky Modmail subject card sits above Reddit's Markdown Help
+        // dialog. Fit only that dialog into the actual visual viewport so its
+        // close button and final help rows are both reachable on every iPhone.
+        "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
+        "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
+        "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});}"
         "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>window.__apolloChatEnhancementSweep?.(),700);"
         "return sweep();})()"];
     return script;
@@ -446,6 +468,17 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     self.navigationItem.standardAppearance = appearance;
     self.navigationItem.scrollEdgeAppearance = appearance;
     self.navigationItem.compactAppearance = appearance;
+
+    // Install the palette/layout hook before Reddit creates any SPA shadow
+    // roots. The same source is evaluated below for the current document so a
+    // live Theme Builder change is immediate as well as flash-free on the next
+    // navigation.
+    WKUserContentController *contentController = self.webView.configuration.userContentController;
+    [contentController removeAllUserScripts];
+    [contentController addUserScript:[[WKUserScript alloc]
+        initWithSource:ApolloDirectChatEnhancementScript(palette)
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+        forMainFrameOnly:YES]];
 
     if (self.webView.URL) {
         NSString *script = ApolloDirectChatEnhancementScript(palette);
@@ -660,7 +693,14 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 
     NSString *path = url.path ?: @"";
     if (self.mailboxKind == ApolloModernMailboxKindModmail) {
-        return [path isEqualToString:@"/mail"] || [path hasPrefix:@"/mail/"];
+        BOOL mailbox = [path isEqualToString:@"/mail"] || [path hasPrefix:@"/mail/"];
+        // The composer links to Reddit's per-subreddit saved-response manager.
+        // Keep that management flow in the authenticated Modmail WKWebView;
+        // Apollo's native deep-link parser otherwise mistakes it for content
+        // navigation and opens an unusable Comments controller.
+        BOOL savedResponses = [path hasPrefix:@"/mod/"] &&
+            [path rangeOfString:@"/saved-responses" options:NSCaseInsensitiveSearch].location != NSNotFound;
+        return mailbox || savedResponses;
     }
     return [path isEqualToString:@"/chat"] || [path hasPrefix:@"/chat/"];
 }
