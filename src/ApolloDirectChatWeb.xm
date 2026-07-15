@@ -732,18 +732,6 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
             [navigationController popViewControllerAnimated:NO];
         }
         if (ApolloRouteResolvedURLViaApolloScheme(url)) {
-            // Returning to the mailbox explicitly hides the tab bar on iOS 18+
-            // so its composer gets the full safe area. That controller-level
-            // state is sticky across later pushes; explicitly reverse it for
-            // every native destination rather than relying only on
-            // hidesBottomBarWhenPushed being NO after stack reinsertion.
-            UITabBarController *tabBarController = navigationController.tabBarController;
-            if (@available(iOS 18.0, *)) {
-                [tabBarController setTabBarHidden:NO animated:NO];
-            } else {
-                tabBarController.tabBar.hidden = NO;
-            }
-
             UIViewController *destination = navigationController.topViewController;
             if (destination && destination != self &&
                 ![navigationController.viewControllers containsObject:self]) {
@@ -804,18 +792,14 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 }
 
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated {
+    (void)animated;
     self.nativeReturnPathActive = NO;
     self.hidesBottomBarWhenPushed = YES;
 
-    // On iOS 18+ this is the public transition-safe way to restore the full
-    // composer area. The property above remains the source of truth for older
-    // versions and for subsequent navigation-controller transitions.
-    UITabBarController *tabBarController = self.tabBarController ?: self.navigationController.tabBarController;
-    if (@available(iOS 18.0, *)) {
-        [tabBarController setTabBarHidden:YES animated:animated];
-    } else {
-        tabBarController.tabBar.hidden = YES;
-    }
+    // Let the navigation transition apply this controller preference. Calling
+    // setTabBarHidden: here creates sticky tab-controller state on iOS 18+;
+    // after Modmail is later popped, Boxes can otherwise remain without its
+    // tab bar and with zero safe-area insets under the navigation bar.
     ApolloLog(@"[DirectChatWeb] Restored composer-safe mailbox chrome");
 }
 
@@ -977,6 +961,31 @@ UIViewController *ApolloCreateModernModmailViewController(void) {
     controller.hidesBottomBarWhenPushed = YES;
     return controller;
 }
+
+// A mailbox restored into the navigation stack after opening native Reddit
+// content is not guaranteed to receive viewWillAppear: when that destination
+// is popped (UIKit can preserve the already-loaded view during the stack
+// insertion). Restore its per-controller tab-bar preference before the pop so
+// both the navigation-bar Back button and the interactive pop path return to a
+// composer-safe mailbox without creating sticky UITabBarController state.
+%hook UINavigationController
+
+- (UIViewController *)popViewControllerAnimated:(BOOL)animated {
+    NSArray<UIViewController *> *stack = self.viewControllers;
+    if (stack.count >= 2) {
+        UIViewController *candidate = stack[stack.count - 2];
+        if ([candidate isKindOfClass:[ApolloDirectChatWebViewController class]]) {
+            ApolloDirectChatWebViewController *mailbox =
+                (ApolloDirectChatWebViewController *)candidate;
+            if (mailbox.nativeReturnPathActive) {
+                [mailbox apollo_prepareForMailboxReturnAnimated:animated];
+            }
+        }
+    }
+    return %orig(animated);
+}
+
+%end
 
 // Apollo's Inbox tab normally restores whatever controller is already at the
 // top of its navigation stack. For a native destination opened from a modern
