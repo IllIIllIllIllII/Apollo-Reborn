@@ -43,6 +43,15 @@ NS_ASSUME_NONNULL_BEGIN
 // with older notification posts, but every current poster supplies it.
 + (void)presentExpiredSessionPromptForUsername:(nullable NSString *)username;
 
+// Callback-capable form used by a mailbox that is already on screen. `success`
+// means a Reddit web session was harvested; callers should still resolve the
+// active account again because the user may have signed in as a different
+// Reddit account. The callback runs after the login sheet is dismissed (or
+// immediately with NO when the prompt is cancelled), which lets Chat/Modmail
+// retry in place without making the user close and reopen the mailbox.
++ (void)presentExpiredSessionPromptForUsername:(nullable NSString *)username
+                                    completion:(void (^ _Nullable)(BOOL success))completion;
+
 // Attempts to refresh `username`'s stored session WITHOUT any UI, by loading
 // reddit.com in an off-screen WKWebView on the same persistent data store the
 // login flow uses. Reddit rotates its session cookies (token_v2 is a ~24h JWT)

@@ -299,6 +299,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, strong) UILabel *loadingTitleLabel;
 @property (nonatomic, strong) UILabel *loadingDetailLabel;
 @property (nonatomic, strong) UIImageView *loadingIconView;
+@property (nonatomic, strong) UIButton *reauthenticateButton;
 @property (nonatomic, copy) NSString *username;
 // A validated same-origin Reddit path supplied by a notification deep link.
 // Keeping only the path (never an arbitrary URL) preserves the isolated
@@ -319,6 +320,12 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // A native Reddit destination opened from this mailbox lives in a different
 // tab's navigation controller. This flag marks the temporary return path.
 @property (nonatomic, assign) BOOL nativeReturnPathActive;
+// Missing/expired web sessions are recoverable in place. Keep the prompt state
+// on the mailbox controller so an automatic first offer never turns into a
+// cancel/re-present loop; the visible button remains available for later retry.
+@property (nonatomic, assign) BOOL authenticationRequired;
+@property (nonatomic, assign) BOOL authenticationPromptVisible;
+@property (nonatomic, assign) BOOL authenticationPromptAutomaticallyOffered;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
 - (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url;
@@ -330,6 +337,8 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_revealChat;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
+- (void)apollo_showAuthenticationError:(NSString *)detail automaticallyPrompt:(BOOL)automaticallyPrompt;
+- (void)apollo_presentAuthenticationPrompt;
 @end
 
 static NSString *ApolloValidatedModernMailboxPath(ApolloModernMailboxKind kind,
@@ -474,9 +483,21 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.loadingDetailLabel.textAlignment = NSTextAlignmentCenter;
     self.loadingDetailLabel.numberOfLines = 2;
 
+    self.reauthenticateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.reauthenticateButton.hidden = YES;
+    self.reauthenticateButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    self.reauthenticateButton.layer.cornerRadius = 12.0;
+    self.reauthenticateButton.layer.borderWidth = 1.0;
+    self.reauthenticateButton.contentEdgeInsets = UIEdgeInsetsMake(11.0, 22.0, 11.0, 22.0);
+    [self.reauthenticateButton setTitle:@"Sign In Again" forState:UIControlStateNormal];
+    [self.reauthenticateButton addTarget:self
+                                  action:@selector(apollo_presentAuthenticationPrompt)
+                        forControlEvents:UIControlEventTouchUpInside];
+
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     UIStackView *loadingStack = [[UIStackView alloc] initWithArrangedSubviews:@[
-        iconView, self.loadingTitleLabel, self.loadingDetailLabel, self.spinner
+        iconView, self.loadingTitleLabel, self.loadingDetailLabel, self.spinner,
+        self.reauthenticateButton
     ]];
     loadingStack.translatesAutoresizingMaskIntoConstraints = NO;
     loadingStack.axis = UILayoutConstraintAxisVertical;
@@ -512,6 +533,13 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     }
     [super viewWillAppear:animated];
     [self apollo_applyActiveTheme];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.authenticationRequired && !self.authenticationPromptAutomaticallyOffered) {
+        [self apollo_presentAuthenticationPrompt];
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -558,6 +586,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.loadingTitleLabel.textColor = text;
     self.loadingDetailLabel.textColor = secondaryText;
     self.spinner.color = accent;
+    [self.reauthenticateButton setTitleColor:accent forState:UIControlStateNormal];
+    self.reauthenticateButton.backgroundColor = [accent colorWithAlphaComponent:0.14];
+    self.reauthenticateButton.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
     self.navigationItem.rightBarButtonItem.tintColor = accent;
     self.navigationController.navigationBar.tintColor = accent;
 
@@ -594,6 +625,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_showLoadingWithDetail:(NSString *)detail {
+    self.authenticationRequired = NO;
+    self.authenticationPromptAutomaticallyOffered = NO;
+    self.reauthenticateButton.hidden = YES;
     self.didRevealChat = NO;
     self.readinessGeneration += 1;
     self.modmailThreadTransitionPending = NO;
@@ -623,6 +657,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_showLoadError:(NSString *)detail {
+    self.authenticationRequired = NO;
+    self.reauthenticateButton.hidden = YES;
     self.readinessGeneration += 1;
     self.modmailThreadTransitionPending = NO;
     self.modmailThreadTransitionGeneration += 1;
@@ -633,6 +669,47 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         ? @"Moderator Mail couldn’t be opened" : @"Chat couldn’t be opened";
     self.loadingDetailLabel.text = detail ?: @"Try refreshing or signing in again.";
     [self.spinner stopAnimating];
+}
+
+- (void)apollo_showAuthenticationError:(NSString *)detail automaticallyPrompt:(BOOL)automaticallyPrompt {
+    [self apollo_showLoadError:detail];
+    self.authenticationRequired = YES;
+    self.reauthenticateButton.hidden = NO;
+    if (automaticallyPrompt && !self.authenticationPromptAutomaticallyOffered && self.view.window) {
+        [self apollo_presentAuthenticationPrompt];
+    }
+}
+
+- (void)apollo_presentAuthenticationPrompt {
+    if (!self.authenticationRequired || self.authenticationPromptVisible) return;
+    self.authenticationPromptVisible = YES;
+    self.authenticationPromptAutomaticallyOffered = YES;
+
+    NSString *targetUsername = ApolloActiveAccountUsername() ?: self.username;
+    __weak typeof(self) weakSelf = self;
+    [ApolloWebSessionLoginViewController
+        presentExpiredSessionPromptForUsername:targetUsername
+                                    completion:^(BOOL success) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.authenticationPromptVisible = NO;
+        if (!success || !self.authenticationRequired) return;
+
+        ApolloWebSessionEntry *activeSession = ApolloActiveWebSession();
+        if (activeSession.cookieHeader.length > 0) {
+            ApolloLog(@"[DirectChatWeb] Re-authentication completed for the active account; retrying %@ in place",
+                      self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
+            [self apollo_seedAndLoad];
+            return;
+        }
+
+        NSString *active = ApolloActiveAccountUsername();
+        NSString *detail = active.length > 0
+            ? [NSString stringWithFormat:@"That sign-in did not match u/%@. Tap below and sign in with that Reddit account.", active]
+            : @"That sign-in did not match the active Apollo account. Switch accounts or try signing in again.";
+        [self apollo_showAuthenticationError:detail automaticallyPrompt:NO];
+        ApolloLog(@"[DirectChatWeb] Re-authentication harvested a different account; active account still has no web session");
+    }];
 }
 
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url {
@@ -774,8 +851,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     ApolloWebSessionEntry *session = ApolloActiveWebSession();
     self.username = ApolloActiveWebSessionUsername() ?: @"";
     if (session.cookieHeader.length == 0) {
-        NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Direct Chat";
-        [self apollo_showLoadError:[NSString stringWithFormat:@"Sign in to Reddit again, then reopen %@.", surface]];
+        NSString *detail = self.username.length > 0
+            ? [NSString stringWithFormat:@"Sign in as u/%@ to continue.", self.username]
+            : @"Sign in to Reddit to continue.";
+        [self apollo_showAuthenticationError:detail automaticallyPrompt:YES];
         ApolloLog(@"[DirectChatWeb] Cannot load: active account has no web session");
         return;
     }
@@ -868,8 +947,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
             ApolloLog(@"[DirectChatWeb] No pending requests; returning to the Threads list");
         }
         if (!error && [result isEqual:@"signedOut"]) {
-            [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
-            [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
+            [self apollo_showAuthenticationError:@"Your Reddit web session expired. Sign in again to reconnect."
+                             automaticallyPrompt:YES];
             return;
         }
         if (attempt >= 59) {
@@ -1102,10 +1181,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     // page with a false “session expired” state; link-activated departures are
     // already cancelled and handed to Apollo above.
     if (!self.didRevealChat) {
-        [self apollo_showLoadError:@"Your Reddit web session expired. Sign in again, then retry."];
-        if (self.mailboxKind == ApolloModernMailboxKindModmail) {
-            [ApolloWebSessionLoginViewController presentExpiredSessionPromptForUsername:self.username];
-        }
+        [self apollo_showAuthenticationError:@"Your Reddit web session expired. Sign in again to reconnect."
+                         automaticallyPrompt:YES];
     } else {
         ApolloLog(@"[DirectChatWeb] Ignored post-reveal non-mailbox navigation: %@", webView.URL.absoluteString);
     }

@@ -43,6 +43,10 @@ static const NSTimeInterval kFarFutureCookieInterval = 10000.0 * 24 * 60 * 60;
 // prompt. Cancel must re-arm that account's one-shot prompt latch so tapping
 // the failed feature again can offer re-authentication instead of spinning.
 @property (nonatomic, copy) NSString *reauthenticationUsername;
+// Optional owner callback for an in-place recovery flow such as modern Chat or
+// Modmail. Kept private so ordinary Settings/account-add flows retain their
+// existing behavior.
+@property (nonatomic, copy) void (^authenticationCompletion)(BOOL success);
 // Consecutive harvest attempts that found an incomplete session (see the
 // completeness gate in _harvestAndFinishForUser:).
 @property (nonatomic) NSUInteger harvestAttempts;
@@ -111,16 +115,27 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
 }
 
 + (void)presentExpiredSessionPromptForUsername:(NSString *)username {
-    UIViewController *top = [[self _apolloKeyWindow] visibleViewController];
-    if (!top) return;
-    // Already in the login flow (or some other modal we shouldn't interrupt).
-    if ([top isKindOfClass:[ApolloWebSessionLoginViewController class]]) return;
+    [self presentExpiredSessionPromptForUsername:username completion:nil];
+}
 
-    NSString *who = username.length > 0 ? [NSString stringWithFormat:@"u/%@", username] : @"your account";
++ (void)presentExpiredSessionPromptForUsername:(NSString *)username
+                                    completion:(void (^)(BOOL success))completion {
+    completion = [completion copy];
+    UIViewController *top = [[self _apolloKeyWindow] visibleViewController];
+    if (!top) { if (completion) completion(NO); return; }
+    // Already in the login flow (or some other modal we shouldn't interrupt).
+    if ([top isKindOfClass:[ApolloWebSessionLoginViewController class]]) {
+        if (completion) completion(NO);
+        return;
+    }
+
+    NSString *instruction = username.length > 0
+        ? [NSString stringWithFormat:@"Sign in as u/%@", username]
+        : @"Sign in to Reddit";
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Reddit Session Expired"
+        alertControllerWithTitle:@"Reddit Sign-In Required"
                          message:[NSString stringWithFormat:
-                             @"%@'s Reddit web session is no longer valid (Reddit returned its sign-in wall). Sign in again to keep using it without API keys.", who]
+                             @"%@ to reconnect this Apollo account. This web sign-in powers API-Key-Free Mode, Reddit Chat, and modern Moderator Mail.", instruction]
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Sign In Again"
                                               style:UIAlertActionStyleDefault
@@ -129,6 +144,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
         // reloading — same rationale as adding an additional account.
         ApolloWebSessionLoginViewController *vc =
             [ApolloWebSessionLoginViewController loginControllerForReauthenticationOfUsername:username];
+        vc.authenticationCompletion = completion;
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
         UIViewController *presenter = [[self _apolloKeyWindow] visibleViewController] ?: top;
         [presenter presentViewController:nav animated:YES completion:nil];
@@ -137,6 +153,7 @@ static const NSTimeInterval kReharvestTimeout = 25.0;
                                               style:UIAlertActionStyleCancel
                                             handler:^(UIAlertAction *a) {
         ApolloWebJSONNoteSessionReauthenticationDeferred(username);
+        if (completion) completion(NO);
     }]];
     [top presentViewController:alert animated:YES completion:nil];
 }
@@ -513,7 +530,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
     if (self.reauthenticationUsername.length > 0) {
         ApolloWebJSONNoteSessionReauthenticationDeferred(self.reauthenticationUsername);
     }
-    [self _dismiss];
+    [self _dismissWithAuthenticationSuccess:NO];
 }
 
 // Called after a successful harvest. When an account was synthesized, Apollo must
@@ -525,7 +542,11 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 // leaving them with a silently-blank account tab. Otherwise (account already
 // present / synthesis skipped) just dismiss with no prompt.
 - (void)_finishWithUser:(NSString *)username accountSynthesized:(BOOL)synthesized {
-    if (!synthesized) { [self _dismiss]; return; }
+    if (!synthesized) {
+        BOOL hasSession = ApolloWebSessionFor(username).cookieHeader.length > 0;
+        [self _dismissWithAuthenticationSuccess:hasSession];
+        return;
+    }
 
     // Mark the pending state up front; clearing happens at next launch (%ctor).
     // The username travels alongside the flag — sessions are per-account now, so
@@ -545,12 +566,19 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
                                             handler:^(UIAlertAction *a) { exit(0); }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Not Now (account stays inactive)"
                                               style:UIAlertActionStyleCancel
-                                            handler:^(UIAlertAction *a) { [self _dismiss]; }]];
+                                            handler:^(UIAlertAction *a) {
+        BOOL hasSession = ApolloWebSessionFor(username).cookieHeader.length > 0;
+        [self _dismissWithAuthenticationSuccess:hasSession];
+    }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)_dismiss {
-    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+- (void)_dismissWithAuthenticationSuccess:(BOOL)success {
+    void (^completion)(BOOL) = self.authenticationCompletion;
+    self.authenticationCompletion = nil;
+    [self.navigationController dismissViewControllerAnimated:YES completion:^{
+        if (completion) completion(success);
+    }];
 }
 
 #pragma mark - Silent re-harvest entry point
