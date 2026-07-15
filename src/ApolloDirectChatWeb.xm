@@ -1005,11 +1005,11 @@ UIViewController *ApolloCreateModernModmailViewController(void) {
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     UIViewController *anchor = ApolloMailboxReturnAnchor(self);
     if (anchor && self.topViewController == anchor) {
-        // Complete the native pop before changing tabs so the Posts stack is
-        // also back where the user left it when they return later.
-        UIViewController *popped = %orig(NO);
+        // Reveal the preserved mailbox first, then clean up the now-hidden
+        // native stack. Popping first briefly exposes the Posts screen between
+        // the profile/subreddit and Modmail for a single rendered frame.
         ApolloReturnToMailboxFromNavigationController(self);
-        return popped;
+        return %orig(NO);
     }
     return %orig(animated);
 }
