@@ -420,6 +420,8 @@ static NSString *ApolloModernMailboxUserAgent(void) {
     return @"Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
 }
 
+static void *ApolloDirectChatWebViewURLContext = &ApolloDirectChatWebViewURLContext;
+
 typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
     ApolloModernMailboxKindChat = 0,
     ApolloModernMailboxKindModmail,
@@ -464,6 +466,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, assign) BOOL embeddedInInbox;
 @property (nonatomic, assign) ApolloModernChatInboxSection embeddedInboxSection;
 @property (nonatomic, strong) NSLayoutConstraint *webViewTopConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *webViewBottomConstraint;
 @property (nonatomic, strong) ApolloModernMailboxWebContext *webContext;
 @property (nonatomic, strong) NSDate *loadStartedAt;
 @property (nonatomic, assign) NSUInteger bounceConfiguredScrollViewCount;
@@ -603,6 +606,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.webView.customUserAgent = ApolloModernMailboxUserAgent();
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
+    [self.webView addObserver:self
+                  forKeyPath:@"URL"
+                     options:NSKeyValueObservingOptionNew
+                     context:ApolloDirectChatWebViewURLContext];
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
     self.webView.allowsBackForwardNavigationGestures = YES;
     self.webView.opaque = YES;
@@ -646,6 +653,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     }
     self.webViewTopConstraint = [self.webView.topAnchor constraintEqualToAnchor:webTopAnchor
                                                                         constant:initialTopOffset];
+    self.webViewBottomConstraint = [self.webView.bottomAnchor
+        constraintEqualToAnchor:webBottomAnchor];
     [NSLayoutConstraint activateConstraints:@[
         [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.webView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -653,7 +662,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         // and above the home indicator/keyboard instead of drawing underneath
         // either chrome surface.
         self.webViewTopConstraint,
-        [self.webView.bottomAnchor constraintEqualToAnchor:webBottomAnchor],
+        self.webViewBottomConstraint,
     ]];
 
     self.loadingView = [UIView new];
@@ -737,6 +746,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
+    [self apollo_updateEmbeddedWebChromeForURL:self.webView.URL];
     [self apollo_enableNativeScrollBounce];
 }
 
@@ -786,7 +796,24 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)dealloc {
+    [self.webView removeObserver:self
+                     forKeyPath:@"URL"
+                        context:ApolloDirectChatWebViewURLContext];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+    if (context == ApolloDirectChatWebViewURLContext) {
+        id nextValue = change[NSKeyValueChangeNewKey];
+        NSURL *url = [nextValue isKindOfClass:[NSURL class]]
+            ? nextValue : self.webView.URL;
+        [self apollo_updateEmbeddedWebChromeForURL:url];
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -1140,11 +1167,13 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_updateEmbeddedWebChromeForURL:(NSURL *)url {
-    if (!self.embeddedInInbox || !self.webViewTopConstraint) return;
+    if (!self.embeddedInInbox || !self.webViewTopConstraint ||
+        !self.webViewBottomConstraint) return;
     NSString *path = url.path ?: @"";
     BOOL rootList = [path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"];
     BOOL requestsList = [path hasPrefix:@"/chat/requests"];
     BOOL threadsList = [path hasPrefix:@"/chat/threads"];
+    BOOL conversationRoom = [path hasPrefix:@"/chat/room/"];
     CGFloat topOffset = 0.0;
     if (requestsList) {
         topOffset = -54.0;
@@ -1159,12 +1188,33 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         // hidden content above Apollo's native section switcher.
         topOffset = 0.0;
     }
-    if (fabs(self.webViewTopConstraint.constant - topOffset) < 0.5) return;
+
+    // Standalone Direct Chat hides Apollo's tab bar, but the embedded Inbox
+    // intentionally keeps it visible. Reddit anchors a room's message composer
+    // to the bottom of the web viewport, so a full-height embedded viewport
+    // places the entire composer behind Apollo's floating tab bar. Shorten only
+    // conversation rooms to the top of that bar. Lists continue beneath the
+    // floating chrome and retain their separate scroll allowance.
+    CGFloat composerBottomInset = 0.0;
+    UITabBar *tabBar = self.tabBarController.tabBar;
+    if (conversationRoom && tabBar && !tabBar.hidden && tabBar.alpha > 0.01 &&
+        tabBar.window && self.view.window) {
+        CGRect tabBarFrame = [tabBar convertRect:tabBar.bounds toView:self.view];
+        CGFloat overlap = CGRectGetMaxY(self.view.bounds) - CGRectGetMinY(tabBarFrame);
+        if (overlap > 0.0) composerBottomInset = overlap + 8.0;
+    }
+
+    BOOL topChanged = fabs(self.webViewTopConstraint.constant - topOffset) >= 0.5;
+    BOOL bottomChanged =
+        fabs(self.webViewBottomConstraint.constant + composerBottomInset) >= 0.5;
+    if (!topChanged && !bottomChanged) return;
     self.webViewTopConstraint.constant = topOffset;
+    self.webViewBottomConstraint.constant = -composerBottomInset;
     [self.view setNeedsLayout];
     [self.view layoutIfNeeded];
-    ApolloLog(@"[DirectChatWeb] Embedded Chat %@ Reddit's redundant list chrome",
-              (rootList || requestsList) ? @"cropped" : @"restored");
+    ApolloLog(@"[DirectChatWeb] Embedded Chat %@ Reddit's list chrome; composer inset %.1fpt",
+              (rootList || requestsList) ? @"cropped" : @"restored",
+              composerBottomInset);
 }
 
 // Messages is the direct-chat list. Reddit exposes Direct chats, Group chats,
@@ -1688,6 +1738,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                     decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = navigationAction.request.URL;
+    // Reddit Chat switches rooms with same-document client-side navigation.
+    // WKWebView's URL is updated only after that transition, and neither
+    // didStartProvisionalNavigation: nor didFinishNavigation: is guaranteed to
+    // run. Size the pending mailbox route here so an embedded room's fixed
+    // composer is already above Apollo's tab bar on the first rendered frame.
+    if (url && [self apollo_urlMatchesMailboxRoute:url]) {
+        [self apollo_updateEmbeddedWebChromeForURL:url];
+    }
     if (url && [self apollo_isModmailConversationURL:url]) {
         [self apollo_beginModmailThreadTransitionToURL:url];
     }
