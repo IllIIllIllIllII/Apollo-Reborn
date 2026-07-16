@@ -184,11 +184,38 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
     if (![status isKindOfClass:[NSDictionary class]]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         NSDictionary *old = ApolloModernChatCachedStatus();
-        BOOL sameUnread = [old[@"hasUnread"] boolValue] == [status[@"hasUnread"] boolValue];
-        BOOL samePreview = (!old[@"preview"] && !status[@"preview"]) || [old[@"preview"] isEqual:status[@"preview"]];
-        if (sameUnread && samePreview) return;
+        NSMutableDictionary *merged = old ? [old mutableCopy] : [NSMutableDictionary dictionary];
+        NSString *surface = [status[@"surface"] isKindOfClass:[NSString class]] ? status[@"surface"] : @"threads";
+        BOOL routeUnread = [status[@"hasUnread"] boolValue];
+        if ([surface isEqualToString:@"requests"]) {
+            merged[@"hasRequests"] = @([status[@"hasRequests"] boolValue]);
+        } else {
+            merged[@"hasThreadUnread"] = @(routeUnread);
+            merged[@"threadUnreadCount"] = [status[@"unreadCount"] isKindOfClass:[NSNumber class]]
+                ? status[@"unreadCount"] : @0;
+            if ([status[@"preview"] isKindOfClass:[NSString class]]) merged[@"preview"] = status[@"preview"];
+            else [merged removeObjectForKey:@"preview"];
+        }
+        BOOL hasThreadUnread = [merged[@"hasThreadUnread"] boolValue];
+        BOOL hasRequests = [merged[@"hasRequests"] boolValue];
+        merged[@"hasUnread"] = @(hasThreadUnread || hasRequests);
+        merged[@"checkedAt"] = status[@"checkedAt"] ?: @([[NSDate date] timeIntervalSince1970] * 1000.0);
+
+        NSArray<NSString *> *meaningfulKeys = @[
+            @"hasUnread", @"hasThreadUnread", @"hasRequests", @"threadUnreadCount", @"preview"
+        ];
+        BOOL changed = NO;
+        for (NSString *key in meaningfulKeys) {
+            id before = old[key];
+            id after = merged[key];
+            if ((before || after) && ![before isEqual:after]) {
+                changed = YES;
+                break;
+            }
+        }
+        if (!changed) return;
         @synchronized (ApolloModernChatStatusLock()) {
-            sApolloModernChatStatus = [status copy];
+            sApolloModernChatStatus = [merged copy];
         }
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloModernChatStatusDidChangeNotification object:nil];
     });
@@ -225,6 +252,15 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // (including its nested shadow-root layout) fill the WKWebView without
         // imposing a fixed height that would fight the iOS keyboard viewport.
         "const mailLayout=()=>mailRoute()?':host,:root,shreddit-app{--shreddit-header-height:0px!important;--shreddit-header-large-height:0px!important;}#main-content.flex.gap-md.p-md{padding-left:env(safe-area-inset-left,0px)!important;padding-right:env(safe-area-inset-right,0px)!important;padding-bottom:0!important;box-sizing:border-box!important;}rpl-inbox-row .title{font-weight:600!important;color:var(--apollo-chat-text)!important;}':'';"
+        // Reddit's Chat media button is the only composer control that combines
+        // a touch tooltip with a native file-input chooser. Mobile WebKit can
+        // leave that tooltip's :hover/:focus presentation stuck after the
+        // chooser closes. RPL renders the body and arrow in two nested shadow
+        // roots, so hiding only role=tooltip leaves a small black diamond above
+        // the icon. Suppress both visual pieces on the touch-only Chat surface.
+        // The :host(.tooltip) guard restricts the arrow rule to tooltip poppers;
+        // menu/popover arrows and aria-label/aria-describedby stay untouched.
+        "const chatTouchLayout=()=>mailRoute()?'':'@media (hover:none),(pointer:coarse){[role=tooltip],:host(.tooltip) .popup--arrow[part=arrow]{display:none!important;}}';"
         "const css=()=>`:host,:root{"
             "--apollo-chat-accent:${palette.accent};--apollo-chat-bg:${palette.primary};--apollo-chat-surface:${palette.secondary};--apollo-chat-raised:${palette.tertiary};--apollo-chat-border:${palette.separator};--apollo-chat-text:${palette.text};--apollo-chat-muted:${palette.secondaryText};--apollo-chat-font:${palette.font};"
             "--font-sans:var(--apollo-chat-font)!important;--font-family-sans:var(--apollo-chat-font)!important;font-family:var(--apollo-chat-font)!important;"
@@ -234,10 +270,25 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
             "--color-tone-1:${palette.text}!important;--color-tone-2:${palette.secondaryText}!important;--color-tone-3:${palette.secondaryText}!important;--color-tone-4:${palette.separator}!important;--color-tone-5:${palette.tertiary}!important;--color-tone-6:${palette.secondary}!important;--color-tone-7:${palette.primary}!important;"
             "--newCommunityTheme-body:${palette.primary}!important;--newCommunityTheme-bodyText:${palette.text}!important;--newCommunityTheme-button:${palette.accent}!important;--newCommunityTheme-line:${palette.separator}!important;"
         "}html,body,button,input,textarea,select{font-family:var(--apollo-chat-font)!important;}html,body{background-color:var(--apollo-chat-bg)!important;color:var(--apollo-chat-text)!important;-webkit-text-size-adjust:${textScale()}%!important;text-size-adjust:${textScale()}%!important;}body{accent-color:var(--apollo-chat-accent)!important;}a{color:var(--apollo-chat-accent)!important;}input,textarea,[contenteditable=true]{caret-color:var(--apollo-chat-accent)!important;font-size:16px!important;}::selection{background:var(--apollo-chat-accent)!important;color:var(--apollo-chat-bg)!important;}"
-        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}`;"
+        "shreddit-app{--page-y-padding:0px!important;padding-top:0!important;}header.v2.hui{display:none!important;}modmail-mailbox-wrapper{top:0!important;margin-top:0!important;}${mailLayout()}${chatTouchLayout()}`;"
         "const themeRoot=r=>{if(!r)return;let s=r.querySelector('style[data-apollo-chat-theme]');if(!s){s=document.createElement('style');s.setAttribute('data-apollo-chat-theme','');const target=r===document?(document.head||document.documentElement):r;if(!target)return;target.appendChild(s);}const next=css();if(s.textContent!==next)s.textContent=next;};"
         "let sweepScheduled=false;const scheduleSweep=()=>{if(sweepScheduled)return;sweepScheduled=true;requestAnimationFrame(()=>{sweepScheduled=false;window.__apolloChatEnhancementSweep?.();});};window.__apolloChatScheduleSweep=scheduleSweep;"
-        "const observeRoot=r=>{if(!r||r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});}catch(e){}};"
+        // Tapping Send media currently lets Reddit focus the contenteditable
+        // message field on pointer-down before it clicks the hidden file input.
+        // iOS begins animating the keyboard, shrinks visualViewport, scrolls the
+        // conversation, then immediately reverses all of that for the native
+        // chooser. Mark only a genuine Send-media control gesture and blur only
+        // text entries focused during that short gesture. The button click and
+        // file input are never cancelled, so Photo Library / Camera / Files keep
+        // running through Reddit's own implementation. Install this in every
+        // captured shadow root too: current Chat nests the composer controls.
+        "window.__apolloChatMediaGestureUntil=window.__apolloChatMediaGestureUntil||0;"
+        "const mediaControlForEvent=event=>{if(mailRoute())return null;for(const node of event.composedPath?.()||[]){if(!(node instanceof Element)||!node.matches?.('button,[role=button]'))continue;const marker=[node.getAttribute('aria-label'),node.getAttribute('title'),node.getAttribute('data-testid'),node.getAttribute('data-control-name'),node.textContent].filter(Boolean).join(' ').replace(/\\s+/g,' ').trim().toLowerCase();if(marker.includes('send media')||/(^|[\\s_-])(media|image|photo)([\\s_-]|$)/.test(marker))return node;}return null;};"
+        "const isChatTextEntry=node=>!!node?.matches?.('textarea,[contenteditable=true],[role=textbox],input:not([type=file]):not([type=button]):not([type=submit])');"
+        "const deepActiveElement=root=>{let node=root?.activeElement||document.activeElement;while(node?.shadowRoot?.activeElement)node=node.shadowRoot.activeElement;return node;};"
+        "const blurMediaGestureTextEntry=root=>{const active=deepActiveElement(root);if(!isChatTextEntry(active))return false;active.blur?.();return true;};"
+        "const installChatInteractionHooks=root=>{if(!root||root.__apolloChatInteractionHooks)return;try{Object.defineProperty(root,'__apolloChatInteractionHooks',{value:true,configurable:true});const beginMediaGesture=event=>{const control=mediaControlForEvent(event);if(!control)return;window.__apolloChatMediaGestureUntil=Date.now()+1600;const title=control.getAttribute?.('title');if(title&&!control.hasAttribute('aria-label')&&!control.hasAttribute('aria-labelledby'))control.setAttribute('aria-label',title);control.removeAttribute?.('title');control.blur?.();blurMediaGestureTextEntry(root);queueMicrotask(()=>blurMediaGestureTextEntry(root));requestAnimationFrame(()=>blurMediaGestureTextEntry(root));};const rejectMediaGestureFocus=event=>{if(Date.now()>window.__apolloChatMediaGestureUntil)return;const target=event.composedPath?.()[0]||event.target;if(!isChatTextEntry(target))return;target.blur?.();queueMicrotask(()=>blurMediaGestureTextEntry(root));};root.addEventListener('pointerdown',beginMediaGesture,true);root.addEventListener('touchstart',beginMediaGesture,{capture:true,passive:true});root.addEventListener('click',beginMediaGesture,true);root.addEventListener('focusin',rejectMediaGestureFocus,true);}catch(e){console.debug('[ApolloFix][DirectChatWeb] Chat media interaction hook failed',e);}};"
+        "const observeRoot=r=>{if(!r)return;installChatInteractionHooks(r);if(r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});}catch(e){}};"
         "const themeRoots=()=>{for(const r of roots()){themeRoot(r);observeRoot(r);}};"
         // Patch attachShadow at document start. Reddit constructs the thread
         // composer as an SPA transition, so waiting for the periodic sweep
@@ -245,6 +296,14 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "window.__apolloChatNewShadowRoot=root=>{if(!window.__apolloChatShadowRoots.includes(root))window.__apolloChatShadowRoots.push(root);themeRoot(root);observeRoot(root);scheduleSweep();};"
         "if(!Element.prototype.__apolloChatOriginalAttachShadow){const original=Element.prototype.attachShadow;Object.defineProperty(Element.prototype,'__apolloChatOriginalAttachShadow',{value:original});Element.prototype.attachShadow=function(init){const root=original.call(this,init);window.__apolloChatNewShadowRoot?.(root);return root;};}"
         "const fixGiphy=()=>{let grids=0;for(const r of roots())for(const container of r.querySelectorAll('.gifs-container')){const media=[...container.querySelectorAll(':scope > img,:scope > video')];if(media.length<2)continue;container.setAttribute('data-apollo-giphy-grid','');container.style.setProperty('display','grid','important');container.style.setProperty('grid-template-columns','repeat(2,minmax(0,1fr))','important');container.style.setProperty('grid-auto-rows','104px','important');container.style.setProperty('gap','6px','important');container.style.setProperty('width','100%','important');container.style.setProperty('height','auto','important');container.style.setProperty('box-sizing','border-box','important');for(const m of media){m.style.setProperty('width','100%','important');m.style.setProperty('min-width','0','important');m.style.setProperty('height','104px','important');m.style.setProperty('max-width','none','important');m.style.setProperty('object-fit','cover','important');m.style.setProperty('margin','0','important');m.style.setProperty('overflow','hidden','important');m.style.setProperty('border-radius','10px','important');}grids++;}return grids;};"
+        // Reddit appends each next GIPHY page to the existing dropdown, then
+        // resets that same element's scrollTop to zero. Remember a recent real
+        // scroll and restore it only when the results height has grown. Small
+        // positions are allowed to reach zero normally, while closing/reopening
+        // the picker or changing the search query clears the remembered state.
+        "const giphyQuery=dropdown=>dropdown.querySelector('faceplate-search-input,input,textarea')?.value||'';"
+        "const giphyScrollState=dropdown=>{let state=dropdown.__apolloGiphyScrollState;if(state)return state;state={top:0,height:dropdown.scrollHeight,at:0,query:giphyQuery(dropdown),open:false};Object.defineProperty(dropdown,'__apolloGiphyScrollState',{value:state,configurable:true});const reset=()=>{state.top=0;state.height=dropdown.scrollHeight;state.at=0;state.query=giphyQuery(dropdown);};dropdown.addEventListener('input',reset,true);dropdown.addEventListener('scroll',()=>{if(!state.open)return;const query=giphyQuery(dropdown);if(query!==state.query){reset();return;}const top=dropdown.scrollTop,height=dropdown.scrollHeight,now=Date.now();if(top>8){if(!state.at||now-state.at>5000||height<=state.height+20)state.height=height;state.top=top;state.at=now;}else if(top<=1&&state.top<=16){state.top=0;state.height=height;state.at=0;}window.__apolloChatScheduleSweep?.();},{passive:true});return state;};"
+        "const fixGiphyScroll=()=>{let restored=0;for(const r of roots())for(const dropdown of r.querySelectorAll('.gifs-dropdown')){const state=giphyScrollState(dropdown),rect=dropdown.getBoundingClientRect(),style=getComputedStyle(dropdown),open=rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden',query=giphyQuery(dropdown),top=dropdown.scrollTop,height=dropdown.scrollHeight,now=Date.now();if(!open){state.open=false;continue;}if(!state.open||query!==state.query){state.open=true;state.query=query;state.top=top;state.height=height;state.at=top>8?now:0;continue;}if(top<=1&&state.top>16&&now-state.at<5000&&height>state.height+20){const target=Math.min(state.top,Math.max(0,height-dropdown.clientHeight));state.top=target;state.height=height;state.at=now;dropdown.scrollTop=target;restored++;}else if(top<=1&&state.at&&now-state.at>=5000){state.top=0;state.height=height;state.at=0;}}return restored;};"
         // Reddit's conversation-profile header combines its width and height
         // utility classes incorrectly for the stock square Snoovatar. Keep the
         // supplied height, but derive width from a 1:1 aspect ratio. Restrict
@@ -257,6 +316,19 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // conversation view. Enlarge only the stable list-row classes; room
         // messages keep their already-correct native sizing.
         "const fixChatListTypography=()=>{if(!chatListRoute())return 0;let fixed=0;for(const r of roots()){for(const e of r.querySelectorAll('.room-name')){e.style.setProperty('font-size','15px','important');e.style.setProperty('line-height','20px','important');fixed++;}for(const e of r.querySelectorAll('.last-message')){e.style.setProperty('font-size','14px','important');e.style.setProperty('line-height','20px','important');fixed++;}for(const e of r.querySelectorAll('.last-message-time')){e.style.setProperty('font-size','12px','important');e.style.setProperty('line-height','20px','important');fixed++;}}return fixed;};"
+        // The embedded Inbox supplies native Messages / Requests / Threads
+        // navigation. Reddit's root Chat list still renders its own header,
+        // filter chips, and Requests / Threads rows above the first room. A
+        // negative native crop made those rows invisible at rest but exposed
+        // them during WebKit's restored edge bounce. Remove the redundant DOM
+        // chrome instead, and repeat on every sweep in case Reddit virtualizes
+        // or replaces the list after a status update.
+        "const fixEmbeddedMessagesChrome=()=>{if(!window.__apolloEmbeddedInboxMessages||!chatListRoute())return 0;let hidden=0;const hide=e=>{if(!e)return;if(e.style.getPropertyValue('display')!=='none'||e.style.getPropertyPriority('display')!=='important'){e.style.setProperty('display','none','important');}hidden++;};for(const r of roots()){for(const e of r.querySelectorAll('li[data-testid=\"requests-button\"],li[data-testid=\"threads-button\"],rs-rooms-nav-filter-chips'))hide(e);if(r instanceof ShadowRoot&&r.host?.tagName==='RS-ROOMS-NAV'){const home=r.querySelector('a[aria-label=\"Go to Reddit home\"]');let header=home;while(header?.parentElement)header=header.parentElement;hide(header);}}return hidden;};"
+        // Reddit disables scroll chaining on its virtualized list, which also
+        // suppresses WebKit's edge stretch. Restore ordinary touch scrolling
+        // on every actual overflow container. UIKit separately enables bounce
+        // on the WKChildScrollView created for these elements after hydration.
+        "const fixChatScrollPhysics=()=>{if(mailRoute())return 0;let fixed=0;for(const r of roots())for(const e of r.querySelectorAll('*')){const s=getComputedStyle(e),scrollable=(s.overflowY==='auto'||s.overflowY==='scroll')&&(e.scrollHeight>e.clientHeight+1);if(!scrollable&&e.tagName!=='RS-VIRTUAL-SCROLL'&&e.tagName!=='RS-THREADS-VIEW')continue;e.style.setProperty('overscroll-behavior-y','auto','important');e.style.setProperty('-webkit-overflow-scrolling','touch','important');fixed++;}return fixed;};"
         "const blockRedditHomeLogo=()=>{let blocked=0;for(const r of roots())for(const a of r.querySelectorAll('a[href]')){try{const u=new URL(a.href,location.href);if((u.hostname==='reddit.com'||u.hostname.endsWith('.reddit.com'))&&u.pathname==='/'&&u.search===''&&u.hash===''){const area=(a.parentElement?.textContent||'').trim().toLowerCase(),rect=a.getBoundingClientRect();if(area.includes('chats')||rect.top<180){a.setAttribute('aria-disabled','true');a.style.setProperty('pointer-events','none','important');a.style.setProperty('cursor','default','important');blocked++;}}}catch(e){}}return blocked;};"
         // Reddit currently leaves Preview genuinely disabled even after the
         // reply textarea contains text. Preserve its own preview renderer and
@@ -266,7 +338,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // dialog. Fit only that dialog into the actual visual viewport so its
         // close button and final help rows are both reachable on every iPhone.
         "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
-        "const sweep=()=>{themeRoots();return {roots:roots().length,giphyGrids:fixGiphy(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
+        "const sweep=()=>{themeRoots();const giphyGrids=fixGiphy();return {roots:roots().length,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
         "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});}"
         "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>window.__apolloChatEnhancementSweep?.(),700);"
@@ -285,6 +357,67 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
         if (name.length > 0) pairs[name] = value ?: @"";
     }
     return pairs;
+}
+
+// Reuse only the WebKit process pool for an unchanged active session. Reddit
+// stores the Chat filter (Direct / Group) in website data, so sharing a data
+// store made a Threads filter leak into Messages and standalone Chat. Each
+// visible controller therefore keeps its own non-persistent cookie/data store;
+// only the process is shared, and a username or cookie change creates a new
+// process pool.
+@interface ApolloModernMailboxWebContext : NSObject
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) NSString *cookieHeader;
+@property (nonatomic, strong) WKProcessPool *processPool;
+@end
+
+@implementation ApolloModernMailboxWebContext
+@end
+
+static ApolloModernMailboxWebContext *sApolloModernMailboxWebContext = nil;
+
+static ApolloModernMailboxWebContext *ApolloModernMailboxContextForActiveSession(void) {
+    ApolloWebSessionEntry *session = ApolloActiveWebSession();
+    NSString *username = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    if (session.cookieHeader.length == 0) return nil;
+
+    BOOL unchanged = [sApolloModernMailboxWebContext.username isEqualToString:username] &&
+        [sApolloModernMailboxWebContext.cookieHeader isEqualToString:session.cookieHeader];
+    if (unchanged) return sApolloModernMailboxWebContext;
+
+    ApolloModernMailboxWebContext *context = [ApolloModernMailboxWebContext new];
+    context.username = username;
+    context.cookieHeader = session.cookieHeader;
+    context.processPool = [WKProcessPool new];
+    sApolloModernMailboxWebContext = context;
+    ApolloLog(@"[DirectChatWeb] Created account-isolated reusable WebKit process pool for u/%@", username);
+    return context;
+}
+
+static void ApolloSeedModernMailboxCookies(NSString *cookieHeader,
+                                           WKHTTPCookieStore *store,
+                                           dispatch_block_t completion) {
+    NSDictionary<NSString *, NSString *> *pairs = ApolloDirectChatCookiePairs(cookieHeader ?: @"");
+    dispatch_group_t group = dispatch_group_create();
+    [pairs enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSString *value, BOOL *stop) {
+        NSMutableDictionary *properties = [@{
+            NSHTTPCookieName: name,
+            NSHTTPCookieValue: value,
+            NSHTTPCookieDomain: @".reddit.com",
+            NSHTTPCookiePath: @"/",
+            NSHTTPCookieSecure: @"TRUE",
+            NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:24.0 * 60.0 * 60.0],
+        } mutableCopy];
+        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:properties];
+        if (!cookie) return;
+        dispatch_group_enter(group);
+        [store setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
+    }];
+    dispatch_group_notify(group, dispatch_get_main_queue(), completion ?: ^{});
+}
+
+static NSString *ApolloModernMailboxUserAgent(void) {
+    return @"Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
 }
 
 typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
@@ -326,6 +459,16 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, assign) BOOL authenticationRequired;
 @property (nonatomic, assign) BOOL authenticationPromptVisible;
 @property (nonatomic, assign) BOOL authenticationPromptAutomaticallyOffered;
+// The All Inbox owns the visible tabs and navigation chrome. In embedded mode
+// the web controller supplies only the conversation content beneath them.
+@property (nonatomic, assign) BOOL embeddedInInbox;
+@property (nonatomic, assign) ApolloModernChatInboxSection embeddedInboxSection;
+@property (nonatomic, strong) NSLayoutConstraint *webViewTopConstraint;
+@property (nonatomic, strong) ApolloModernMailboxWebContext *webContext;
+@property (nonatomic, strong) NSDate *loadStartedAt;
+@property (nonatomic, assign) NSUInteger bounceConfiguredScrollViewCount;
+@property (nonatomic, assign) CGFloat lastAppliedBottomScrollAllowance;
+@property (nonatomic, assign) NSUInteger bottomScrollAllowanceGeneration;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
 - (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url;
@@ -339,7 +482,39 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated;
 - (void)apollo_showAuthenticationError:(NSString *)detail automaticallyPrompt:(BOOL)automaticallyPrompt;
 - (void)apollo_presentAuthenticationPrompt;
+- (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section;
+- (void)apollo_clearEmbeddedChatTypeFiltersForGeneration:(NSUInteger)generation
+                                               completion:(void (^)(BOOL changed))completion;
+- (void)apollo_applyEmbeddedInboxFilterAttempt:(NSUInteger)attempt generation:(NSUInteger)generation;
+- (void)apollo_alignEmbeddedMessagesForGeneration:(NSUInteger)generation
+                                        completion:(dispatch_block_t)completion;
+- (void)apollo_alignEmbeddedThreadsForGeneration:(NSUInteger)generation
+                                       completion:(dispatch_block_t)completion;
+- (void)apollo_updateEmbeddedWebChromeForURL:(NSURL *)url;
+- (void)apollo_enableNativeScrollBounce;
+- (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance;
 @end
+
+// A CSS overflow scroller inside WKWebView is represented by a private
+// WKChildScrollView that does not exist yet when the WKWebView itself is
+// created. Configuring only webView.scrollView therefore leaves Reddit's real
+// conversation list with a hard edge. Walk the public UIView hierarchy and
+// apply normal iOS bounce behavior to every scroll view after hydration too.
+//
+static NSUInteger ApolloConfigureEmbeddedScrollViews(UIView *view) {
+    if (!view) return 0;
+    NSUInteger configured = 0;
+    if ([view isKindOfClass:[UIScrollView class]]) {
+        UIScrollView *scrollView = (UIScrollView *)view;
+        scrollView.bounces = YES;
+        scrollView.alwaysBounceVertical = YES;
+        configured += 1;
+    }
+    for (UIView *subview in view.subviews) {
+        configured += ApolloConfigureEmbeddedScrollViews(subview);
+    }
+    return configured;
+}
 
 static NSString *ApolloValidatedModernMailboxPath(ApolloModernMailboxKind kind,
                                                    NSString *candidate) {
@@ -418,11 +593,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.view.clipsToBounds = YES;
 
     WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
-    // The shared persistent jar can belong to a different web-session account.
-    // Seed a fresh per-controller store from the active account instead.
+    self.webContext = ApolloModernMailboxContextForActiveSession();
+    // Each controller gets a fresh private data store. Reusing that store made
+    // Reddit's selected Group chip survive when navigating from Threads to
+    // Messages, which is both confusing and capable of hiding real messages.
     configuration.websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore;
+    configuration.processPool = self.webContext.processPool ?: [WKProcessPool new];
     self.webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
-    self.webView.customUserAgent = @"Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
+    self.webView.customUserAgent = ApolloModernMailboxUserAgent();
     self.webView.navigationDelegate = self;
     self.webView.UIDelegate = self;
     self.webView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -431,19 +609,51 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.webView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.scrollView.backgroundColor = UIColor.systemBackgroundColor;
     self.webView.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    // WKWebView only enables the familiar iOS stretch/bounce when content is
+    // taller than its frame by default. Chat's empty and short lists should
+    // still feel native when pulled at either edge.
+    self.webView.scrollView.bounces = YES;
+    self.webView.scrollView.alwaysBounceVertical = YES;
     // Keep Reddit's asynchronous Chat bootstrap hidden; only reveal the mobile
     // Chat document after its request list or composer has actually hydrated.
     self.webView.alpha = 0.0;
     self.webView.userInteractionEnabled = NO;
     [self.view addSubview:self.webView];
+    // The parent Inbox view already ends below its native controls and above
+    // Apollo's tab bar. Use those exact embedded bounds rather than adding a
+    // second safe-area inset. On Messages, crop Reddit's redundant Chats,
+    // Requests, and Threads navigation rows so the first conversation begins
+    // beneath Apollo's tabs. The dedicated Threads route contains real reply
+    // threads and is not cropped. Conversation rooms retain their web header
+    // because it contains the participant and Back control.
+    NSLayoutYAxisAnchor *webTopAnchor = self.embeddedInInbox
+        ? self.view.topAnchor : self.view.safeAreaLayoutGuide.topAnchor;
+    NSLayoutYAxisAnchor *webBottomAnchor = self.embeddedInInbox
+        ? self.view.bottomAnchor : self.view.safeAreaLayoutGuide.bottomAnchor;
+    CGFloat initialTopOffset = 0.0;
+    if (self.embeddedInInbox) {
+        // Requests has a useful "Additional requests" row and empty state just
+        // below its duplicate title, while Messages has a much taller
+        // Chats/Requests/Threads header. The Messages value is only a safe
+        // fallback; after hydration we measure its first real row precisely.
+        if (self.embeddedInboxSection == ApolloModernChatInboxSectionRequests) {
+            initialTopOffset = -54.0;
+        } else if (self.embeddedInboxSection == ApolloModernChatInboxSectionThreads) {
+            initialTopOffset = 8.0;
+        } else {
+            initialTopOffset = -213.0;
+        }
+    }
+    self.webViewTopConstraint = [self.webView.topAnchor constraintEqualToAnchor:webTopAnchor
+                                                                        constant:initialTopOffset];
     [NSLayoutConstraint activateConstraints:@[
         [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.webView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         // Keep Reddit's conversation composer below Apollo's navigation bar
         // and above the home indicator/keyboard instead of drawing underneath
         // either chrome surface.
-        [self.webView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [self.webView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        self.webViewTopConstraint,
+        [self.webView.bottomAnchor constraintEqualToAnchor:webBottomAnchor],
     ]];
 
     self.loadingView = [UIView new];
@@ -512,15 +722,67 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     ]];
     [self.spinner startAnimating];
 
-    UIBarButtonItem *reload = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(apollo_reloadChat)];
-    self.navigationItem.rightBarButtonItem = reload;
+    if (!self.embeddedInInbox) {
+        UIBarButtonItem *reload = [[UIBarButtonItem alloc]
+            initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(apollo_reloadChat)];
+        self.navigationItem.rightBarButtonItem = reload;
+    }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(apollo_activeThemeChanged:)
                                                  name:@"com.christianselig.ApolloSpecificThemeChanged"
                                                object:nil];
     [self apollo_applyActiveTheme];
     [self apollo_seedAndLoad];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self apollo_enableNativeScrollBounce];
+}
+
+- (void)apollo_enableNativeScrollBounce {
+    CGFloat bottomAllowance = 0.0;
+    UITabBar *tabBar = self.tabBarController.tabBar;
+    if (self.embeddedInInbox && tabBar && !tabBar.hidden && tabBar.alpha > 0.01 &&
+        tabBar.window && self.webView.window) {
+        CGRect tabBarFrame = [tabBar convertRect:tabBar.bounds toView:self.webView];
+        CGFloat overlap = CGRectGetMaxY(self.webView.bounds) - CGRectGetMinY(tabBarFrame);
+        if (overlap > 0.0) bottomAllowance = overlap + 12.0;
+    }
+    NSUInteger configured = ApolloConfigureEmbeddedScrollViews(self.webView);
+    BOOL countChanged = configured != self.bounceConfiguredScrollViewCount;
+    BOOL allowanceChanged = fabs(bottomAllowance - self.lastAppliedBottomScrollAllowance) > 0.5;
+    BOOL generationChanged = self.bottomScrollAllowanceGeneration != self.readinessGeneration;
+    self.bounceConfiguredScrollViewCount = configured;
+    self.lastAppliedBottomScrollAllowance = bottomAllowance;
+    self.bottomScrollAllowanceGeneration = self.readinessGeneration;
+    if (bottomAllowance > 0.0 && (countChanged || allowanceChanged || generationChanged)) {
+        [self apollo_applyEmbeddedBottomScrollAllowance:bottomAllowance];
+    }
+    if (countChanged || allowanceChanged || generationChanged) {
+        ApolloLog(@"[DirectChatWeb] Enabled Apollo-style bounce on %lu WebKit scroll view(s), bottom allowance %.1fpt",
+                  (unsigned long)configured, bottomAllowance);
+    }
+}
+
+// WKChildScrollView accepts bounces, but WebKit immediately resets its native
+// contentInset to zero because the scroll range belongs to a CSS overflow
+// element. Add the measured tab-bar overlap to Reddit's actual virtual scroller
+// instead. This increases scrollHeight, so the final Threads reply composer can
+// move completely above Apollo's floating tab bar. Keep Reddit's own padding
+// as the base in case its mobile layout changes later.
+- (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance {
+    if (!self.embeddedInInbox || bottomAllowance <= 0.0) return;
+    NSString *script = [NSString stringWithFormat:
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden';};"
+         "let applied=0;for(const e of roots.flatMap(r=>[...r.querySelectorAll('rs-virtual-scroll-dynamic')])){if(!visible(e))continue;"
+         "if(e.dataset.apolloNativePaddingBottom===undefined)e.dataset.apolloNativePaddingBottom=String(parseFloat(getComputedStyle(e).paddingBottom)||0);"
+         "const total=(parseFloat(e.dataset.apolloNativePaddingBottom)||0)+%.1f;"
+         "e.style.setProperty('padding-bottom',total+'px','important');"
+         "e.style.setProperty('scroll-padding-bottom',total+'px','important');applied++;}return applied;})()",
+         bottomAllowance];
+    [self.webView evaluateJavaScript:script completionHandler:nil];
 }
 
 - (void)dealloc {
@@ -545,7 +807,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)viewWillDisappear:(BOOL)animated {
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
     [super viewWillDisappear:animated];
-    if (self.didCaptureOriginalNavigationTintColor) {
+    if (!self.embeddedInInbox && self.didCaptureOriginalNavigationTintColor) {
         self.navigationController.navigationBar.tintColor = self.originalNavigationTintColor;
     }
 }
@@ -563,7 +825,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     // UINavigationBar is shared by Apollo's whole navigation stack. Capture
     // its actual pre-chat value before the first theme application mutates it,
     // including a legitimate nil/default tint, so popping is a true restore.
-    if (!self.didCaptureOriginalNavigationTintColor && self.navigationController) {
+    if (!self.embeddedInInbox && !self.didCaptureOriginalNavigationTintColor && self.navigationController) {
         self.originalNavigationTintColor = self.navigationController.navigationBar.tintColor;
         self.didCaptureOriginalNavigationTintColor = YES;
         ApolloLog(@"[DirectChatWeb] Captured original navigation tint before applying mailbox theme");
@@ -589,17 +851,19 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     [self.reauthenticateButton setTitleColor:accent forState:UIControlStateNormal];
     self.reauthenticateButton.backgroundColor = [accent colorWithAlphaComponent:0.14];
     self.reauthenticateButton.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
-    self.navigationItem.rightBarButtonItem.tintColor = accent;
-    self.navigationController.navigationBar.tintColor = accent;
+    if (!self.embeddedInInbox) {
+        self.navigationItem.rightBarButtonItem.tintColor = accent;
+        self.navigationController.navigationBar.tintColor = accent;
 
-    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = bar;
-    appearance.shadowColor = separator;
-    appearance.titleTextAttributes = @{NSForegroundColorAttributeName: text};
-    self.navigationItem.standardAppearance = appearance;
-    self.navigationItem.scrollEdgeAppearance = appearance;
-    self.navigationItem.compactAppearance = appearance;
+        UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+        [appearance configureWithOpaqueBackground];
+        appearance.backgroundColor = bar;
+        appearance.shadowColor = separator;
+        appearance.titleTextAttributes = @{NSForegroundColorAttributeName: text};
+        self.navigationItem.standardAppearance = appearance;
+        self.navigationItem.scrollEdgeAppearance = appearance;
+        self.navigationItem.compactAppearance = appearance;
+    }
 
     // Install the palette/layout hook before Reddit creates any SPA shadow
     // roots. The same source is evaluated below for the current document so a
@@ -625,6 +889,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_showLoadingWithDetail:(NSString *)detail {
+    self.loadStartedAt = [NSDate date];
     self.authenticationRequired = NO;
     self.authenticationPromptAutomaticallyOffered = NO;
     self.reauthenticateButton.hidden = YES;
@@ -632,8 +897,24 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.readinessGeneration += 1;
     self.modmailThreadTransitionPending = NO;
     self.modmailThreadTransitionGeneration += 1;
-    self.loadingTitleLabel.text = self.mailboxKind == ApolloModernMailboxKindModmail
-        ? @"Opening Moderator Mail" : @"Opening Reddit Chat";
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        self.loadingTitleLabel.text = @"Opening Moderator Mail";
+    } else if (self.embeddedInInbox) {
+        switch (self.embeddedInboxSection) {
+            case ApolloModernChatInboxSectionRequests:
+                self.loadingTitleLabel.text = @"Opening Requests";
+                break;
+            case ApolloModernChatInboxSectionThreads:
+                self.loadingTitleLabel.text = @"Opening Threads";
+                break;
+            case ApolloModernChatInboxSectionMessages:
+            default:
+                self.loadingTitleLabel.text = @"Opening Messages";
+                break;
+        }
+    } else {
+        self.loadingTitleLabel.text = @"Opening Reddit Chat";
+    }
     self.loadingDetailLabel.text = detail.length ? detail : @"Preparing your private session…";
     self.loadingView.hidden = NO;
     self.loadingView.alpha = 1.0;
@@ -824,7 +1105,16 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         self.loadingView.hidden = YES;
     }];
     NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat";
-    ApolloLog(@"[DirectChatWeb] Revealed hydrated mobile %@ UI", surface);
+    NSTimeInterval elapsed = self.loadStartedAt ? -[self.loadStartedAt timeIntervalSinceNow] : 0.0;
+    ApolloLog(@"[DirectChatWeb] Revealed hydrated mobile %@ UI in %.2fs", surface, elapsed);
+    // Reddit creates its WKChildScrollView only after the custom elements
+    // hydrate. Configure it now and once more after the final compositing pass.
+    [self apollo_enableNativeScrollBounce];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf apollo_enableNativeScrollBounce];
+    });
     if (self.mailboxKind == ApolloModernMailboxKindChat) {
         [self apollo_captureChatStatus];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -839,12 +1129,310 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     NSString *script =
         @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
          "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
-         "let hasUnread=/^\\(\\d+\\)/.test(document.title);let preview='';"
+         "const titleMatch=(document.title||'').match(/^\\((\\d+)\\)/);let unreadCount=titleMatch?parseInt(titleMatch[1],10)||0:0;let hasUnread=unreadCount>0;let preview='';"
          "for(const root of roots)for(const e of root.querySelectorAll('*')){if(!visible(e))continue;const cls=typeof e.className==='string'?e.className:'';const marker=(cls+' '+(e.getAttribute('data-testid')||'')+' '+(e.getAttribute('aria-label')||'')).toLowerCase();const text=(e.textContent||'').replace(/\\s+/g,' ').trim();if(!hasUnread&&marker.includes('unread')&&text.toLowerCase()!=='unread'&&!e.matches('input,[role=switch]'))hasUnread=true;if(!preview&&e.children.length===0&&text.length>3&&text.length<160&&/^[^:]{1,40}:\\s+.+/.test(text))preview=text;}"
-         "return {hasUnread,preview:preview||null,checkedAt:Date.now()};})()";
+         "const requests=location.pathname.startsWith('/chat/requests'),threads=location.pathname.startsWith('/chat/threads');const body=roots.map(r=>{const host=r===document?document.body:r;return host?.innerText||host?.textContent||'';}).join(' ').replace(/\\s+/g,' ').trim().toLowerCase();"
+         "const result={surface:requests?'requests':(threads?'threads':'messages'),hasUnread,unreadCount,preview:preview||null,checkedAt:Date.now()};"
+         "if(requests)result.hasRequests=!body.includes('no requests yet')&&!/additional requests\\s*0(?:\\D|$)/.test(body);return result;})()";
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         if (!error && [result isKindOfClass:[NSDictionary class]]) ApolloModernChatPublishStatus(result);
     }];
+}
+
+- (void)apollo_updateEmbeddedWebChromeForURL:(NSURL *)url {
+    if (!self.embeddedInInbox || !self.webViewTopConstraint) return;
+    NSString *path = url.path ?: @"";
+    BOOL rootList = [path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"];
+    BOOL requestsList = [path hasPrefix:@"/chat/requests"];
+    BOOL threadsList = [path hasPrefix:@"/chat/threads"];
+    CGFloat topOffset = 0.0;
+    if (requestsList) {
+        topOffset = -54.0;
+    } else if (threadsList) {
+        // Use a harmless initial position until the real first thread can be
+        // measured after hydration. The readiness pass then removes Reddit's
+        // redundant back/Threads row without clipping the first participant.
+        topOffset = 8.0;
+    } else if (rootList) {
+        // Messages now removes Reddit's redundant list chrome in the DOM. Keep
+        // the web view itself uncropped so elastic overscroll cannot reveal
+        // hidden content above Apollo's native section switcher.
+        topOffset = 0.0;
+    }
+    if (fabs(self.webViewTopConstraint.constant - topOffset) < 0.5) return;
+    self.webViewTopConstraint.constant = topOffset;
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    ApolloLog(@"[DirectChatWeb] Embedded Chat %@ Reddit's redundant list chrome",
+              (rootList || requestsList) ? @"cropped" : @"restored");
+}
+
+// Messages is the direct-chat list. Reddit exposes Direct chats, Group chats,
+// and Mod mail as stable checkbox items behind Filter chat inbox. Change one
+// checkbox per pass: the component rerenders after every click, so retaining
+// and clicking several stale descendants in one JavaScript turn is unreliable.
+- (void)apollo_applyEmbeddedInboxFilterAttempt:(NSUInteger)attempt generation:(NSUInteger)generation {
+    if (!self.embeddedInInbox || generation != self.readinessGeneration || self.didRevealChat) return;
+    ApolloModernChatInboxSection desiredSection = self.embeddedInboxSection;
+    if (desiredSection == ApolloModernChatInboxSectionRequests) {
+        [self apollo_waitForChatReadinessAttempt:0 generation:generation];
+        return;
+    }
+    if (desiredSection == ApolloModernChatInboxSectionThreads) {
+        [self apollo_waitForChatReadinessAttempt:0 generation:generation];
+        return;
+    }
+
+    NSString *script = [NSString stringWithFormat:
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "const all=()=>roots.flatMap(r=>[...r.querySelectorAll('*')]);const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
+         "const items=all().filter(e=>e.tagName==='RS-ROOMS-NAV-FILTER-ITEM'&&visible(e));"
+         "if(!items.length){const filter=all().find(e=>visible(e)&&(e.getAttribute('aria-label')||'').trim().toLowerCase()==='filter chat inbox');if(filter){filter.click();return 'opening';}return 'waiting';}"
+         "const wanted={'group chats':%@,'direct chats':%@,'mod mail':false};"
+         "for(const item of items){const label=(item.getAttribute('label')||item.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();if(!(label in wanted))continue;const control=item.querySelector('[role=checkbox]')||item;const checked=item.checked===true||item.hasAttribute('checked')||control.getAttribute('aria-checked')==='true';if(checked!==wanted[label]){control.click();return 'changed';}}"
+         "const apply=all().find(e=>visible(e)&&e.matches('button,[role=button]')&&(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase()==='apply');if(apply){apply.click();return 'applied';}return 'waiting';})()",
+         @"false", @"true"];
+
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.readinessGeneration || self.didRevealChat ||
+            self.embeddedInboxSection != desiredSection) return;
+        if (!error && [result isEqual:@"applied"]) {
+            ApolloLog(@"[DirectChatWeb] Applied embedded Messages (direct chats) filter");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                if (generation != self.readinessGeneration || self.didRevealChat) return;
+                [self apollo_alignEmbeddedMessagesForGeneration:generation completion:^{
+                    if (generation != self.readinessGeneration || self.didRevealChat) return;
+                    [self apollo_captureChatStatus];
+                    [self apollo_revealChat];
+                }];
+            });
+            return;
+        }
+        if (attempt >= 39) {
+            ApolloLog(@"[DirectChatWeb] Embedded Messages filter timed out; revealing Reddit's available list");
+            [self apollo_alignEmbeddedMessagesForGeneration:generation completion:^{
+                [self apollo_revealChat];
+            }];
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.14 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self apollo_applyEmbeddedInboxFilterAttempt:attempt + 1 generation:generation];
+        });
+    }];
+}
+
+// Messages deliberately enables Reddit Chat's Direct-only type filter. Reddit
+// persists that choice in localStorage and applies it to the dedicated Requests
+// route too, where it silently hides group-chat invitations and renders the
+// legitimate "No requests yet" state. Clear only the three type flags before
+// opening Requests or Threads, then perform a full route load so Reddit's
+// in-memory store reads the reset state. Other per-account Chat preferences in
+// the same object remain untouched.
+- (void)apollo_clearEmbeddedChatTypeFiltersForGeneration:(NSUInteger)generation
+                                               completion:(void (^)(BOOL changed))completion {
+    if (!self.embeddedInInbox || generation != self.readinessGeneration) {
+        if (completion) completion(NO);
+        return;
+    }
+    NSString *script =
+        @"(()=>{const key='chat:reddit-chat-type-filters';let state={};"
+         "try{state=JSON.parse(localStorage.getItem(key)||'{}')}catch(e){state={}}"
+         "let changed=false;for(const account of Object.keys(state)){const value=state[account]||{};"
+         "if(value.shouldShowGroupChats||value.shouldShowDirectChats||value.shouldShowModmailChats)changed=true;"
+         "state[account]={...value,shouldShowGroupChats:false,shouldShowDirectChats:false,shouldShowModmailChats:false};}"
+         "if(changed)localStorage.setItem(key,JSON.stringify(state));return changed;})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.readinessGeneration) return;
+        BOOL changed = !error && [result respondsToSelector:@selector(boolValue)] && [result boolValue];
+        if (changed) {
+            ApolloLog(@"[DirectChatWeb] Cleared persisted Chat type filters before %@",
+                      self.embeddedInboxSection == ApolloModernChatInboxSectionRequests
+                          ? @"Requests" : @"Threads");
+        }
+        if (completion) completion(changed);
+    }];
+}
+
+// Reddit's root Chat page places its own header, filter chips, and two
+// mobile-web navigation rows before the first conversation. Apollo already
+// supplies all of that navigation. Remove those elements from layout rather
+// than cropping the WKWebView: a native crop looks correct at rest but elastic
+// overscroll can pull the supposedly-hidden rows back into view.
+- (void)apollo_alignEmbeddedMessagesForGeneration:(NSUInteger)generation
+                                        completion:(dispatch_block_t)completion {
+    if (!self.embeddedInInbox ||
+        self.embeddedInboxSection != ApolloModernChatInboxSectionMessages ||
+        generation != self.readinessGeneration) {
+        if (completion) completion();
+        return;
+    }
+    NSString *script =
+        @"(()=>{window.__apolloEmbeddedInboxMessages=true;window.__apolloChatEnhancementSweep?.();"
+         "const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
+         "const all=roots.flatMap(r=>[...r.querySelectorAll('*')]);let marker=all.find(e=>visible(e)&&e.matches('.room-name'));"
+         "if(marker)marker=marker.closest('li,[role=button]')||marker;"
+         "if(!marker)marker=all.find(e=>visible(e)&&(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase()==='no messages');"
+         "if(!marker)return null;const top=marker.getBoundingClientRect().top;return Number.isFinite(top)?top:null;})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.readinessGeneration ||
+            self.embeddedInboxSection != ApolloModernChatInboxSectionMessages) return;
+        CGFloat top = !error && [result respondsToSelector:@selector(doubleValue)]
+            ? [result doubleValue] : 0.0;
+        // The redundant elements are gone from layout, so the first room
+        // normally measures at zero. Retain a small native breathing gap and
+        // only compensate for a modest future Reddit wrapper—not a hidden
+        // screenful that elastic overscroll could expose.
+        CGFloat offset = MAX(-40.0, MIN(12.0, 12.0 - top));
+        self.webViewTopConstraint.constant = offset;
+        [self.view setNeedsLayout];
+        [self.view layoutIfNeeded];
+        ApolloLog(@"[DirectChatWeb] Aligned embedded Messages first content at %.1fpt (web offset %.1f)",
+                  top, offset);
+        if (completion) completion();
+    }];
+}
+
+// The real Threads route prepends its own mobile back button and "Threads"
+// title. Apollo already supplies that navigation through the three-way section
+// switcher, so align the first actual reply thread beneath it. Measuring the
+// custom element avoids clipping its participant row when Reddit changes the
+// height of the redundant header.
+- (void)apollo_alignEmbeddedThreadsForGeneration:(NSUInteger)generation
+                                       completion:(dispatch_block_t)completion {
+    if (!self.embeddedInInbox ||
+        self.embeddedInboxSection != ApolloModernChatInboxSectionThreads ||
+        generation != self.readinessGeneration) {
+        if (completion) completion();
+        return;
+    }
+    NSString *script =
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
+         "const all=roots.flatMap(r=>[...r.querySelectorAll('*')]);let thread=all.find(e=>visible(e)&&e.tagName==='RS-THREADS-VIEW-THREAD'),marker=null;"
+         "if(thread){const belongs=e=>{let n=e;while(n){if(n===thread)return true;const root=n.getRootNode?.();n=root instanceof ShadowRoot?root.host:n.parentElement;}return false;};marker=all.filter(e=>e!==thread&&belongs(e)&&visible(e)&&e.children.length===0&&(e.textContent||'').replace(/\\s+/g,' ').trim().length>0).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top)[0]||thread;}"
+         "if(!marker)marker=all.find(e=>visible(e)&&e.children.length===0&&(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase()==='no threads');"
+         "if(!marker)return null;const top=marker.getBoundingClientRect().top;return Number.isFinite(top)?top:null;})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.readinessGeneration ||
+            self.embeddedInboxSection != ApolloModernChatInboxSectionThreads) return;
+        if (!error && [result respondsToSelector:@selector(doubleValue)]) {
+            CGFloat top = [result doubleValue];
+            CGFloat offset = MAX(-240.0, MIN(8.0, 12.0 - top));
+            self.webViewTopConstraint.constant = offset;
+            [self.view setNeedsLayout];
+            [self.view layoutIfNeeded];
+            ApolloLog(@"[DirectChatWeb] Aligned embedded Threads first content at %.1fpt (web offset %.1f)",
+                      top, offset);
+        }
+        if (completion) completion();
+    }];
+}
+
+- (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section {
+    if (!self.embeddedInInbox || self.mailboxKind != ApolloModernMailboxKindChat) return;
+    if (section < ApolloModernChatInboxSectionMessages ||
+        section > ApolloModernChatInboxSectionThreads) {
+        section = ApolloModernChatInboxSectionMessages;
+    }
+
+    NSString *targetPath;
+    switch (section) {
+        case ApolloModernChatInboxSectionRequests:
+            targetPath = @"/chat/requests";
+            break;
+        case ApolloModernChatInboxSectionThreads:
+            targetPath = @"/chat/threads";
+            break;
+        case ApolloModernChatInboxSectionMessages:
+        default:
+            targetPath = @"/chat";
+            break;
+    }
+    NSString *currentPath = self.webView.URL.path ?: @"";
+    BOOL alreadyOnTarget;
+    if (section == ApolloModernChatInboxSectionRequests) {
+        alreadyOnTarget = [currentPath hasPrefix:@"/chat/requests"];
+    } else if (section == ApolloModernChatInboxSectionThreads) {
+        alreadyOnTarget = [currentPath hasPrefix:@"/chat/threads"];
+    } else {
+        alreadyOnTarget = [currentPath isEqualToString:@"/chat"] ||
+            [currentPath isEqualToString:@"/chat/"];
+    }
+    BOOL sameSection = self.embeddedInboxSection == section;
+    self.embeddedInboxSection = section;
+    self.initialDestinationPath = targetPath;
+    [self apollo_updateEmbeddedWebChromeForURL:[NSURL URLWithString:
+        [@"https://www.reddit.com" stringByAppendingString:targetPath]]];
+
+    // Re-selecting the active list is intentionally inert, matching a native
+    // tab bar. If a conversation room is open, however, tapping the selected
+    // tab returns to that section's list.
+    if (sameSection && alreadyOnTarget && self.didRevealChat) return;
+
+    NSString *detail;
+    switch (section) {
+        case ApolloModernChatInboxSectionRequests:
+            detail = @"Checking for people who want to chat…";
+            break;
+        case ApolloModernChatInboxSectionThreads:
+            detail = @"Loading conversations around messages you replied to…";
+            break;
+        case ApolloModernChatInboxSectionMessages:
+        default:
+            detail = @"Loading your direct conversations…";
+            break;
+    }
+    [self apollo_showLoadingWithDetail:detail];
+    NSUInteger generation = self.readinessGeneration;
+
+    // Direct-only is useful for Messages but incorrect for Requests, where it
+    // hides group invitations. Reset the persisted type filter before either
+    // non-Messages route is allowed to hydrate. If the route is already open,
+    // a full reload is required to replace Reddit's in-memory filtered store.
+    if (section != ApolloModernChatInboxSectionMessages) {
+        __weak typeof(self) weakSelf = self;
+        [self apollo_clearEmbeddedChatTypeFiltersForGeneration:generation
+                                                    completion:^(BOOL changed) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || generation != self.readinessGeneration ||
+                self.embeddedInboxSection != section) return;
+            if (alreadyOnTarget && !changed) {
+                [self apollo_waitForChatReadinessAttempt:0 generation:generation];
+                return;
+            }
+            [self.webView stopLoading];
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
+                [@"https://www.reddit.com" stringByAppendingString:targetPath]]];
+            request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
+            [self.webView loadRequest:request];
+        }];
+        return;
+    }
+
+    if (alreadyOnTarget) {
+        [self apollo_applyEmbeddedInboxFilterAttempt:0 generation:generation];
+        return;
+    }
+
+    // Rapid taps may leave WebKit finishing an older route after a newer tab
+    // has already been selected. Explicitly cancel that obsolete navigation so
+    // only the newly selected tab is allowed to drive readiness and layout.
+    [self.webView stopLoading];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
+        [@"https://www.reddit.com" stringByAppendingString:targetPath]]];
+    request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
+    [self.webView loadRequest:request];
 }
 
 - (void)apollo_seedAndLoad {
@@ -863,31 +1451,16 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
     NSDictionary<NSString *, NSString *> *pairs = ApolloDirectChatCookiePairs(session.cookieHeader);
     WKHTTPCookieStore *store = self.webView.configuration.websiteDataStore.httpCookieStore;
-    dispatch_group_t group = dispatch_group_create();
-    [pairs enumerateKeysAndObjectsUsingBlock:^(NSString *name, NSString *value, BOOL *stop) {
-        NSMutableDictionary *properties = [@{
-            NSHTTPCookieName: name,
-            NSHTTPCookieValue: value,
-            NSHTTPCookieDomain: @".reddit.com",
-            NSHTTPCookiePath: @"/",
-            NSHTTPCookieSecure: @"TRUE",
-            NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:24.0 * 60.0 * 60.0],
-        } mutableCopy];
-        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:properties];
-        if (!cookie) return;
-        dispatch_group_enter(group);
-        [store setCookie:cookie completionHandler:^{ dispatch_group_leave(group); }];
-    }];
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+    ApolloSeedModernMailboxCookies(session.cookieHeader, store, ^{
         BOOL modmail = self.mailboxKind == ApolloModernMailboxKindModmail;
         self.modmailWarmupPending = modmail;
         ApolloLog(@"[DirectChatWeb] Seeded %lu cookies for u/%@; loading mobile %@",
                   (unsigned long)pairs.count, self.username, modmail ? @"Modmail warm-up" : @"Chat Requests");
-        // `/chat` restores Reddit's last Threads room. `/chat/requests` is the
-        // stable modern direct-message request route discovered through the
-        // hydrated desktop client, and it accepts the same authenticated Reddit
-        // cookies directly. Start mobile/device-width here so none of the old
-        // desktop feed/drawer handoff is needed during ordinary use.
+        // Reddit exposes stable authenticated routes for the conversation list
+        // (`/chat`), incoming requests (`/chat/requests`), and participated
+        // message-reply threads (`/chat/threads`). Start mobile/device-width
+        // here so none of the old desktop feed/drawer handoff is needed during
+        // ordinary use.
         // Reddit moved the official Modmail surface into www.reddit.com/mail;
         // unlike Apollo's OAuth-only /api/mod endpoints this page accepts the
         // same signed-in web cookie as the rest of API-Key-Free Mode. A fresh
@@ -897,7 +1470,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
             ? self.initialDestinationPath : @"/chat/requests";
         NSString *urlString = [@"https://www.reddit.com" stringByAppendingString:chatPath];
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
-        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        // Reddit's API calls still fetch current inbox data; allowing the main
+        // document and versioned JS/CSS bundles to revalidate is what makes a
+        // warmed launch faster without showing stale conversations.
+        request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
         [self.webView loadRequest:request];
     });
 }
@@ -905,10 +1481,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)apollo_waitForChatReadinessAttempt:(NSUInteger)attempt generation:(NSUInteger)generation {
     if (generation != self.readinessGeneration || self.didRevealChat) return;
     // The navigation-finished callback fires before Reddit's Chat custom
-    // elements finish hydrating. If the Requests route is empty, use Reddit's
-    // own Threads/back control before revealing the page. This preserves the
-    // authenticated SPA state while taking the user straight to their existing
-    // conversations instead of leaving them on a dead-end empty screen.
+    // elements finish hydrating. Keep the native loading cover up until the
+    // selected list has painted a real control, row, or legitimate empty state.
     NSString *script;
     if (self.mailboxKind == ApolloModernMailboxKindModmail) {
         // Current (2026) Reddit Modmail lives at /mail/all. Its first navigation
@@ -921,26 +1495,53 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
              "const ready=location.pathname.startsWith('/mail')&&(body.includes('mark all as read')||body.includes('recently updated')||body.includes('all mail')||body.includes('in progress')||!!document.querySelector('modmail-mailbox-wrapper'));"
              "return ready?'ready':'waiting';})()";
     } else {
-        script =
+        BOOL keepExplicitEmptyRequests = [self.initialDestinationPath isEqualToString:@"/chat/requests"];
+        script = [NSString stringWithFormat:
             @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
              "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
              "const text=e=>(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
              "const controls=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button],input,textarea,[contenteditable=true],h1,h2,h3,p')]);"
+             "const all=roots.flatMap(r=>[...r.querySelectorAll('*')]);const threadsRoute=location.pathname.startsWith('/chat/threads');"
+             "if(threadsRoute){const threadItem=all.some(e=>visible(e)&&e.tagName==='RS-THREADS-VIEW-THREAD');const threadText=all.filter(e=>e.children.length===0).map(text).join(' ');return threadItem||threadText.includes('no threads')?'ready':'waiting';}"
              "const empty=location.pathname.startsWith('/chat/requests')&&controls.some(e=>visible(e)&&text(e)==='no requests yet');"
+             // Reddit paints its Requests empty state before its current
+             // invitations finish loading. Give that data request a short
+             // settling window before accepting the empty state as genuine.
+             "if(empty&&%@)return %lu>=8?'ready':'waiting';"
              "if(empty&&!window.__apolloEmptyRequestsHandled){window.__apolloEmptyRequestsHandled=true;const clickables=roots.flatMap(r=>[...r.querySelectorAll('button,a,[role=button]')]).filter(visible);"
              "let back=clickables.find(e=>{const r=e.getBoundingClientRect();if(r.left>130||r.top>180)return false;const marker=[text(e),e.getAttribute('aria-label'),e.getAttribute('title'),e.getAttribute('data-testid')].filter(Boolean).join(' ').toLowerCase();return /(^|\\s)(back|threads?)(\\s|$)/.test(marker)||!!e.querySelector('[icon-name*=back i],[name*=back i],[aria-label*=back i]');});"
              "if(!back)back=clickables.filter(e=>{const r=e.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;return cx<90&&cy>55&&cy<180&&r.width<180&&r.height<100;}).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top)[0];"
              "if(back){back.click();return 'redirected';}location.replace('/chat');return 'redirected';}"
+             // A fully-hydrated filtered list can legitimately contain no
+             // rooms. Reddit renders this as an exact empty-state pair; treat
+             // both markers together as ready instead of leaving an already
+             // complete screen behind the loading cover for 15 seconds.
+             "const rootList=location.pathname==='/chat'||location.pathname==='/chat/';"
+             "const hydratedEmpty=rootList&&controls.some(e=>visible(e)&&text(e)==='no messages')&&controls.some(e=>visible(e)&&text(e)==='clear filters');"
+             "if(hydratedEmpty)return 'ready';"
              "const ready=controls.some(e=>{if(!visible(e))return false;const t=text(e),a=(e.getAttribute('aria-label')||'').trim().toLowerCase();"
              "if(t==='view request'||t==='go to messages'||t==='start new chat'||t==='accept'||t==='additional requests'||t==='threads'||t==='chats')return true;"
-             "const room=location.pathname.startsWith('/chat/room/');return room&&(e.matches('input,textarea,[contenteditable=true]')||a==='send message'||a==='message');});return ready?'ready':'waiting';})()";
+             "const room=location.pathname.startsWith('/chat/room/');return room&&(e.matches('input,textarea,[contenteditable=true]')||a==='send message'||a==='message');});return ready?'ready':'waiting';})()",
+             keepExplicitEmptyRequests ? @"true" : @"false",
+             (unsigned long)attempt];
     }
     __weak typeof(self) weakSelf = self;
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self || generation != self.readinessGeneration || self.didRevealChat) return;
         if (!error && [result isEqual:@"ready"]) {
-            [self apollo_revealChat];
+            NSString *path = self.webView.URL.path ?: @"";
+            BOOL embeddedList = self.embeddedInInbox &&
+                ([path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"]);
+            if (embeddedList) {
+                [self apollo_applyEmbeddedInboxFilterAttempt:0 generation:generation];
+            } else if (self.embeddedInInbox && [path hasPrefix:@"/chat/threads"]) {
+                [self apollo_alignEmbeddedThreadsForGeneration:generation completion:^{
+                    [self apollo_revealChat];
+                }];
+            } else {
+                [self apollo_revealChat];
+            }
             return;
         }
         if (!error && [result isEqual:@"redirected"] && attempt == 0) {
@@ -1136,11 +1737,13 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     if ([self apollo_isModmailConversationURL:webView.URL]) {
         [self apollo_beginModmailThreadTransitionToURL:webView.URL];
     }
+    [self apollo_updateEmbeddedWebChromeForURL:webView.URL];
     if (!self.didRevealChat) [self.spinner startAnimating];
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     ApolloLog(@"[DirectChatWeb] Loaded %@%@ for u/%@", webView.URL.host ?: @"unknown host", webView.URL.path ?: @"", self.username);
+    [self apollo_updateEmbeddedWebChromeForURL:webView.URL];
     if (self.mailboxKind == ApolloModernMailboxKindModmail &&
         self.modmailWarmupPending && [webView.URL.path hasPrefix:@"/chat"]) {
         self.modmailWarmupPending = NO;
@@ -1149,7 +1752,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         ApolloLog(@"[DirectChatWeb] Modmail same-origin warm-up complete; loading requested mailbox route");
         NSMutableURLRequest *request = [NSMutableURLRequest
             requestWithURL:[NSURL URLWithString:[@"https://www.reddit.com" stringByAppendingString:modmailPath]]];
-        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        request.cachePolicy = NSURLRequestUseProtocolCachePolicy;
         [webView loadRequest:request];
         return;
     }
@@ -1172,6 +1775,32 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
             // transition cover.
             [self apollo_finishModmailThreadTransitionForGeneration:
                 self.modmailThreadTransitionGeneration];
+        }
+        if (self.embeddedInInbox && self.mailboxKind == ApolloModernMailboxKindChat) {
+            NSString *path = webView.URL.path ?: @"";
+            BOOL wantsRequests = self.embeddedInboxSection == ApolloModernChatInboxSectionRequests;
+            BOOL wantsThreads = self.embeddedInboxSection == ApolloModernChatInboxSectionThreads;
+            BOOL routeMatchesSelection = wantsRequests
+                ? [path hasPrefix:@"/chat/requests"]
+                : (wantsThreads
+                    ? [path hasPrefix:@"/chat/threads"]
+                    : ([path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"]));
+            if (!routeMatchesSelection) {
+                ApolloLog(@"[DirectChatWeb] Ignored stale embedded Chat navigation %@ while %@ is selected",
+                          path, wantsRequests ? @"Requests" :
+                          (wantsThreads ? @"Threads" : @"Messages"));
+                return;
+            }
+            if (wantsRequests || wantsThreads) {
+                [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
+            } else {
+                // The filter helper is itself a readiness loop and handles
+                // Reddit's shadow-DOM rerenders. Starting it immediately after
+                // the correct /chat document finishes avoids the generic
+                // probe's 15-second timeout on valid empty chat lists.
+                [self apollo_applyEmbeddedInboxFilterAttempt:0 generation:self.readinessGeneration];
+            }
+            return;
         }
         [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
         return;
@@ -1249,6 +1878,57 @@ UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinat
     // full chat screen and keyboard-safe bottom inset correctly.
     controller.hidesBottomBarWhenPushed = YES;
     return controller;
+}
+
+UIViewController *ApolloCreateEmbeddedModernChatViewController(ApolloModernChatInboxSection section) {
+    if (section < ApolloModernChatInboxSectionMessages ||
+        section > ApolloModernChatInboxSectionThreads) {
+        section = ApolloModernChatInboxSectionMessages;
+    }
+    ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
+    controller.embeddedInInbox = YES;
+    controller.embeddedInboxSection = section;
+    switch (section) {
+        case ApolloModernChatInboxSectionRequests:
+            controller.initialDestinationPath = @"/chat/requests";
+            break;
+        case ApolloModernChatInboxSectionThreads:
+            controller.initialDestinationPath = @"/chat/threads";
+            break;
+        case ApolloModernChatInboxSectionMessages:
+        default:
+            controller.initialDestinationPath = @"/chat";
+            break;
+    }
+    controller.hidesBottomBarWhenPushed = NO;
+    return controller;
+}
+
+void ApolloModernChatControllerShowInboxSection(UIViewController *controller,
+                                                ApolloModernChatInboxSection section) {
+    if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
+    [(ApolloDirectChatWebViewController *)controller apollo_showEmbeddedInboxSection:section];
+}
+
+void ApolloModernChatControllerRefreshEmbeddedLayout(UIViewController *controller) {
+    if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
+    ApolloDirectChatWebViewController *chatController =
+        (ApolloDirectChatWebViewController *)controller;
+    [chatController.view setNeedsLayout];
+    [chatController.view layoutIfNeeded];
+    [chatController apollo_enableNativeScrollBounce];
+    // WebKit may discard its private WKChildScrollView while the preloaded hub
+    // is hidden and recreate it on the next compositing pass. Reapply after
+    // that handoff so the real CSS overflow scroller receives the tab-bar inset.
+    __weak ApolloDirectChatWebViewController *weakController = chatController;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakController apollo_enableNativeScrollBounce];
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.90 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakController apollo_enableNativeScrollBounce];
+    });
 }
 
 UIViewController *ApolloCreateModernModmailViewController(void) {

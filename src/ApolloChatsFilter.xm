@@ -68,9 +68,13 @@ static const BOOL sDirectChatRowEnabled = YES;
 static BOOL sNextInboxIsChatFilter = NO;    // armed when the Direct Chat row is tapped
 static char kChatFilterKey;                 // on InboxViewController: this list is chat-filtered
 static __weak id sLatestBoxesController = nil;
-static char kInboxAllChatHeaderKey;
+static char kInboxAllModeSwitcherKey;
 static char kInboxAllOriginalHeaderKey;
+static char kInboxAllNavigationBackdropKey;
 static char kInboxAllStatusObserverKey;
+static char kInboxAllChatHubKey;
+static char kInboxAllChatHubVisibleKey;
+static char kInboxAllOriginalRightItemsKey;
 
 // Modern Chat makes the row useful for cookie-auth API-free accounts as well as
 // OAuth accounts, so it remains present for every signed-in account.
@@ -158,101 +162,556 @@ static void ApolloRefreshBoxesForModeratorState(NSString *reason) {
     });
 }
 
-#pragma mark - Inbox (All): unified modern Chat entry
+#pragma mark - Inbox (All): Notifications / Chat switcher
 
-@interface ApolloInboxAllChatHeaderView : UIControl
-@property (nonatomic, strong) UIView *cardView;
-@property (nonatomic, strong) UIImageView *chatIconView;
-@property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UILabel *detailLabel;
-@property (nonatomic, strong) UILabel *unreadBadgeLabel;
-@property (nonatomic, strong) UIImageView *chevronView;
+typedef NS_ENUM(NSInteger, ApolloInboxMode) {
+    ApolloInboxModeNotifications = 0,
+    ApolloInboxModeChat = 1,
+};
+
+// Keep Chat beside the existing notifications instead of presenting it as a
+// large promotional card. This deliberately behaves like a two-tab switcher,
+// but is drawn with ordinary UIKit so it follows every Apollo theme rather than
+// inheriting the stock blue UISegmentedControl appearance.
+@interface ApolloInboxModeSwitcherView : UIControl
+@property (nonatomic, strong) UIView *containerView;
+@property (nonatomic, strong) UIView *selectionView;
+@property (nonatomic, strong) UIButton *notificationsButton;
+@property (nonatomic, strong) UIButton *chatButton;
+@property (nonatomic, strong) UIView *chatUnreadDot;
+@property (nonatomic, assign) ApolloInboxMode selectedMode;
+- (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated;
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits;
 @end
 
-@implementation ApolloInboxAllChatHeaderView
+@implementation ApolloInboxModeSwitcherView
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
 
-    self.cardView = [UIView new];
-    self.cardView.userInteractionEnabled = NO;
-    self.cardView.layer.cornerRadius = 14.0;
-    self.cardView.layer.borderWidth = 0.5;
-    [self addSubview:self.cardView];
+    self.containerView = [UIView new];
+    self.containerView.userInteractionEnabled = YES;
+    self.containerView.layer.cornerRadius = 12.0;
+    self.containerView.layer.borderWidth = 0.5;
+    self.containerView.clipsToBounds = YES;
+    [self addSubview:self.containerView];
 
-    self.chatIconView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"bubble.left.and.bubble.right.fill"]];
-    self.chatIconView.contentMode = UIViewContentModeScaleAspectFit;
-    [self.cardView addSubview:self.chatIconView];
+    self.selectionView = [UIView new];
+    self.selectionView.userInteractionEnabled = NO;
+    self.selectionView.layer.cornerRadius = 9.0;
+    [self.containerView addSubview:self.selectionView];
 
-    self.titleLabel = [UILabel new];
-    self.titleLabel.text = @"Reddit Chat";
-    self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-    [self.cardView addSubview:self.titleLabel];
+    self.notificationsButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    [self.notificationsButton setTitle:@"Notifications" forState:UIControlStateNormal];
+    self.notificationsButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    self.notificationsButton.accessibilityLabel = @"Notifications";
+    [self.notificationsButton addTarget:self action:@selector(apollo_buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [self.containerView addSubview:self.notificationsButton];
 
-    self.detailLabel = [UILabel new];
-    self.detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.detailLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.cardView addSubview:self.detailLabel];
+    self.chatButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    [self.chatButton setTitle:@"Chat" forState:UIControlStateNormal];
+    self.chatButton.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    self.chatButton.accessibilityLabel = @"Chat";
+    [self.chatButton addTarget:self action:@selector(apollo_buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [self.containerView addSubview:self.chatButton];
 
-    self.unreadBadgeLabel = [UILabel new];
-    self.unreadBadgeLabel.text = @"NEW";
-    self.unreadBadgeLabel.font = [UIFont systemFontOfSize:10.0 weight:UIFontWeightBold];
-    self.unreadBadgeLabel.textAlignment = NSTextAlignmentCenter;
-    self.unreadBadgeLabel.layer.cornerRadius = 9.0;
-    self.unreadBadgeLabel.clipsToBounds = YES;
-    [self.cardView addSubview:self.unreadBadgeLabel];
+    self.chatUnreadDot = [UIView new];
+    self.chatUnreadDot.userInteractionEnabled = NO;
+    self.chatUnreadDot.layer.cornerRadius = 4.5;
+    self.chatUnreadDot.hidden = YES;
+    [self.containerView addSubview:self.chatUnreadDot];
 
-    self.chevronView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-    self.chevronView.contentMode = UIViewContentModeScaleAspectFit;
-    [self.cardView addSubview:self.chevronView];
-
+    _selectedMode = ApolloInboxModeNotifications;
     return self;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    self.cardView.frame = CGRectInset(self.bounds, 12.0, 7.0);
-    CGFloat height = self.cardView.bounds.size.height;
-    self.chatIconView.frame = CGRectMake(16.0, (height - 30.0) / 2.0, 30.0, 30.0);
-    self.chevronView.frame = CGRectMake(self.cardView.bounds.size.width - 28.0, (height - 17.0) / 2.0, 10.0, 17.0);
-    self.unreadBadgeLabel.frame = CGRectMake(self.cardView.bounds.size.width - 82.0, 13.0, 42.0, 18.0);
-    CGFloat textRight = self.unreadBadgeLabel.hidden ? self.chevronView.frame.origin.x - 12.0 : self.unreadBadgeLabel.frame.origin.x - 8.0;
-    self.titleLabel.frame = CGRectMake(58.0, 11.0, MAX(20.0, textRight - 58.0), 24.0);
-    self.detailLabel.frame = CGRectMake(58.0, 36.0, MAX(20.0, self.chevronView.frame.origin.x - 70.0), 21.0);
+    if (CGRectGetWidth(self.bounds) <= 24.0 || CGRectGetHeight(self.bounds) <= 16.0) return;
+    self.containerView.frame = CGRectInset(self.bounds, 12.0, 8.0);
+    CGRect content = CGRectInset(self.containerView.bounds, 3.0, 3.0);
+    CGFloat halfWidth = floor(content.size.width / 2.0);
+    CGRect notificationsFrame = CGRectMake(content.origin.x, content.origin.y, halfWidth, content.size.height);
+    CGRect chatFrame = CGRectMake(CGRectGetMaxX(notificationsFrame), content.origin.y,
+                                  content.size.width - halfWidth, content.size.height);
+    self.notificationsButton.frame = notificationsFrame;
+    self.chatButton.frame = chatFrame;
+    self.selectionView.frame = self.selectedMode == ApolloInboxModeChat ? chatFrame : notificationsFrame;
+    self.chatUnreadDot.frame = CGRectMake(CGRectGetMidX(chatFrame) + 24.0,
+                                          CGRectGetMidY(chatFrame) - 10.0, 9.0, 9.0);
+}
+
+- (void)apollo_buttonTapped:(UIButton *)sender {
+    ApolloInboxMode mode = sender == self.chatButton ? ApolloInboxModeChat : ApolloInboxModeNotifications;
+    [self apollo_setSelectedMode:mode animated:YES];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+- (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated {
+    _selectedMode = mode;
+    void (^changes)(void) = ^{
+        [self setNeedsLayout];
+        if (CGRectGetWidth(self.bounds) > 24.0 && CGRectGetHeight(self.bounds) > 16.0) {
+            [self layoutIfNeeded];
+        }
+    };
+    if (animated && self.window) {
+        [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:changes completion:nil];
+    } else {
+        changes();
+    }
+    [self apollo_refreshForTraits:self.traitCollection];
 }
 
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits {
     NSDictionary *status = ApolloModernChatCachedStatus();
     BOOL unread = [status[@"hasUnread"] boolValue];
-    NSString *preview = [status[@"preview"] isKindOfClass:[NSString class]] ? status[@"preview"] : nil;
-    if (preview.length > 0) {
-        self.detailLabel.text = preview;
-    } else if (unread) {
-        self.detailLabel.text = @"You have a new Chat message";
-    } else {
-        self.detailLabel.text = @"Direct chats, requests & mod mail";
-    }
-    self.unreadBadgeLabel.hidden = !unread;
+    self.chatUnreadDot.hidden = !unread;
+    self.chatButton.accessibilityValue = unread ? @"New activity" : nil;
 
     UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
     UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
     UIColor *separator = ApolloModernChatThemeColor(traits, @"separator");
-    UIColor *text = ApolloModernChatThemeColor(traits, @"text");
     UIColor *secondaryText = ApolloModernChatThemeColor(traits, @"secondaryText");
-    self.cardView.backgroundColor = raised;
-    self.cardView.layer.borderColor = separator.CGColor;
-    self.chatIconView.tintColor = accent;
-    self.chevronView.tintColor = secondaryText;
-    self.titleLabel.textColor = text;
-    self.detailLabel.textColor = secondaryText;
-    self.unreadBadgeLabel.backgroundColor = accent;
-    self.unreadBadgeLabel.textColor = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
+    UIColor *selectedText = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
+    self.backgroundColor = ApolloModernChatThemeColor(traits, @"primary");
+    self.containerView.backgroundColor = raised;
+    self.containerView.layer.borderColor = [separator resolvedColorWithTraitCollection:traits].CGColor;
+    self.selectionView.backgroundColor = accent;
+    [self.notificationsButton setTitleColor:self.selectedMode == ApolloInboxModeNotifications ? selectedText : secondaryText
+                                    forState:UIControlStateNormal];
+    [self.chatButton setTitleColor:self.selectedMode == ApolloInboxModeChat ? selectedText : secondaryText
+                          forState:UIControlStateNormal];
+    self.chatUnreadDot.backgroundColor = UIColor.systemRedColor;
     [self setNeedsLayout];
 }
 
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self apollo_refreshForTraits:self.traitCollection];
+}
+
 @end
+
+// Secondary Chat navigation mirrors the compact layout in Reddit's current
+// Inbox while retaining Apollo's palette and typography. The selected item is
+// a soft pill rather than another full-width segmented control, keeping the
+// hierarchy clear: Notifications / Chat first, then the three Chat sections.
+@interface ApolloInboxChatSectionSwitcherView : UIControl
+@property (nonatomic, strong) UIView *selectionView;
+@property (nonatomic, strong) UIView *bottomSeparator;
+@property (nonatomic, strong) UIButton *messagesButton;
+@property (nonatomic, strong) UIButton *requestsButton;
+@property (nonatomic, strong) UIButton *threadsButton;
+@property (nonatomic, strong) UILabel *requestsBadge;
+@property (nonatomic, assign) ApolloModernChatInboxSection selectedSection;
+- (UIButton *)apollo_buttonWithTitle:(NSString *)title action:(SEL)action;
+- (void)apollo_setSelectedSection:(ApolloModernChatInboxSection)section animated:(BOOL)animated;
+- (void)apollo_refreshForTraits:(UITraitCollection *)traits;
+@end
+
+@implementation ApolloInboxChatSectionSwitcherView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    self.selectionView = [UIView new];
+    self.selectionView.userInteractionEnabled = NO;
+    self.selectionView.layer.cornerRadius = 18.0;
+    [self addSubview:self.selectionView];
+
+    self.messagesButton = [self apollo_buttonWithTitle:@"Messages"
+                                                action:@selector(apollo_buttonTapped:)];
+    self.requestsButton = [self apollo_buttonWithTitle:@"Requests"
+                                                action:@selector(apollo_buttonTapped:)];
+    self.threadsButton = [self apollo_buttonWithTitle:@"Threads"
+                                              action:@selector(apollo_buttonTapped:)];
+    [self addSubview:self.messagesButton];
+    [self addSubview:self.requestsButton];
+    [self addSubview:self.threadsButton];
+
+    self.requestsBadge = [UILabel new];
+    self.requestsBadge.text = @"1";
+    self.requestsBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    self.requestsBadge.textAlignment = NSTextAlignmentCenter;
+    self.requestsBadge.layer.cornerRadius = 9.0;
+    self.requestsBadge.clipsToBounds = YES;
+    self.requestsBadge.hidden = YES;
+    self.requestsBadge.userInteractionEnabled = NO;
+    [self addSubview:self.requestsBadge];
+
+    self.bottomSeparator = [UIView new];
+    self.bottomSeparator.userInteractionEnabled = NO;
+    [self addSubview:self.bottomSeparator];
+    _selectedSection = ApolloModernChatInboxSectionMessages;
+    return self;
+}
+
+- (UIButton *)apollo_buttonWithTitle:(NSString *)title action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+    [button setTitle:title forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont systemFontOfSize:14.5 weight:UIFontWeightSemibold];
+    button.accessibilityLabel = title;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // The selected section is assigned while the view controller is still
+    // loading, before Auto Layout has given this control a real size. Avoid
+    // constructing negative button frames from CGRectInset at that point;
+    // UIButton's internal title layout can turn those into NaN/Inf layer
+    // positions on iOS 26.
+    if (CGRectGetWidth(self.bounds) <= 20.0 || CGRectGetHeight(self.bounds) <= 14.0) return;
+    CGRect content = CGRectInset(self.bounds, 10.0, 7.0);
+    content.size.height = MIN(36.0, content.size.height);
+    CGFloat width = floor(content.size.width / 3.0);
+    CGRect messagesFrame = CGRectMake(content.origin.x, content.origin.y, width, content.size.height);
+    CGRect requestsFrame = CGRectMake(CGRectGetMaxX(messagesFrame), content.origin.y, width, content.size.height);
+    CGRect threadsFrame = CGRectMake(CGRectGetMaxX(requestsFrame), content.origin.y,
+                                     CGRectGetMaxX(content) - CGRectGetMaxX(requestsFrame), content.size.height);
+    self.messagesButton.frame = messagesFrame;
+    self.requestsButton.frame = requestsFrame;
+    self.threadsButton.frame = threadsFrame;
+    switch (self.selectedSection) {
+        case ApolloModernChatInboxSectionRequests:
+            self.selectionView.frame = CGRectInset(requestsFrame, 3.0, 0.0);
+            break;
+        case ApolloModernChatInboxSectionThreads:
+            self.selectionView.frame = CGRectInset(threadsFrame, 3.0, 0.0);
+            break;
+        case ApolloModernChatInboxSectionMessages:
+        default:
+            self.selectionView.frame = CGRectInset(messagesFrame, 3.0, 0.0);
+            break;
+    }
+    self.requestsBadge.frame = CGRectMake(CGRectGetMidX(requestsFrame) + 34.0,
+                                          CGRectGetMidY(requestsFrame) - 15.0, 18.0, 18.0);
+    self.bottomSeparator.frame = CGRectMake(0, CGRectGetHeight(self.bounds) - 0.5,
+                                            CGRectGetWidth(self.bounds), 0.5);
+}
+
+- (void)apollo_buttonTapped:(UIButton *)sender {
+    ApolloModernChatInboxSection section = ApolloModernChatInboxSectionMessages;
+    if (sender == self.requestsButton) section = ApolloModernChatInboxSectionRequests;
+    else if (sender == self.threadsButton) section = ApolloModernChatInboxSectionThreads;
+    [self apollo_setSelectedSection:section animated:YES];
+    // Send even for a re-selected tab so tapping Messages while inside a room
+    // returns to the Messages list, like a normal tab controller.
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
+- (void)apollo_setSelectedSection:(ApolloModernChatInboxSection)section animated:(BOOL)animated {
+    _selectedSection = section;
+    void (^changes)(void) = ^{
+        [self setNeedsLayout];
+        if (CGRectGetWidth(self.bounds) > 20.0 && CGRectGetHeight(self.bounds) > 14.0) {
+            [self layoutIfNeeded];
+        }
+    };
+    if (animated && self.window) {
+        [UIView animateWithDuration:0.18 delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                         animations:changes completion:nil];
+    } else {
+        changes();
+    }
+    [self apollo_refreshForTraits:self.traitCollection];
+}
+
+- (void)apollo_refreshForTraits:(UITraitCollection *)traits {
+    NSDictionary *status = ApolloModernChatCachedStatus();
+    BOOL hasRequests = [status[@"hasRequests"] boolValue];
+    self.requestsBadge.hidden = !hasRequests;
+    self.requestsButton.accessibilityValue = hasRequests ? @"1 new request" : nil;
+
+    UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
+    UIColor *primary = ApolloModernChatThemeColor(traits, @"primary");
+    UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
+    UIColor *secondaryText = ApolloModernChatThemeColor(traits, @"secondaryText");
+    self.backgroundColor = primary;
+    self.selectionView.backgroundColor = raised;
+    self.bottomSeparator.backgroundColor = ApolloModernChatThemeColor(traits, @"separator");
+    [self.messagesButton setTitleColor:self.selectedSection == ApolloModernChatInboxSectionMessages ? accent : secondaryText
+                               forState:UIControlStateNormal];
+    [self.requestsButton setTitleColor:self.selectedSection == ApolloModernChatInboxSectionRequests ? accent : secondaryText
+                               forState:UIControlStateNormal];
+    [self.threadsButton setTitleColor:self.selectedSection == ApolloModernChatInboxSectionThreads ? accent : secondaryText
+                              forState:UIControlStateNormal];
+    self.requestsBadge.backgroundColor = UIColor.systemRedColor;
+    self.requestsBadge.textColor = UIColor.whiteColor;
+    [self setNeedsLayout];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self apollo_refreshForTraits:self.traitCollection];
+}
+
+@end
+
+@interface ApolloInboxChatHubViewController : UIViewController
+@property (nonatomic, strong) ApolloInboxModeSwitcherView *modeSwitcher;
+@property (nonatomic, strong) ApolloInboxChatSectionSwitcherView *sectionSwitcher;
+@property (nonatomic, strong) UIView *contentContainerView;
+@property (nonatomic, strong) UIViewController *chatController;
+@property (nonatomic, weak) UIViewController *inboxHostController;
+@property (nonatomic, strong) NSLayoutConstraint *modeSwitcherTopConstraint;
+- (void)apollo_refreshTheme;
+- (void)apollo_showSection:(ApolloModernChatInboxSection)section animated:(BOOL)animated;
+- (void)apollo_alignModeSwitcherWithHostSwitcher:(ApolloInboxModeSwitcherView *)hostSwitcher;
+@end
+
+static ApolloInboxChatHubViewController *ApolloEnsureInboxChatHub(UIViewController *host);
+static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, BOOL animated);
+
+@implementation ApolloInboxChatHubViewController
+
+- (instancetype)init {
+    self = [super init];
+    if (self) self.hidesBottomBarWhenPushed = NO;
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Chat";
+    self.view.clipsToBounds = YES;
+
+    self.modeSwitcher = [ApolloInboxModeSwitcherView new];
+    self.modeSwitcher.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.modeSwitcher apollo_setSelectedMode:ApolloInboxModeChat animated:NO];
+    [self.modeSwitcher addTarget:self action:@selector(apollo_modeChanged:)
+                forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:self.modeSwitcher];
+
+    self.sectionSwitcher = [ApolloInboxChatSectionSwitcherView new];
+    self.sectionSwitcher.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.sectionSwitcher apollo_setSelectedSection:ApolloModernChatInboxSectionMessages animated:NO];
+    [self.sectionSwitcher addTarget:self action:@selector(apollo_sectionChanged:)
+                   forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:self.sectionSwitcher];
+
+    self.contentContainerView = [UIView new];
+    self.contentContainerView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.contentContainerView.clipsToBounds = YES;
+    [self.view addSubview:self.contentContainerView];
+
+    self.modeSwitcherTopConstraint = [self.modeSwitcher.topAnchor
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor];
+    [NSLayoutConstraint activateConstraints:@[
+        // Apollo's Inbox view extends beneath its translucent navigation bar.
+        // Start below the host's full top safe area so both rows sit beneath
+        // the Inbox title/back button instead of showing through that bar.
+        self.modeSwitcherTopConstraint,
+        [self.modeSwitcher.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.modeSwitcher.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.modeSwitcher.heightAnchor constraintEqualToConstant:60.0],
+        [self.sectionSwitcher.topAnchor constraintEqualToAnchor:self.modeSwitcher.bottomAnchor],
+        [self.sectionSwitcher.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.sectionSwitcher.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.sectionSwitcher.heightAnchor constraintEqualToConstant:50.0],
+        [self.contentContainerView.topAnchor constraintEqualToAnchor:self.sectionSwitcher.bottomAnchor],
+        [self.contentContainerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.contentContainerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.contentContainerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+
+    self.chatController = ApolloCreateEmbeddedModernChatViewController(
+        ApolloModernChatInboxSectionMessages);
+    [self addChildViewController:self.chatController];
+    self.chatController.view.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.contentContainerView addSubview:self.chatController.view];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.chatController.view.topAnchor constraintEqualToAnchor:self.contentContainerView.topAnchor],
+        [self.chatController.view.leadingAnchor constraintEqualToAnchor:self.contentContainerView.leadingAnchor],
+        [self.chatController.view.trailingAnchor constraintEqualToAnchor:self.contentContainerView.trailingAnchor],
+        [self.chatController.view.bottomAnchor constraintEqualToAnchor:self.contentContainerView.bottomAnchor],
+    ]];
+    [self.chatController didMoveToParentViewController:self];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_chatStatusChanged:)
+                                                 name:ApolloModernChatStatusDidChangeNotification
+                                               object:nil];
+    [self apollo_refreshTheme];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.modeSwitcher apollo_setSelectedMode:ApolloInboxModeChat animated:NO];
+    [self apollo_refreshTheme];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self apollo_refreshTheme];
+}
+
+- (void)apollo_refreshTheme {
+    UIColor *background = ApolloModernChatThemeColor(self.traitCollection, @"primary");
+    self.view.backgroundColor = background;
+    self.contentContainerView.backgroundColor = background;
+    [self.modeSwitcher apollo_refreshForTraits:self.traitCollection];
+    [self.sectionSwitcher apollo_refreshForTraits:self.traitCollection];
+}
+
+- (void)apollo_modeChanged:(ApolloInboxModeSwitcherView *)sender {
+    if (sender.selectedMode != ApolloInboxModeNotifications) return;
+    ChatsFilterLog(@"Chat hub returning to Notifications");
+    if (self.inboxHostController) {
+        ApolloSetInboxChatHubVisible(self.inboxHostController, NO, YES);
+    } else {
+        [self.navigationController popViewControllerAnimated:YES];
+    }
+}
+
+- (void)apollo_sectionChanged:(ApolloInboxChatSectionSwitcherView *)sender {
+    [self apollo_showSection:sender.selectedSection animated:YES];
+}
+
+- (void)apollo_showSection:(ApolloModernChatInboxSection)section animated:(BOOL)animated {
+    [self.sectionSwitcher apollo_setSelectedSection:section animated:animated];
+    ApolloModernChatControllerShowInboxSection(self.chatController, section);
+    NSString *name = section == ApolloModernChatInboxSectionRequests ? @"Requests" :
+        (section == ApolloModernChatInboxSectionThreads ? @"Threads" : @"Messages");
+    ChatsFilterLog(@"Chat hub selected %@", name);
+}
+
+- (void)apollo_alignModeSwitcherWithHostSwitcher:(ApolloInboxModeSwitcherView *)hostSwitcher {
+    if (!hostSwitcher || !self.modeSwitcherTopConstraint) return;
+    // Notifications owns a sticky sibling switcher. Match its current on-screen
+    // Y position before cross-fading to Chat. It normally equals the safe-area
+    // top, but measuring the live view keeps rotations and custom navigation
+    // heights exact without allowing either control under the Inbox title.
+    [self.inboxHostController.view layoutIfNeeded];
+    [self.view layoutIfNeeded];
+    CGRect hostFrame = [hostSwitcher convertRect:hostSwitcher.bounds toView:self.view];
+    CGFloat safeAreaTop = CGRectGetMinY(self.view.safeAreaLayoutGuide.layoutFrame);
+    CGFloat targetConstant = MAX(0.0, CGRectGetMinY(hostFrame) - safeAreaTop);
+    if (fabs(self.modeSwitcherTopConstraint.constant - targetConstant) < 0.5) return;
+    self.modeSwitcherTopConstraint.constant = targetConstant;
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    ChatsFilterLog(@"aligned Chat switcher to scrolled Notifications header at %.1fpt",
+                   CGRectGetMinY(hostFrame));
+}
+
+- (void)apollo_chatStatusChanged:(NSNotification *)notification {
+    [self.modeSwitcher apollo_refreshForTraits:self.traitCollection];
+    [self.sectionSwitcher apollo_refreshForTraits:self.traitCollection];
+}
+
+@end
+
+// Notifications and Chat are sibling modes of Inbox, so changing between them
+// must not push another view controller. Keep a single Chat child alive above
+// Apollo's notification table and cross-fade it in place. The notification list
+// underneath never leaves the hierarchy, preserving its exact scroll position
+// and avoiding the horizontal navigation/reload effect shown in the recording.
+static ApolloInboxChatHubViewController *ApolloEnsureInboxChatHub(UIViewController *host) {
+    if (!host || !ApolloModernChatShouldOpen()) return nil;
+    ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+    if (hub) return hub;
+
+    hub = [ApolloInboxChatHubViewController new];
+    hub.inboxHostController = host;
+    [host addChildViewController:hub];
+    // Accessing the view here intentionally starts the embedded authenticated
+    // Chat client while Notifications remains visible. A later tap only
+    // cross-fades this already-hydrated child instead of creating WebKit on the
+    // critical interaction path.
+    hub.view.frame = host.view.bounds;
+    hub.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    hub.view.alpha = 0.0;
+    hub.view.hidden = YES;
+    hub.view.userInteractionEnabled = NO;
+    [host.view addSubview:hub.view];
+    [hub didMoveToParentViewController:host];
+    objc_setAssociatedObject(host, &kInboxAllChatHubKey, hub, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ChatsFilterLog(@"created and quietly preloaded persistent in-place Chat hub");
+    return hub;
+}
+
+static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, BOOL animated) {
+    if (!host) return;
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloSetInboxChatHubVisible(host, visible, animated);
+        });
+        return;
+    }
+
+    ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+    if (visible && !hub) hub = ApolloEnsureInboxChatHub(host);
+    if (!hub) return;
+
+    BOOL wasVisible = [objc_getAssociatedObject(host, &kInboxAllChatHubVisibleKey) boolValue];
+    objc_setAssociatedObject(host, &kInboxAllChatHubVisibleKey, @(visible), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloInboxModeSwitcherView *notificationsSwitcher = objc_getAssociatedObject(host, &kInboxAllModeSwitcherKey);
+    [notificationsSwitcher apollo_setSelectedMode:visible ? ApolloInboxModeChat : ApolloInboxModeNotifications
+                                          animated:animated];
+    [hub.modeSwitcher apollo_setSelectedMode:visible ? ApolloInboxModeChat : ApolloInboxModeNotifications
+                                     animated:animated];
+
+    NSArray<UIBarButtonItem *> *savedRightItems = objc_getAssociatedObject(host, &kInboxAllOriginalRightItemsKey);
+    if (!savedRightItems) {
+        savedRightItems = host.navigationItem.rightBarButtonItems ?: @[];
+        objc_setAssociatedObject(host, &kInboxAllOriginalRightItemsKey,
+                                 [savedRightItems copy], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    [host.navigationItem setRightBarButtonItems:visible ? nil : (savedRightItems.count ? savedRightItems : nil)
+                                       animated:animated];
+
+    if (visible) {
+        // Align the persistent Chat overlay to the live sticky Notifications
+        // switcher before making it visible.
+        [hub apollo_alignModeSwitcherWithHostSwitcher:notificationsSwitcher];
+        hub.view.hidden = NO;
+        hub.view.userInteractionEnabled = YES;
+        [host.view bringSubviewToFront:hub.view];
+        // Every deliberate Notifications -> Chat switch starts at Messages.
+        // A quietly-preloaded hub already starts there, so do not restart its
+        // in-flight readiness/filter work just because it became visible.
+        if (!wasVisible &&
+            hub.sectionSwitcher.selectedSection != ApolloModernChatInboxSectionMessages) {
+            [hub apollo_showSection:ApolloModernChatInboxSectionMessages animated:NO];
+        }
+        [hub apollo_refreshTheme];
+        // The WebKit list is quietly hydrated while another tab may still be
+        // selected, so its first layout cannot measure Apollo's floating tab
+        // bar. Recalculate the inner scroll allowance once Inbox Chat is
+        // actually on-screen.
+        ApolloModernChatControllerRefreshEmbeddedLayout(hub.chatController);
+    } else {
+        hub.view.userInteractionEnabled = NO;
+    }
+
+    void (^changes)(void) = ^{
+        hub.view.alpha = visible ? 1.0 : 0.0;
+    };
+    void (^completion)(BOOL) = ^(BOOL finished) {
+        BOOL stillVisible = [objc_getAssociatedObject(host, &kInboxAllChatHubVisibleKey) boolValue];
+        if (!stillVisible) hub.view.hidden = YES;
+    };
+    if (animated && host.view.window) {
+        [UIView animateWithDuration:0.20
+                              delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                         animations:changes
+                         completion:completion];
+    } else {
+        changes();
+        completion(YES);
+    }
+}
 
 static BOOL ApolloInboxControllerIsAll(id controller) {
     Ivar ivar = class_getInstanceVariable([controller class], "inboxType");
@@ -273,39 +732,86 @@ static UITableView *ApolloInboxControllerTableView(id controller) {
     return nil;
 }
 
-static void ApolloInstallInboxAllChatHeader(id controller) {
+static void ApolloInstallInboxModeSwitcher(id controller) {
     if (!ApolloInboxControllerIsAll(controller)) return;
     UITableView *tableView = ApolloInboxControllerTableView(controller);
     if (!tableView) return;
 
-    ApolloInboxAllChatHeaderView *header = objc_getAssociatedObject(controller, &kInboxAllChatHeaderKey);
+    ApolloInboxModeSwitcherView *switcher = objc_getAssociatedObject(controller, &kInboxAllModeSwitcherKey);
+    UIView *navigationBackdrop = objc_getAssociatedObject(controller, &kInboxAllNavigationBackdropKey);
     if (!ApolloModernChatShouldOpen()) {
-        if (header) {
+        if (switcher) {
             tableView.tableHeaderView = objc_getAssociatedObject(controller, &kInboxAllOriginalHeaderKey);
-            objc_setAssociatedObject(controller, &kInboxAllChatHeaderKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [switcher removeFromSuperview];
+            objc_setAssociatedObject(controller, &kInboxAllModeSwitcherKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        [navigationBackdrop removeFromSuperview];
+        objc_setAssociatedObject(controller, &kInboxAllNavigationBackdropKey, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
 
-    if (!header) {
+    UIView *hostView = ((UIViewController *)controller).view;
+    if (!navigationBackdrop) {
+        // Apollo's Liquid Glass navigation bar intentionally samples the
+        // scrolling content beneath it. That looks good for ordinary lists,
+        // but it makes notification text show through the fixed Inbox mode
+        // controls while Chat's full-screen overlay remains opaque. Place a
+        // noninteractive, theme-matched surface behind the navigation bar so
+        // both modes have the same solid top area without changing the table's
+        // native scrolling or bounce behavior.
+        navigationBackdrop = [UIView new];
+        navigationBackdrop.translatesAutoresizingMaskIntoConstraints = NO;
+        navigationBackdrop.userInteractionEnabled = NO;
+        [hostView addSubview:navigationBackdrop];
+        [NSLayoutConstraint activateConstraints:@[
+            [navigationBackdrop.topAnchor constraintEqualToAnchor:hostView.topAnchor],
+            [navigationBackdrop.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
+            [navigationBackdrop.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
+            [navigationBackdrop.bottomAnchor constraintEqualToAnchor:hostView.safeAreaLayoutGuide.topAnchor],
+        ]];
+        objc_setAssociatedObject(controller, &kInboxAllNavigationBackdropKey, navigationBackdrop,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    navigationBackdrop.backgroundColor =
+        ApolloModernChatThemeColor(((UIViewController *)controller).traitCollection, @"primary");
+
+    if (!switcher) {
         UIView *original = tableView.tableHeaderView;
         objc_setAssociatedObject(controller, &kInboxAllOriginalHeaderKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         CGFloat oldHeight = original ? CGRectGetHeight(original.frame) : 0.0;
         CGFloat width = CGRectGetWidth(tableView.bounds) ?: CGRectGetWidth(((UIViewController *)controller).view.bounds);
-        UIView *wrapper = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, oldHeight + 82.0)];
+        UIView *wrapper = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, oldHeight + 60.0)];
         if (original) {
             original.frame = CGRectMake(0, 0, width, oldHeight);
             [wrapper addSubview:original];
         }
-        header = [[ApolloInboxAllChatHeaderView alloc] initWithFrame:CGRectMake(0, oldHeight, width, 82.0)];
-        header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        [header addTarget:controller action:NSSelectorFromString(@"apollo_openModernChatFromAllInbox") forControlEvents:UIControlEventTouchUpInside];
-        [wrapper addSubview:header];
+        // Keep an empty 60-point slot in the table header so the first
+        // notification begins below the switcher. The switcher itself belongs
+        // to the host view and stays pinned beneath the navigation bar while
+        // rows scroll underneath it. This prevents the Notifications / Chat
+        // labels from colliding with the centered Inbox title.
+        switcher = [ApolloInboxModeSwitcherView new];
+        switcher.translatesAutoresizingMaskIntoConstraints = NO;
+        [switcher addTarget:controller action:NSSelectorFromString(@"apollo_inboxModeChanged:") forControlEvents:UIControlEventValueChanged];
         tableView.tableHeaderView = wrapper;
-        objc_setAssociatedObject(controller, &kInboxAllChatHeaderKey, header, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ChatsFilterLog(@"installed modern Chat entry in Inbox (All)");
+        [hostView addSubview:switcher];
+        [NSLayoutConstraint activateConstraints:@[
+            [switcher.topAnchor constraintEqualToAnchor:hostView.safeAreaLayoutGuide.topAnchor],
+            [switcher.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
+            [switcher.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
+            [switcher.heightAnchor constraintEqualToConstant:60.0],
+        ]];
+        objc_setAssociatedObject(controller, &kInboxAllModeSwitcherKey, switcher, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ChatsFilterLog(@"installed sticky Notifications / Chat switcher in Inbox (All)");
     }
-    [header apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
+    BOOL chatVisible = [objc_getAssociatedObject(controller, &kInboxAllChatHubVisibleKey) boolValue];
+    [hostView bringSubviewToFront:navigationBackdrop];
+    [hostView bringSubviewToFront:switcher];
+    ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(controller, &kInboxAllChatHubKey);
+    if (chatVisible && hub.view.superview == hostView) [hostView bringSubviewToFront:hub.view];
+    [switcher apollo_setSelectedMode:chatVisible ? ApolloInboxModeChat : ApolloInboxModeNotifications animated:NO];
+    [switcher apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
 }
 
 #pragma mark - Boxes list: add the Direct Chat row
@@ -554,13 +1060,26 @@ static BOOL sChatFilterActive = NO;
                                                      name:ApolloModernChatStatusDidChangeNotification
                                                    object:nil];
         objc_setAssociatedObject(self, &kInboxAllStatusObserverKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        dispatch_async(dispatch_get_main_queue(), ^{ ApolloInstallInboxAllChatHeader(self); });
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloInstallInboxModeSwitcher(self); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen()) {
+                ApolloEnsureInboxChatHub((UIViewController *)self);
+            }
+        });
     }
 }
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = YES;
-    ApolloInstallInboxAllChatHeader(self);
+    ApolloInstallInboxModeSwitcher(self);
+    if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen() &&
+        !objc_getAssociatedObject(self, &kInboxAllChatHubKey)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            ApolloEnsureInboxChatHub((UIViewController *)self);
+        });
+    }
 }
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
@@ -574,14 +1093,22 @@ static BOOL sChatFilterActive = NO;
 
 %new
 - (void)apollo_modernChatStatusChanged:(NSNotification *)notification {
-    ApolloInstallInboxAllChatHeader(self);
+    ApolloInstallInboxModeSwitcher(self);
+}
+
+%new
+- (void)apollo_inboxModeChanged:(ApolloInboxModeSwitcherView *)sender {
+    if (sender.selectedMode != ApolloInboxModeChat || !ApolloModernChatShouldOpen()) return;
+    ChatsFilterLog(@"Inbox (All) switching in place from Notifications to Chat hub");
+    ApolloSetInboxChatHubVisible((UIViewController *)self, YES, YES);
 }
 
 %new
 - (void)apollo_openModernChatFromAllInbox {
+    // Retain the old selector for callers from builds that cached the previous
+    // table header; the next appearance replaces that header with the switcher.
     if (!ApolloModernChatShouldOpen()) return;
-    UIViewController *chat = ApolloCreateModernChatViewController();
-    [((UIViewController *)self).navigationController pushViewController:chat animated:YES];
+    ApolloSetInboxChatHubVisible((UIViewController *)self, YES, YES);
 }
 %end
 
