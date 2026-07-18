@@ -2007,6 +2007,24 @@ UIViewController *ApolloCreateModernModmailViewControllerForPath(NSString *desti
 // untouched Inbox stack where the exact Chat/Modmail controller is still alive.
 %hook UINavigationController
 
+- (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    // The Inbox row has its own direct modern-Modmail route, but subreddit
+    // moderator menus (and any other Apollo entry point) still construct and
+    // push Apollo's OAuth-only ModmailInboxViewController. Replace that
+    // destination before its view loads so API-key-free accounts never land
+    // on the legacy screen, and API-key accounts follow their explicit toggle.
+    Class nativeModmailClass = objc_getClass("_TtC6Apollo26ModmailInboxViewController");
+    if (nativeModmailClass &&
+        [viewController isKindOfClass:nativeModmailClass] &&
+        ApolloModernModmailShouldOpen()) {
+        ApolloLog(@"[DirectChatWeb] Redirecting native Modmail push to modern authenticated Modmail");
+        %orig(ApolloCreateModernModmailViewController(), animated);
+        return;
+    }
+
+    %orig;
+}
+
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
     UIViewController *anchor = ApolloMailboxReturnAnchor(self);
     if (anchor && self.topViewController == anchor) {
