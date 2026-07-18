@@ -19,6 +19,10 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+@interface UITabBarController (ApolloModernMailboxTabBarVisibility)
+- (void)setTabBarHidden:(BOOL)hidden animated:(BOOL)animated;
+@end
+
 NSString * const ApolloModernChatStatusDidChangeNotification = @"ApolloModernChatStatusDidChangeNotification";
 static NSDictionary<NSString *, id> *sApolloModernChatStatus = nil;
 static NSObject *ApolloModernChatStatusLock(void) {
@@ -175,16 +179,33 @@ UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role) {
 }
 
 NSDictionary<NSString *, id> *ApolloModernChatCachedStatus(void) {
+    NSDictionary<NSString *, id> *status = nil;
     @synchronized (ApolloModernChatStatusLock()) {
-        return [sApolloModernChatStatus copy];
+        status = [sApolloModernChatStatus copy];
     }
+    NSString *statusUsername = [status[@"username"] isKindOfClass:[NSString class]]
+        ? [status[@"username"] lowercaseString] : @"";
+    NSString *activeUsername = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    if (statusUsername.length > 0 && ![statusUsername isEqualToString:activeUsername]) {
+        return nil;
+    }
+    return status;
 }
 
 static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) {
     if (![status isKindOfClass:[NSDictionary class]]) return;
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *username = [status[@"username"] isKindOfClass:[NSString class]]
+            ? [status[@"username"] lowercaseString] : @"";
+        NSString *activeUsername = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+        if (username.length == 0 || ![username isEqualToString:activeUsername]) {
+            ApolloLog(@"[DirectChatWeb] Ignored stale Chat status for u/%@ while u/%@ is active",
+                      username, activeUsername);
+            return;
+        }
         NSDictionary *old = ApolloModernChatCachedStatus();
         NSMutableDictionary *merged = old ? [old mutableCopy] : [NSMutableDictionary dictionary];
+        merged[@"username"] = username;
         NSString *surface = [status[@"surface"] isKindOfClass:[NSString class]] ? status[@"surface"] : @"threads";
         BOOL routeUnread = [status[@"hasUnread"] boolValue];
         if ([surface isEqualToString:@"requests"]) {
@@ -202,7 +223,7 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         merged[@"checkedAt"] = status[@"checkedAt"] ?: @([[NSDate date] timeIntervalSince1970] * 1000.0);
 
         NSArray<NSString *> *meaningfulKeys = @[
-            @"hasUnread", @"hasThreadUnread", @"hasRequests", @"threadUnreadCount", @"preview"
+            @"username", @"hasUnread", @"hasThreadUnread", @"hasRequests", @"threadUnreadCount", @"preview"
         ];
         BOOL changed = NO;
         for (NSString *key in meaningfulKeys) {
@@ -377,8 +398,8 @@ static NSDictionary<NSString *, NSString *> *ApolloDirectChatCookiePairs(NSStrin
 static ApolloModernMailboxWebContext *sApolloModernMailboxWebContext = nil;
 
 static ApolloModernMailboxWebContext *ApolloModernMailboxContextForActiveSession(void) {
-    ApolloWebSessionEntry *session = ApolloActiveWebSession();
     NSString *username = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    ApolloWebSessionEntry *session = ApolloWebSessionPollFor(username);
     if (session.cookieHeader.length == 0) return nil;
 
     BOOL unchanged = [sApolloModernMailboxWebContext.username isEqualToString:username] &&
@@ -472,8 +493,13 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, assign) NSUInteger bounceConfiguredScrollViewCount;
 @property (nonatomic, assign) CGFloat lastAppliedBottomScrollAllowance;
 @property (nonatomic, assign) NSUInteger bottomScrollAllowanceGeneration;
+@property (nonatomic, strong) NSTimer *chatStatusRefreshTimer;
+@property (nonatomic, assign) BOOL mailboxConversationHidesTabBar;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
+- (BOOL)apollo_isConversationURL:(NSURL *)url;
+- (void)apollo_updateTabBarVisibilityForURL:(NSURL *)url animated:(BOOL)animated;
+- (void)apollo_restoreTabBarVisibility;
 - (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url;
 - (void)apollo_waitForModmailThreadStabilityAttempt:(NSUInteger)attempt
                                          generation:(NSUInteger)generation
@@ -494,6 +520,8 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_alignEmbeddedThreadsForGeneration:(NSUInteger)generation
                                        completion:(dispatch_block_t)completion;
 - (void)apollo_updateEmbeddedWebChromeForURL:(NSURL *)url;
+- (void)apollo_startChatStatusRefreshIfNeeded;
+- (void)apollo_applicationDidBecomeActive:(NSNotification *)notification;
 - (void)apollo_enableNativeScrollBounce;
 - (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance;
 @end
@@ -561,7 +589,8 @@ static void ApolloStoreMailboxReturn(UINavigationController *navigationControlle
                                      UIViewController *anchor) {
     ApolloClearMailboxReturn(navigationController);
     mailbox.nativeReturnPathActive = YES;
-    mailbox.hidesBottomBarWhenPushed = YES;
+    mailbox.hidesBottomBarWhenPushed =
+        [mailbox apollo_isConversationURL:mailbox.webView.URL];
     objc_setAssociatedObject(navigationController, kApolloMailboxReturnControllerKey,
                              mailbox, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(navigationController, kApolloMailboxReturnAnchorKey,
@@ -740,6 +769,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
                                              selector:@selector(apollo_activeThemeChanged:)
                                                  name:@"com.christianselig.ApolloSpecificThemeChanged"
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_applicationDidBecomeActive:)
+                                                 name:UIApplicationDidBecomeActiveNotification
+                                               object:nil];
     [self apollo_applyActiveTheme];
     [self apollo_seedAndLoad];
 }
@@ -796,6 +829,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)dealloc {
+    [self.chatStatusRefreshTimer invalidate];
     [self.webView removeObserver:self
                      forKeyPath:@"URL"
                         context:ApolloDirectChatWebViewURLContext];
@@ -810,6 +844,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         id nextValue = change[NSKeyValueChangeNewKey];
         NSURL *url = [nextValue isKindOfClass:[NSURL class]]
             ? nextValue : self.webView.URL;
+        [self apollo_updateTabBarVisibilityForURL:url animated:NO];
         [self apollo_updateEmbeddedWebChromeForURL:url];
         return;
     }
@@ -819,6 +854,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)viewWillAppear:(BOOL)animated {
     if (self.nativeReturnPathActive) {
         [self apollo_prepareForMailboxReturnAnimated:animated];
+    } else {
+        [self apollo_updateTabBarVisibilityForURL:self.webView.URL animated:animated];
     }
     [super viewWillAppear:animated];
     [self apollo_applyActiveTheme];
@@ -826,6 +863,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    if (self.didRevealChat && self.mailboxKind == ApolloModernMailboxKindChat) {
+        [self apollo_captureChatStatus];
+        [self apollo_startChatStatusRefreshIfNeeded];
+    }
     if (self.authenticationRequired && !self.authenticationPromptAutomaticallyOffered) {
         [self apollo_presentAuthenticationPrompt];
     }
@@ -833,6 +874,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)viewWillDisappear:(BOOL)animated {
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
+    // The tab bar is a shared UITabBarController state. Always hand it back
+    // before this controller leaves, even when Apollo Back exits from a room.
+    [self apollo_restoreTabBarVisibility];
     [super viewWillDisappear:animated];
     if (!self.embeddedInInbox && self.didCaptureOriginalNavigationTintColor) {
         self.navigationController.navigationBar.tintColor = self.originalNavigationTintColor;
@@ -846,6 +890,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)apollo_activeThemeChanged:(NSNotification *)note {
     [self apollo_applyActiveTheme];
+}
+
+- (void)apollo_applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    if (self.didRevealChat && self.mailboxKind == ApolloModernMailboxKindChat) {
+        [self apollo_captureChatStatus];
+        [self apollo_startChatStatusRefreshIfNeeded];
+    }
 }
 
 - (void)apollo_applyActiveTheme {
@@ -989,35 +1041,69 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_presentAuthenticationPrompt {
-    if (!self.authenticationRequired || self.authenticationPromptVisible) return;
-    self.authenticationPromptVisible = YES;
-    self.authenticationPromptAutomaticallyOffered = YES;
+    if (!self.authenticationRequired || self.authenticationPromptVisible ||
+        self.presentedViewController) return;
 
     NSString *targetUsername = ApolloActiveAccountUsername() ?: self.username;
+    if (targetUsername.length == 0) {
+        [self apollo_showAuthenticationError:
+            @"Sign in to an Apollo account before opening Reddit Chat or Moderator Mail."
+                         automaticallyPrompt:NO];
+        return;
+    }
+
+    self.authenticationPromptVisible = YES;
+    self.authenticationPromptAutomaticallyOffered = YES;
+    NSString *purpose = self.mailboxKind == ApolloModernMailboxKindModmail
+        ? @"modern Moderator Mail" : @"Reddit Chat";
+    UIAlertController *prompt = [UIAlertController
+        alertControllerWithTitle:@"Reddit Web Sign-In"
+                         message:[NSString stringWithFormat:
+                             @"Sign in once as u/%@ to use %@. This adds only the web session these features need; your API-key or API-Key-Free sign-in choice will not change.",
+                             targetUsername, purpose]
+                  preferredStyle:UIAlertControllerStyleAlert];
+
     __weak typeof(self) weakSelf = self;
-    [ApolloWebSessionLoginViewController
-        presentExpiredSessionPromptForUsername:targetUsername
-                                    completion:^(BOOL success) {
+    [prompt addAction:[UIAlertAction actionWithTitle:@"Continue"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(__unused UIAlertAction *action) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
+        ApolloWebSessionLoginViewController *login =
+            [ApolloWebSessionLoginViewController loginControllerForUsername:targetUsername
+                                                                  completion:^(BOOL success) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            self.authenticationPromptVisible = NO;
+            if (!success || !self.authenticationRequired) return;
+
+            NSString *active = ApolloActiveAccountUsername();
+            ApolloWebSessionEntry *activeSession = ApolloWebSessionPollFor(active);
+            if ([active.lowercaseString isEqualToString:targetUsername.lowercaseString] &&
+                activeSession.cookieHeader.length > 0) {
+                ApolloLog(@"[DirectChatWeb] One-time feature sign-in completed; retrying %@ in place",
+                          self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
+                [self apollo_seedAndLoad];
+                return;
+            }
+
+            NSString *detail = active.length > 0
+                ? [NSString stringWithFormat:@"That sign-in did not match u/%@. Tap below and sign in with that Reddit account.", active]
+                : @"That sign-in did not match the active Apollo account. Switch accounts or try again.";
+            [self apollo_showAuthenticationError:detail automaticallyPrompt:NO];
+            ApolloLog(@"[DirectChatWeb] Feature sign-in completed without a matching active-account session");
+        }];
+        UINavigationController *navigationController =
+            [[UINavigationController alloc] initWithRootViewController:login];
+        [self presentViewController:navigationController animated:YES completion:nil];
+    }]];
+    [prompt addAction:[UIAlertAction actionWithTitle:@"Not Now"
+                                              style:UIAlertActionStyleCancel
+                                            handler:^(__unused UIAlertAction *action) {
+        __strong typeof(weakSelf) self = weakSelf;
         self.authenticationPromptVisible = NO;
-        if (!success || !self.authenticationRequired) return;
-
-        ApolloWebSessionEntry *activeSession = ApolloActiveWebSession();
-        if (activeSession.cookieHeader.length > 0) {
-            ApolloLog(@"[DirectChatWeb] Re-authentication completed for the active account; retrying %@ in place",
-                      self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat");
-            [self apollo_seedAndLoad];
-            return;
-        }
-
-        NSString *active = ApolloActiveAccountUsername();
-        NSString *detail = active.length > 0
-            ? [NSString stringWithFormat:@"That sign-in did not match u/%@. Tap below and sign in with that Reddit account.", active]
-            : @"That sign-in did not match the active Apollo account. Switch accounts or try signing in again.";
-        [self apollo_showAuthenticationError:detail automaticallyPrompt:NO];
-        ApolloLog(@"[DirectChatWeb] Re-authentication harvested a different account; active account still has no web session");
-    }];
+    }]];
+    [self presentViewController:prompt animated:YES completion:nil];
 }
 
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url {
@@ -1033,6 +1119,84 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         if (component.length > 0) componentCount += 1;
     }
     return componentCount >= 3 && [url.path hasPrefix:@"/mail/"];
+}
+
+- (BOOL)apollo_isConversationURL:(NSURL *)url {
+    NSString *path = url.path ?: self.initialDestinationPath ?: @"";
+    if (self.mailboxKind == ApolloModernMailboxKindModmail) {
+        NSURL *effectiveURL = url;
+        if (!effectiveURL && path.length > 0) {
+            effectiveURL = [NSURL URLWithString:
+                [@"https://www.reddit.com" stringByAppendingString:path]];
+        }
+        return [self apollo_isModmailConversationURL:effectiveURL];
+    }
+    if ([path hasPrefix:@"/chat/room/"]) return YES;
+
+    // Reddit message-reply threads use the list at /chat/threads and append an
+    // opaque identifier for the actual conversation. Treat only the latter as
+    // detail so the tab bar remains available on the Threads list.
+    if ([path hasPrefix:@"/chat/threads/"]) {
+        NSUInteger componentCount = 0;
+        for (NSString *component in [path componentsSeparatedByString:@"/"]) {
+            if (component.length > 0) componentCount += 1;
+        }
+        return componentCount >= 3;
+    }
+    return NO;
+}
+
+- (void)apollo_updateTabBarVisibilityForURL:(NSURL *)url animated:(BOOL)animated {
+    BOOL hidesForConversation = [self apollo_isConversationURL:url];
+    self.hidesBottomBarWhenPushed = hidesForConversation;
+    if (self.mailboxConversationHidesTabBar == hidesForConversation) return;
+    self.mailboxConversationHidesTabBar = hidesForConversation;
+
+    UITabBarController *tabBarController = self.tabBarController;
+    UITabBar *tabBar = tabBarController.tabBar;
+    BOOL usedSystemVisibilityAPI = NO;
+    if (@available(iOS 18.0, *)) {
+        if (tabBarController && [tabBarController respondsToSelector:
+            @selector(setTabBarHidden:animated:)]) {
+            // Use UIKit to update the safe area, but keep the transition
+            // non-animated. Reddit performs its own list/room animation and two
+            // independently animated bars produce a visible jump on iOS 26.
+            [tabBarController setTabBarHidden:hidesForConversation animated:NO];
+            usedSystemVisibilityAPI = YES;
+        }
+    }
+    if (!usedSystemVisibilityAPI) {
+        tabBar.hidden = hidesForConversation;
+    }
+
+    if (!hidesForConversation && tabBar) {
+        // A room can be left through Reddit history, Apollo Back, a native
+        // route, or a tab switch. Normalize every visual state that Apollo
+        // hide-on-scroll may have left behind before handing the bar back.
+        [tabBar.layer removeAnimationForKey:@"apolloTabBarSlideDown"];
+        [tabBar.layer removeAnimationForKey:@"apolloTabBarSlideUp"];
+        tabBar.transform = CGAffineTransformIdentity;
+        tabBar.alpha = 1.0;
+        tabBar.hidden = NO;
+    }
+
+    [tabBarController.view setNeedsLayout];
+    [tabBarController.view layoutIfNeeded];
+    ApolloLog(@"[DirectChatWeb] %@ Inbox tab bar for %@ %@",
+              hidesForConversation ? @"Hid" : @"Restored",
+              self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat",
+              hidesForConversation ? @"conversation" : @"list");
+    (void)animated;
+}
+
+- (void)apollo_restoreTabBarVisibility {
+    if (!self.mailboxConversationHidesTabBar && !self.hidesBottomBarWhenPushed) return;
+    self.mailboxConversationHidesTabBar = YES;
+    [self apollo_updateTabBarVisibilityForURL:[NSURL URLWithString:
+        self.mailboxKind == ApolloModernMailboxKindModmail
+            ? @"https://www.reddit.com/mail/all"
+            : @"https://www.reddit.com/chat"]
+                                      animated:NO];
 }
 
 - (void)apollo_beginModmailThreadTransitionToURL:(NSURL *)url {
@@ -1143,11 +1307,25 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         [weakSelf apollo_enableNativeScrollBounce];
     });
     if (self.mailboxKind == ApolloModernMailboxKindChat) {
+        [self apollo_startChatStatusRefreshIfNeeded];
         [self apollo_captureChatStatus];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self apollo_captureChatStatus];
         });
     }
+}
+
+- (void)apollo_startChatStatusRefreshIfNeeded {
+    if (self.chatStatusRefreshTimer || self.mailboxKind != ApolloModernMailboxKindChat) return;
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:20.0 repeats:YES block:^(__unused NSTimer *timer) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || !self.didRevealChat) return;
+        [self apollo_captureChatStatus];
+    }];
+    self.chatStatusRefreshTimer = timer;
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    ApolloLog(@"[DirectChatWeb] Started foreground Chat unread refresh (20s)");
 }
 
 - (void)apollo_captureChatStatus {
@@ -1161,8 +1339,12 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
          "const requests=location.pathname.startsWith('/chat/requests'),threads=location.pathname.startsWith('/chat/threads');const body=roots.map(r=>{const host=r===document?document.body:r;return host?.innerText||host?.textContent||'';}).join(' ').replace(/\\s+/g,' ').trim().toLowerCase();"
          "const result={surface:requests?'requests':(threads?'threads':'messages'),hasUnread,unreadCount,preview:preview||null,checkedAt:Date.now()};"
          "if(requests)result.hasRequests=!body.includes('no requests yet')&&!/additional requests\\s*0(?:\\D|$)/.test(body);return result;})()";
+    NSString *statusUsername = self.username.lowercaseString ?: @"";
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
-        if (!error && [result isKindOfClass:[NSDictionary class]]) ApolloModernChatPublishStatus(result);
+        if (error || ![result isKindOfClass:[NSDictionary class]]) return;
+        NSMutableDictionary *status = [(NSDictionary *)result mutableCopy];
+        status[@"username"] = statusUsername;
+        ApolloModernChatPublishStatus(status);
     }];
 }
 
@@ -1486,8 +1668,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_seedAndLoad {
-    ApolloWebSessionEntry *session = ApolloActiveWebSession();
     self.username = ApolloActiveWebSessionUsername() ?: @"";
+    ApolloWebSessionEntry *session = ApolloWebSessionPollFor(self.username);
     if (session.cookieHeader.length == 0) {
         NSString *detail = self.username.length > 0
             ? [NSString stringWithFormat:@"Sign in as u/%@ to continue.", self.username]
@@ -1662,6 +1844,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
         if (routingNavigationController) {
             ApolloClearMailboxReturn(routingNavigationController);
+            // The destination lives on another tab. Restore the shared tab bar
+            // before selecting it; returning to this mailbox reapplies the
+            // current room/list state through apollo_prepareForMailboxReturn.
+            [self apollo_restoreTabBarVisibility];
             tabBarController.selectedViewController = routingNavigationController;
         }
 
@@ -1706,15 +1892,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_prepareForMailboxReturnAnimated:(BOOL)animated {
-    (void)animated;
     self.nativeReturnPathActive = NO;
-    self.hidesBottomBarWhenPushed = YES;
-
-    // Let the navigation transition apply this controller preference. Calling
-    // setTabBarHidden: here creates sticky tab-controller state on iOS 18+;
-    // after Modmail is later popped, Boxes can otherwise remain without its
-    // tab bar and with zero safe-area insets under the navigation bar.
-    ApolloLog(@"[DirectChatWeb] Restored composer-safe mailbox chrome");
+    [self apollo_updateTabBarVisibilityForURL:self.webView.URL animated:animated];
+    ApolloLog(@"[DirectChatWeb] Restored route-aware mailbox chrome");
 }
 
 - (WKWebView *)webView:(WKWebView *)webView
@@ -1744,6 +1924,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     // run. Size the pending mailbox route here so an embedded room's fixed
     // composer is already above Apollo's tab bar on the first rendered frame.
     if (url && [self apollo_urlMatchesMailboxRoute:url]) {
+        [self apollo_updateTabBarVisibilityForURL:url animated:NO];
         [self apollo_updateEmbeddedWebChromeForURL:url];
     }
     if (url && [self apollo_isModmailConversationURL:url]) {
@@ -1795,12 +1976,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     if ([self apollo_isModmailConversationURL:webView.URL]) {
         [self apollo_beginModmailThreadTransitionToURL:webView.URL];
     }
+    [self apollo_updateTabBarVisibilityForURL:webView.URL animated:NO];
     [self apollo_updateEmbeddedWebChromeForURL:webView.URL];
     if (!self.didRevealChat) [self.spinner startAnimating];
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     ApolloLog(@"[DirectChatWeb] Loaded %@%@ for u/%@", webView.URL.host ?: @"unknown host", webView.URL.path ?: @"", self.username);
+    [self apollo_updateTabBarVisibilityForURL:webView.URL animated:NO];
     [self apollo_updateEmbeddedWebChromeForURL:webView.URL];
     if (self.mailboxKind == ApolloModernMailboxKindModmail &&
         self.modmailWarmupPending && [webView.URL.path hasPrefix:@"/chat"]) {
@@ -1895,7 +2078,8 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 @end
 
 BOOL ApolloModernChatIsAvailable(void) {
-    return ApolloActiveWebSession() != nil;
+    NSString *username = ApolloActiveWebSessionUsername();
+    return username.length > 0 && ApolloWebSessionPollFor(username) != nil;
 }
 
 BOOL ApolloModernChatIsRequiredForActiveAccount(void) {
@@ -1931,10 +2115,9 @@ UIViewController *ApolloCreateModernChatViewControllerForPath(NSString *destinat
     ApolloDirectChatWebViewController *controller = [ApolloDirectChatWebViewController new];
     controller.initialDestinationPath = ApolloValidatedModernMailboxPath(
         ApolloModernMailboxKindChat, destinationPath);
-    // Apollo's translucent tab bar otherwise covers Reddit's composer and send
-    // button. This must be set before the navigation push so UIKit reserves the
-    // full chat screen and keyboard-safe bottom inset correctly.
-    controller.hidesBottomBarWhenPushed = YES;
+    // Lists remain part of the Inbox tab. Route observation hides the
+    // shared tab bar only if this controller opens an actual conversation.
+    controller.hidesBottomBarWhenPushed = NO;
     return controller;
 }
 
@@ -1968,6 +2151,17 @@ void ApolloModernChatControllerShowInboxSection(UIViewController *controller,
     [(ApolloDirectChatWebViewController *)controller apollo_showEmbeddedInboxSection:section];
 }
 
+void ApolloModernChatControllerSetInboxVisible(UIViewController *controller, BOOL visible) {
+    if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
+    ApolloDirectChatWebViewController *chatController =
+        (ApolloDirectChatWebViewController *)controller;
+    if (visible) {
+        [chatController apollo_updateTabBarVisibilityForURL:chatController.webView.URL animated:NO];
+    } else {
+        [chatController apollo_restoreTabBarVisibility];
+    }
+}
+
 void ApolloModernChatControllerRefreshEmbeddedLayout(UIViewController *controller) {
     if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
     ApolloDirectChatWebViewController *chatController =
@@ -1998,7 +2192,9 @@ UIViewController *ApolloCreateModernModmailViewControllerForPath(NSString *desti
     controller.mailboxKind = ApolloModernMailboxKindModmail;
     controller.initialDestinationPath = ApolloValidatedModernMailboxPath(
         ApolloModernMailboxKindModmail, destinationPath);
-    controller.hidesBottomBarWhenPushed = YES;
+    // Lists remain part of the Inbox tab. Route observation hides the
+    // shared tab bar only if this controller opens an actual conversation.
+    controller.hidesBottomBarWhenPushed = NO;
     return controller;
 }
 

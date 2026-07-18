@@ -1,5 +1,6 @@
 #import "ApolloWebAuthViewController.h"
 #import "ApolloManualSignInViewController.h"
+#import "ApolloWebSessionLoginViewController.h"
 #import "ApolloCommon.h"
 
 #import <WebKit/WebKit.h>
@@ -150,6 +151,32 @@
                                         userInfo:nil]];
 }
 
+// OAuth has already authenticated Reddit in this webview. Capture its
+// cookies before the ephemeral data store is torn down so Chat, Modmail, and
+// Polls normally need no second sign-in. This is best-effort and time-bounded;
+// the OAuth callback always wins even if Reddit blocks the auxiliary probe.
+- (void)_harvestFeatureSessionThenFinishWithURL:(NSURL *)url {
+    [self.spinner startAnimating];
+    __block BOOL didFinish = NO;
+    __weak typeof(self) weakSelf = self;
+    void (^finishOnce)(void) = ^{
+        if (didFinish) return;
+        didFinish = YES;
+        [weakSelf _finishWithURL:url error:nil];
+    };
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (!didFinish) {
+            ApolloLog(@"[WebAuth] Auxiliary session auto-harvest timed out — completing OAuth");
+        }
+        finishOnce();
+    });
+    [ApolloWebSessionLoginViewController harvestFeatureSessionFromWebView:self.webView
+                                                               completion:^(__unused NSString *username) {
+        finishOnce();
+    }];
+}
+
 - (void)_finishWithURL:(NSURL *)url error:(NSError *)error {
     if (self.finished) return;
     self.finished = YES;
@@ -201,7 +228,7 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
         // actually goes out over the network (for http/https redirect URIs).
         decisionHandler(WKNavigationActionPolicyCancel);
         ApolloLog(@"[WebAuth] Intercepted callback: %@", url);
-        [self _finishWithURL:url error:nil];
+        [self _harvestFeatureSessionThenFinishWithURL:url];
         return;
     }
 

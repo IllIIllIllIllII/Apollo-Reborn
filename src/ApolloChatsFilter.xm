@@ -76,6 +76,77 @@ static char kInboxAllChatHubKey;
 static char kInboxAllChatHubVisibleKey;
 static char kInboxAllOriginalRightItemsKey;
 
+// Apollo owns the Inbox badge for notification/message counts. Keep that raw
+// value separately and render Chat as an additive overlay so either producer
+// can update independently without erasing the other.
+static __weak UITabBarItem *sApolloInboxTabBarItem = nil;
+static char kApolloInboxNativeBadgeValueKey;
+static char kApolloInboxBadgeInitializedKey;
+static char kApolloInboxApplyingCombinedBadgeKey;
+static id sApolloModernChatBadgeObserver = nil;
+
+static NSInteger ApolloModernChatUnreadBadgeCount(void) {
+    if (!ApolloModernChatShouldOpen()) return 0;
+    NSDictionary<NSString *, id> *status = ApolloModernChatCachedStatus();
+    if (![status[@"hasUnread"] boolValue]) return 0;
+    NSInteger exact = MAX(0, [status[@"threadUnreadCount"] integerValue]);
+    // Reddit does not expose an exact request count in the current Chat DOM.
+    // When only a request/unread marker is available, show one rather than
+    // pretending a more precise number is known.
+    return MAX(1, exact);
+}
+
+static BOOL ApolloBadgeValueIsInteger(NSString *value, NSInteger *integer) {
+    if (![value isKindOfClass:[NSString class]] || value.length == 0) return NO;
+    NSScanner *scanner = [NSScanner scannerWithString:value];
+    NSInteger parsed = 0;
+    BOOL valid = [scanner scanInteger:&parsed] && scanner.isAtEnd;
+    if (valid && integer) *integer = MAX(0, parsed);
+    return valid;
+}
+
+static NSString *ApolloCombinedInboxBadgeValue(NSString *nativeValue) {
+    NSInteger chatCount = ApolloModernChatUnreadBadgeCount();
+    if (chatCount <= 0) return nativeValue;
+
+    NSInteger nativeCount = 0;
+    if (ApolloBadgeValueIsInteger(nativeValue, &nativeCount)) {
+        return [NSString stringWithFormat:@"%ld", (long)(nativeCount + chatCount)];
+    }
+    // Apollo normally supplies a number or nil. If it supplies a symbolic dot,
+    // prefer the useful Chat count; preserve threshold strings such as 99+.
+    if (nativeValue.length > 0 && ![nativeValue isEqualToString:@"•"]) return nativeValue;
+    return [NSString stringWithFormat:@"%ld", (long)chatCount];
+}
+
+static void ApolloApplyCombinedInboxBadge(void) {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ ApolloApplyCombinedInboxBadge(); });
+        return;
+    }
+    UITabBarItem *item = sApolloInboxTabBarItem;
+    if (!item || ![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) return;
+    NSString *nativeValue = objc_getAssociatedObject(item, &kApolloInboxNativeBadgeValueKey);
+    objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
+                             @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    item.badgeValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
+                             nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloCaptureInboxTabBarItem(UIViewController *controller) {
+    UITabBarItem *item = controller.navigationController.tabBarItem ?: controller.tabBarItem;
+    if (!item) return;
+    sApolloInboxTabBarItem = item;
+    if (![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) {
+        objc_setAssociatedObject(item, &kApolloInboxNativeBadgeValueKey,
+                                 item.badgeValue, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        objc_setAssociatedObject(item, &kApolloInboxBadgeInitializedKey,
+                                 @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    ApolloApplyCombinedInboxBadge();
+}
+
 // Modern Chat makes the row useful for cookie-auth API-free accounts as well as
 // OAuth accounts, so it remains present for every signed-in account.
 static BOOL ApolloDirectChatRowActive(void) { return sDirectChatRowEnabled; }
@@ -653,6 +724,11 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
     if (visible && !hub) hub = ApolloEnsureInboxChatHub(host);
     if (!hub) return;
 
+    // The hub cross-fades its child without UIKit appearance callbacks. Tell
+    // the route-aware web controller explicitly so a hidden Chat room cannot
+    // leave the shared Inbox tab bar hidden over Notifications.
+    ApolloModernChatControllerSetInboxVisible(hub.chatController, visible);
+
     BOOL wasVisible = [objc_getAssociatedObject(host, &kInboxAllChatHubVisibleKey) boolValue];
     objc_setAssociatedObject(host, &kInboxAllChatHubVisibleKey, @(visible), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloInboxModeSwitcherView *notificationsSwitcher = objc_getAssociatedObject(host, &kInboxAllModeSwitcherKey);
@@ -863,11 +939,14 @@ static void ApolloWarnIfUnhandledRowDelegates(id vc) {
     %orig;
     sLatestBoxesController = self;
     ApolloBoxesState(self, YES);
+    ApolloCaptureInboxTabBarItem((UIViewController *)self);
 }
 
 - (void)redditAccountChangedWithNotification:(id)notification {
     %orig;
     sLatestBoxesController = self;
+    ApolloCaptureInboxTabBarItem((UIViewController *)self);
+    ApolloApplyCombinedInboxBadge();
     // Section membership changes with moderator status. Force a fresh probe so
     // stale coordinates from the previous account cannot route the wrong row.
     objc_setAssociatedObject(self, &kApolloBoxesRowStateKey,
@@ -1052,6 +1131,7 @@ static BOOL sChatFilterActive = NO;
         ChatsFilterLog(@"InboxViewController marked chat-filtered");
     }
     %orig;
+    ApolloCaptureInboxTabBarItem((UIViewController *)self);
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue])
         ((UIViewController *)self).title = @"Direct Chat";   // after %orig so Apollo doesn't override it
     if (ApolloInboxControllerIsAll(self) && ![objc_getAssociatedObject(self, &kInboxAllStatusObserverKey) boolValue]) {
@@ -1094,6 +1174,7 @@ static BOOL sChatFilterActive = NO;
 %new
 - (void)apollo_modernChatStatusChanged:(NSNotification *)notification {
     ApolloInstallInboxModeSwitcher(self);
+    ApolloApplyCombinedInboxBadge();
 }
 
 %new
@@ -1445,6 +1526,46 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
 }
 %end
 
+%hook UITabBarItem
+
+- (void)setBadgeValue:(NSString *)badgeValue {
+    if (objc_getAssociatedObject(self, &kApolloInboxApplyingCombinedBadgeKey)) {
+        %orig;
+        return;
+    }
+
+    BOOL titleIdentifiesInbox = self.title.length > 0 &&
+        [self.title caseInsensitiveCompare:@"Inbox"] == NSOrderedSame;
+    if (titleIdentifiesInbox && self != sApolloInboxTabBarItem) {
+        sApolloInboxTabBarItem = self;
+        objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
+                                 @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (self != sApolloInboxTabBarItem) {
+        %orig;
+        return;
+    }
+
+    objc_setAssociatedObject(self, &kApolloInboxNativeBadgeValueKey,
+                             badgeValue, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
+                             @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSString *combinedValue = ApolloCombinedInboxBadgeValue(badgeValue);
+    ChatsFilterLog(@"Inbox badge native=%@ chat=%ld combined=%@",
+                   badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
+                   combinedValue ?: @"none");
+    %orig(combinedValue);
+}
+
+%end
+
 %ctor {
+    sApolloModernChatBadgeObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:ApolloModernChatStatusDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        ApolloApplyCombinedInboxBadge();
+    }];
     ChatsFilterLog(@"module loaded");
 }

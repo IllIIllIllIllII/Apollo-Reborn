@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 
+@class WKWebView;
+
 NS_ASSUME_NONNULL_BEGIN
 
 // WKWebView login to www.reddit.com that harvests the reddit_session cookie
@@ -32,6 +34,13 @@ NS_ASSUME_NONNULL_BEGIN
 // loading, but remembers which stored account requested re-authentication so a
 // Cancel can re-arm that account's expiry prompt for the next retry.
 + (instancetype)loginControllerForReauthenticationOfUsername:(nullable NSString *)username;
+
+// Modern Chat, modern Modmail, and native Polls need a Reddit web session even
+// when the Apollo account itself continues to use OAuth/API-key authentication.
+// This targeted variant accepts only a matching Reddit username and stores the
+// result as an auxiliary feature session, never as the account transport.
++ (instancetype)loginControllerForUsername:(NSString *)username
+                                completion:(void (^)(BOOL success))completion;
 
 // Presents (from the topmost view controller) a one-shot "session expired"
 // alert for `username` offering to re-harvest its cookie, then launches the
@@ -66,6 +75,12 @@ NS_ASSUME_NONNULL_BEGIN
 // snapshot staleness). Concurrent attempts for the same username are coalesced:
 // later callers' completions are dropped and the first attempt's outcome stands.
 + (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL success))completion;
+
+// Opportunistically captures the already-authenticated Reddit cookies from an
+// OAuth login webview. The result is auxiliary-only, so the explicit API-key
+// choice remains intact while web-backed features avoid a second login.
++ (void)harvestFeatureSessionFromWebView:(WKWebView *)webView
+                              completion:(void (^ _Nullable)(NSString * _Nullable username))completion;
 
 @end
 

@@ -32,6 +32,11 @@ UIViewController *ApolloCreateModernChatViewControllerForPath(NSString * _Nullab
 UIViewController *ApolloCreateEmbeddedModernChatViewController(ApolloModernChatInboxSection section);
 void ApolloModernChatControllerShowInboxSection(UIViewController *controller,
                                                 ApolloModernChatInboxSection section);
+// The in-place Inbox hub does not trigger child appearance callbacks when it
+// cross-fades between Notifications and Chat. Explicitly hand shared tab-bar
+// ownership to the web controller while Chat is visible, and restore it when
+// Notifications returns.
+void ApolloModernChatControllerSetInboxVisible(UIViewController *controller, BOOL visible);
 void ApolloModernChatControllerRefreshEmbeddedLayout(UIViewController *controller);
 // API-key-free accounts cannot use Apollo's OAuth-only native new-Modmail
 // endpoints. This presents Reddit's current cookie-authenticated Modmail inbox
