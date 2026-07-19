@@ -45,6 +45,7 @@ static BOOL sChatPollPendingKick = NO;
 
 static NSString *sChatPollBearer = nil;
 static NSTimeInterval sChatPollBearerExpiry = 0;
+static NSString *sChatPollRejectedBearer = nil; // last token the server 401'd — never re-adopt it
 static NSString *sChatPollUsername = nil;      // owner of bearer/since/backoff state
 
 static NSString *sChatPollSinceToken = nil;
@@ -96,6 +97,7 @@ static NSString *ApolloChatPollHomeserverBase(void) {
 static void ApolloChatPollResetPerAccountState(void) {
     sChatPollBearer = nil;
     sChatPollBearerExpiry = 0;
+    sChatPollRejectedBearer = nil;
     sChatPollSinceToken = nil;
     sChatPollSinceBase = nil;
     sChatPollMintBlockedUntil = 0;
@@ -258,7 +260,10 @@ static void ApolloChatPollObtainBearer(NSString *username, NSString *cookieHeade
         return;
     }
     NSString *stored = ApolloChatPollCookieValue(cookieHeader, @"token_v2");
-    if (stored.length > 0) {
+    // A revoked token can carry a future exp — once the server rejects a
+    // value, never re-adopt that same value from the stored snapshot, or
+    // every tick would fire a doomed 401 for the whole backoff window.
+    if (stored.length > 0 && ![stored isEqualToString:sChatPollRejectedBearer]) {
         NSTimeInterval expiry = ApolloChatPollJWTExpiry(stored);
         if (expiry - now > kChatPollBearerSlack) {
             sChatPollBearer = stored;
@@ -283,7 +288,9 @@ static void ApolloChatPollObtainBearer(NSString *username, NSString *cookieHeade
             // the store carries a fresh token_v2 and the next tick uses it.
             [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username
                                                                         completion:^(BOOL success) {
-                if (!success) return;
+                // Stale-owner guard: an account switch may have re-earned this
+                // backoff for a DIFFERENT user while the re-harvest ran.
+                if (!success || ![username isEqualToString:sChatPollUsername]) return;
                 sChatPollMintBlockedUntil = 0;
                 ApolloChatUnreadPollerKick();
             }];
@@ -299,16 +306,19 @@ static NSInteger ApolloChatPollCounter(NSDictionary *payload, NSString *key) {
     return [value respondsToSelector:@selector(integerValue)] ? MAX(0, [value integerValue]) : -1;
 }
 
-// Extract {unreadCount, requestsCount, preview?, unreadRoomId?} from a Matrix
-// sync payload. Prefers Reddit's pre-computed counters; falls back to summing
-// per-room notification counts when a counter is absent.
-static NSDictionary *ApolloChatPollStatusFromSyncPayload(NSDictionary *payload) {
+// Extract {unreadCount, requestsCount, preview?, unreadRoomId?, latestUnreadTs?}
+// from a Matrix sync payload. Prefers Reddit's pre-computed counters; falls
+// back to per-room data only on FULL syncs — an incremental response carries
+// just the rooms that changed, so counter-absent there means "no information",
+// not zero (returns nil in that case rather than clearing real state).
+static NSDictionary *ApolloChatPollStatusFromSyncPayload(NSDictionary *payload, BOOL isIncremental) {
     NSDictionary *rooms = [payload[@"rooms"] isKindOfClass:[NSDictionary class]] ? payload[@"rooms"] : @{};
     NSDictionary *joined = [rooms[@"join"] isKindOfClass:[NSDictionary class]] ? rooms[@"join"] : @{};
     NSDictionary *invited = [rooms[@"invite"] isKindOfClass:[NSDictionary class]] ? rooms[@"invite"] : @{};
 
     NSInteger unread = ApolloChatPollCounter(payload, @"com.reddit.global_navigation_counter");
     NSInteger requests = ApolloChatPollCounter(payload, @"com.reddit.invites_counter");
+    if ((unread < 0 || requests < 0) && isIncremental) return nil;
     if (requests < 0) requests = (NSInteger)invited.count;
 
     NSInteger summedUnread = 0;
@@ -323,11 +333,12 @@ static NSDictionary *ApolloChatPollStatusFromSyncPayload(NSDictionary *payload) 
         NSInteger count = [notifications[@"notification_count"] respondsToSelector:@selector(integerValue)]
             ? [notifications[@"notification_count"] integerValue] : 0;
         // Reddit marks rooms excluded from its own navigation badge (e.g.
-        // muted) — honor that in the fallback sum.
+        // muted) — exclude those from ALL unread accounting, so the push
+        // preview and deep link only ever reflect rooms the badge counts.
         id counted = notifications[@"com.reddit.is_counted_in_global_navigation_counter"];
         BOOL countsTowardBadge = counted == nil || [counted boolValue];
-        if (count <= 0) continue;
-        if (countsTowardBadge) summedUnread += count;
+        if (count <= 0 || !countsTowardBadge) continue;
+        summedUnread += count;
         unreadRoomCount++;
         unreadRoomId = unreadRoomCount == 1 ? roomId : nil;
 
@@ -358,6 +369,7 @@ static NSDictionary *ApolloChatPollStatusFromSyncPayload(NSDictionary *payload) 
     status[@"requestsCount"] = @(requests);
     if (preview.length > 0) status[@"preview"] = preview;
     if (unreadRoomId.length > 0) status[@"unreadRoomId"] = unreadRoomId;
+    if (previewTimestamp > 0) status[@"latestUnreadTs"] = @(previewTimestamp);
     return status;
 }
 
@@ -371,11 +383,12 @@ static NSDictionary *ApolloChatPollWatermarks(NSString *username) {
     return [entry isKindOfClass:[NSDictionary class]] ? entry : @{};
 }
 
-static void ApolloChatPollSaveWatermarks(NSString *username, NSInteger unread, NSInteger requests) {
+static void ApolloChatPollSaveWatermarks(NSString *username, NSInteger unread, NSInteger requests,
+                                         NSTimeInterval latestTs) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSMutableDictionary *all = [[defaults dictionaryForKey:UDKeyChatUnreadNotifiedWatermarks] mutableCopy]
         ?: [NSMutableDictionary dictionary];
-    all[username.lowercaseString] = @{ @"unread": @(unread), @"requests": @(requests) };
+    all[username.lowercaseString] = @{ @"unread": @(unread), @"requests": @(requests), @"latestTs": @(latestTs) };
     [defaults setObject:all forKey:UDKeyChatUnreadNotifiedWatermarks];
 }
 
@@ -386,14 +399,20 @@ static void ApolloChatPollSaveWatermarks(NSString *username, NSInteger unread, N
 static void ApolloChatPollNotifyTransitions(NSString *username, NSDictionary *status) {
     NSInteger unread = [status[@"unreadCount"] integerValue];
     NSInteger requests = [status[@"requestsCount"] integerValue];
+    NSTimeInterval latestTs = [status[@"latestUnreadTs"] doubleValue];
     NSDictionary *marks = ApolloChatPollWatermarks(username);
     NSInteger unreadMark = [marks[@"unread"] integerValue];
     NSInteger requestsMark = [marks[@"requests"] integerValue];
+    NSTimeInterval latestTsMark = [marks[@"latestTs"] doubleValue];
 
-    if (unread == unreadMark && requests == requestsMark) return;
+    // A newer message can arrive while the total holds steady (one read, one
+    // received) — the advancing timestamp catches what the count can't. The
+    // tsMark>0 requirement keeps the first-ever poll from announcing history.
+    BOOL newerMessage = unread > 0 && latestTs > 0 && latestTsMark > 0 && latestTs > latestTsMark;
+    if (unread == unreadMark && requests == requestsMark && !newerMessage) return;
 
     if (ApolloBarkConfigured()) {
-        if (unread > unreadMark) {
+        if (unread > unreadMark || newerMessage) {
             NSString *title = unread == 1 ? @"New Chat Message"
                 : [NSString stringWithFormat:@"%ld Unread Chat Messages", (long)unread];
             NSString *preview = [status[@"preview"] isKindOfClass:[NSString class]] ? status[@"preview"] : nil;
@@ -416,7 +435,7 @@ static void ApolloChatPollNotifyTransitions(NSString *username, NSDictionary *st
         }
     }
     // Track decreases too, so reading everything re-arms the next push.
-    ApolloChatPollSaveWatermarks(username, unread, requests);
+    ApolloChatPollSaveWatermarks(username, unread, requests, MAX(latestTs, latestTsMark));
 }
 
 #pragma mark - The poll itself
@@ -482,6 +501,7 @@ static void ApolloChatPollRunSync(NSString *username, NSString *bearer, BOOL isR
             }
 
             if (statusCode == 401 || statusCode == 403) {
+                sChatPollRejectedBearer = [bearer copy];
                 sChatPollBearer = nil;
                 sChatPollBearerExpiry = 0;
                 if (isRetryAfterAuthFailure) {
@@ -494,7 +514,8 @@ static void ApolloChatPollRunSync(NSString *username, NSString *bearer, BOOL isR
                               (long)statusCode, username, kChatPollAuthBackoff / 60.0);
                     [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username
                                                                                 completion:^(BOOL success) {
-                        if (!success) return;
+                        // Stale-owner guard, as in the mint-failure path.
+                        if (!success || ![username isEqualToString:sChatPollUsername]) return;
                         sChatPollAuthBlockedUntil = 0;
                         ApolloChatUnreadPollerKick();
                     }];
@@ -535,7 +556,13 @@ static void ApolloChatPollRunSync(NSString *username, NSString *bearer, BOOL isR
                 sChatPollSinceBase = base;
             }
 
-            NSMutableDictionary *status = [ApolloChatPollStatusFromSyncPayload(payload) mutableCopy];
+            NSMutableDictionary *status = [ApolloChatPollStatusFromSyncPayload(payload, usedSinceToken) mutableCopy];
+            if (!status) {
+                // Counter-absent incremental response: no information — keep
+                // the last published state rather than clearing it.
+                ApolloChatPollFinish();
+                return;
+            }
             status[@"username"] = username;
             status[@"checkedAt"] = @([NSDate date].timeIntervalSince1970 * 1000.0);
             ApolloLog(@"[ChatPoller] u/%@ unread=%@ requests=%@%@", username,

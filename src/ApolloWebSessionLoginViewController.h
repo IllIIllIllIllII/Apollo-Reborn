@@ -74,8 +74,8 @@ NS_ASSUME_NONNULL_BEGIN
 // belongs to a different user (shared jar, multi-account), times out, or a
 // recent silent success evidently didn't stick (10-minute cooldown — repeated
 // expiry verdicts right after a "successful" re-harvest mean the problem isn't
-// snapshot staleness). Concurrent attempts for the same username are coalesced:
-// later callers' completions are dropped and the first attempt's outcome stands.
+// snapshot staleness). Concurrent attempts for the same username are coalesced
+// onto one webview; every caller's completion observes that attempt's outcome.
 + (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL success))completion;
 
 // "Grab it once": opportunistically captures the already-authenticated Reddit

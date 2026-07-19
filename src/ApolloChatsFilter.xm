@@ -328,6 +328,9 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.chatUnreadBadge.layer.cornerRadius = 9.0;
     self.chatUnreadBadge.clipsToBounds = YES;
     self.chatUnreadBadge.hidden = YES;
+    // The count is spoken via chatButton.accessibilityValue; the pill itself
+    // must not appear as a second VoiceOver element.
+    self.chatUnreadBadge.isAccessibilityElement = NO;
     [self.containerView addSubview:self.chatUnreadBadge];
 
     _selectedMode = ApolloInboxModeNotifications;
@@ -459,6 +462,8 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.requestsBadge.clipsToBounds = YES;
     self.requestsBadge.hidden = YES;
     self.requestsBadge.userInteractionEnabled = NO;
+    // Spoken via requestsButton.accessibilityValue, not as its own element.
+    self.requestsBadge.isAccessibilityElement = NO;
     [self addSubview:self.requestsBadge];
 
     self.bottomSeparator = [UIView new];

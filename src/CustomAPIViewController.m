@@ -2854,6 +2854,10 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (void)modernRedditChatSwitchToggled:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyUseModernRedditChat];
+    // The combined Inbox tab badge gates its chat contribution on this key —
+    // re-render it now so switching modern Chat off immediately drops any
+    // chat-inflated count back to Apollo's native value.
+    [[NSNotificationCenter defaultCenter] postNotificationName:ApolloModernChatStatusDidChangeNotification object:nil];
 }
 
 - (void)modernRedditModmailSwitchToggled:(UISwitch *)sender {

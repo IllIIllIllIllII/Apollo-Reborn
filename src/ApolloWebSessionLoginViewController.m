@@ -767,9 +767,22 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
             if (completion) completion(NO);
             return;
         }
-        // Coalesce concurrent attempts: the first one's outcome stands; later
-        // callers are dropped (documented in the header).
-        if (sReharvestsInFlight[key]) return;
+        // Coalesce concurrent attempts: one webview does the work, but every
+        // caller observes the first attempt's outcome (the chat unread poller
+        // clears its backoff from this completion, so dropping it would leave
+        // a successful re-harvest unnoticed for up to 30 minutes).
+        ApolloWebSessionSilentReharvester *inflight = sReharvestsInFlight[key];
+        if (inflight) {
+            void (^prior)(BOOL) = inflight.completion;
+            void (^added)(BOOL) = completion;
+            if (added) {
+                inflight.completion = ^(BOOL success) {
+                    if (prior) prior(success);
+                    added(success);
+                };
+            }
+            return;
+        }
 
         ApolloLog(@"[WebJSON] Attempting silent re-harvest for u/%@ from the persistent webview jar", key);
         ApolloWebSessionSilentReharvester *r = [ApolloWebSessionSilentReharvester new];
