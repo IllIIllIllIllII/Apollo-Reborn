@@ -15,6 +15,7 @@
 #import "UserDefaultConstants.h"
 
 #import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
 
 static const NSTimeInterval kChatPollDefaultInterval = 30.0;   // foreground cadence
 static const NSTimeInterval kChatPollBearerSlack = 120.0;      // refresh token_v2 this close to expiry
@@ -104,45 +105,90 @@ static void ApolloChatPollResetPerAccountState(void) {
 
 #pragma mark - token_v2 bearer
 
-// Captures Set-Cookie headers from every hop: Reddit often answers the
-// homepage with a redirect whose response already carries the fresh token_v2,
-// and NSURLSession only exposes the final response to the completion handler.
-@interface ApolloChatPollMintDelegate : NSObject <NSURLSessionTaskDelegate>
-@property (nonatomic, strong) NSMutableArray<NSHTTPURLResponse *> *responses;
+// Reddit's edge only re-issues token_v2 for real browser page loads — a bare
+// NSURLSession GET with the same cookies and headers comes back with no
+// token_v2 at all (verified live; the TLS/client fingerprint is the
+// discriminator, not the request contents). So mint the way the rest of the
+// repo does: an offscreen WKWebView, seeded with the stored session cookies
+// into an isolated non-persistent store (mirroring the modern-mailbox
+// seeding), loads the homepage once; the rotated token_v2 lands in that
+// store's cookie jar. The webview is never added to a window and is torn
+// down as soon as the token (or timeout) arrives.
+@interface ApolloChatPollWebMinter : NSObject <WKNavigationDelegate>
+@property (nonatomic, strong) WKWebView *webView;
+@property (nonatomic, copy) NSString *username;
+@property (nonatomic, copy) void (^completion)(NSString *bearer);
+@property (nonatomic, assign) BOOL done;
+@property (nonatomic, assign) NSInteger cookiePollsLeft;
 @end
 
-@implementation ApolloChatPollMintDelegate
-- (instancetype)init {
-    if ((self = [super init])) _responses = [NSMutableArray array];
-    return self;
+static NSMutableSet *ApolloChatPollActiveMinters(void) {
+    static NSMutableSet *minters;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ minters = [NSMutableSet set]; });
+    return minters;
 }
-- (void)URLSession:(NSURLSession *)session
-              task:(NSURLSessionTask *)task
-willPerformHTTPRedirection:(NSHTTPURLResponse *)response
-        newRequest:(NSURLRequest *)request
- completionHandler:(void (^)(NSURLRequest *))completionHandler {
-    @synchronized (self.responses) { [self.responses addObject:response]; }
-    completionHandler(request);
-}
-@end
 
-static NSString *ApolloChatPollTokenFromResponses(NSArray<NSHTTPURLResponse *> *responses) {
-    NSURL *redditURL = [NSURL URLWithString:@"https://www.reddit.com/"];
-    for (NSHTTPURLResponse *response in responses) {
-        NSArray<NSHTTPCookie *> *cookies =
-            [NSHTTPCookie cookiesWithResponseHeaderFields:response.allHeaderFields forURL:redditURL];
-        for (NSHTTPCookie *cookie in cookies) {
-            if ([cookie.name isEqualToString:@"token_v2"] && cookie.value.length > 0) return cookie.value;
-        }
+@implementation ApolloChatPollWebMinter
+
+- (void)finishWithToken:(NSString *)token {
+    if (self.done) return;
+    self.done = YES;
+    [self.webView stopLoading];
+    self.webView.navigationDelegate = nil;
+    if (token.length > 0) {
+        ApolloLog(@"[ChatPoller] Minted a fresh token_v2 for u/%@ (expires in %.0f min)",
+                  self.username, (ApolloChatPollJWTExpiry(token) - [NSDate date].timeIntervalSince1970) / 60.0);
+    } else {
+        ApolloLog(@"[ChatPoller] token_v2 mint failed for u/%@ (no token after homepage load) — backing off %.0f min",
+                  self.username, kChatPollMintBackoff / 60.0);
     }
-    return nil;
+    if (self.completion) self.completion(token.length > 0 ? token : nil);
+    self.completion = nil;
+    self.webView = nil;
+    [ApolloChatPollActiveMinters() removeObject:self];
 }
 
-// Loading the real homepage with the stored cookies is what makes Reddit's
-// edge refresh a stale token_v2 via Set-Cookie — the same trick the silent
-// re-harvester relies on (ApolloWebSessionLoginViewController.m), minus the
-// webview. Completion on the main queue; the fresh token stays in memory only,
-// deliberately never written back into the stored session snapshot.
+// The fresh token usually arrives on the main document response, but Reddit
+// occasionally sets it a beat later; poll the isolated jar briefly.
+- (void)checkCookieJar {
+    if (self.done) return;
+    __weak typeof(self) weakSelf = self;
+    [self.webView.configuration.websiteDataStore.httpCookieStore getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || self.done) return;
+        NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+        for (NSHTTPCookie *cookie in cookies) {
+            if (![cookie.name isEqualToString:@"token_v2"] || cookie.value.length == 0) continue;
+            if (ApolloChatPollJWTExpiry(cookie.value) - now <= kChatPollBearerSlack) continue;
+            [self finishWithToken:cookie.value];
+            return;
+        }
+        if (--self.cookiePollsLeft <= 0) {
+            [self finishWithToken:nil];
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [self checkCookieJar]; });
+    }];
+}
+
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    [self checkCookieJar];
+}
+
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    [self finishWithToken:nil];
+}
+
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    // Non-provisional failures can still have delivered the response headers
+    // (and their Set-Cookie); give the jar checks a chance before giving up.
+    [self checkCookieJar];
+}
+
+@end
+
 static void ApolloChatPollMintBearer(NSString *username, NSString *cookieHeader,
                                      void (^completion)(NSString *bearer)) {
     // Under the debug homeserver override, mint against the mock too so the
@@ -151,60 +197,55 @@ static void ApolloChatPollMintBearer(NSString *username, NSString *cookieHeader,
     if (![mintBase isKindOfClass:[NSString class]] || ![mintBase hasPrefix:@"http"]) {
         mintBase = @"https://www.reddit.com";
     }
-    NSMutableURLRequest *request =
-        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[mintBase stringByAppendingString:@"/"]]];
-    request.timeoutInterval = kChatPollRequestTimeout;
-    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-    request.HTTPShouldHandleCookies = NO;
-    [request setValue:cookieHeader forHTTPHeaderField:@"Cookie"];
-    [request setValue:kChatPollMintUserAgent forHTTPHeaderField:@"User-Agent"];
-    // Present as a browser page load — Reddit's edge only refreshes token_v2
-    // on document requests.
-    [request setValue:@"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-   forHTTPHeaderField:@"Accept"];
-    [request setValue:@"en-US,en;q=0.9" forHTTPHeaderField:@"Accept-Language"];
+    NSURL *mintURL = [NSURL URLWithString:[mintBase stringByAppendingString:@"/"]];
 
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    // No cookie STORE (nothing persists, nothing auto-attaches), but leave
-    // HTTPShouldSetCookies at YES: setting it to NO makes CFNetwork strip
-    // even a manually-set Cookie header from the request (observed live —
-    // Reddit answered as if logged out and never refreshed token_v2).
-    config.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
-    config.HTTPCookieStorage = nil;
-    ApolloChatPollMintDelegate *delegate = [ApolloChatPollMintDelegate new];
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:delegate delegateQueue:nil];
+    WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    config.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
 
-    NSURLSessionDataTask *task = [session dataTaskWithRequest:request
-                                            completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSMutableArray<NSHTTPURLResponse *> *responses;
-        @synchronized (delegate.responses) { responses = [delegate.responses mutableCopy]; }
-        if ([response isKindOfClass:[NSHTTPURLResponse class]]) [responses addObject:(NSHTTPURLResponse *)response];
-        NSString *token = error ? nil : ApolloChatPollTokenFromResponses(responses);
-        // Diagnostic trail for mint failures: per-hop status + which cookie
-        // NAMES each hop tried to set (never values).
-        NSMutableArray<NSString *> *hops = [NSMutableArray array];
-        NSURL *redditURL = [NSURL URLWithString:@"https://www.reddit.com/"];
-        for (NSHTTPURLResponse *hop in responses) {
-            NSArray<NSHTTPCookie *> *cookies =
-                [NSHTTPCookie cookiesWithResponseHeaderFields:hop.allHeaderFields forURL:redditURL];
-            [hops addObject:[NSString stringWithFormat:@"%ld:%@", (long)hop.statusCode,
-                             [[cookies valueForKey:@"name"] componentsJoinedByString:@","] ?: @""]];
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (token.length > 0) {
-                ApolloLog(@"[ChatPoller] Minted a fresh token_v2 for u/%@ (expires in %.0f min)",
-                          username, (ApolloChatPollJWTExpiry(token) - [NSDate date].timeIntervalSince1970) / 60.0);
-            } else {
-                ApolloLog(@"[ChatPoller] token_v2 mint failed for u/%@ (%@; hops=%@) — backing off %.0f min",
-                          username, error.localizedDescription ?: @"no token in response",
-                          [hops componentsJoinedByString:@" -> "],
-                          kChatPollMintBackoff / 60.0);
-            }
-            completion(token);
-        });
-        [session finishTasksAndInvalidate];
-    }];
-    [task resume];
+    ApolloChatPollWebMinter *minter = [ApolloChatPollWebMinter new];
+    minter.username = username;
+    minter.completion = completion;
+    minter.cookiePollsLeft = 8;
+    minter.webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
+    minter.webView.navigationDelegate = minter;
+    minter.webView.customUserAgent = kChatPollMintUserAgent;
+    [ApolloChatPollActiveMinters() addObject:minter];
+
+    // Seed the stored session into the isolated jar, minus the dead
+    // token_v2 (Reddit reliably issues a fresh one for a session presenting
+    // none). Mirrors ApolloSeedModernMailboxCookies.
+    WKHTTPCookieStore *jar = config.websiteDataStore.httpCookieStore;
+    NSMutableArray<NSHTTPCookie *> *seeds = [NSMutableArray array];
+    for (NSString *pair in [cookieHeader componentsSeparatedByString:@"; "]) {
+        NSRange eq = [pair rangeOfString:@"="];
+        if (eq.location == NSNotFound || eq.location == 0) continue;
+        NSString *name = [pair substringToIndex:eq.location];
+        if ([name isEqualToString:@"token_v2"]) continue;
+        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:@{
+            NSHTTPCookieName: name,
+            NSHTTPCookieValue: [pair substringFromIndex:eq.location + 1],
+            NSHTTPCookieDomain: @".reddit.com",
+            NSHTTPCookiePath: @"/",
+            NSHTTPCookieSecure: @"TRUE",
+            NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow:24 * 60 * 60],
+        }];
+        if (cookie) [seeds addObject:cookie];
+    }
+    __block NSUInteger remaining = seeds.count;
+    void (^loadWhenSeeded)(void) = ^{
+        [minter.webView loadRequest:[NSURLRequest requestWithURL:mintURL]];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(25.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ [minter finishWithToken:nil]; });
+    };
+    if (remaining == 0) {
+        loadWhenSeeded();
+        return;
+    }
+    for (NSHTTPCookie *cookie in seeds) {
+        [jar setCookie:cookie completionHandler:^{
+            if (--remaining == 0) loadWhenSeeded();
+        }];
+    }
 }
 
 // Resolve a usable bearer for `username`: cached, straight from the stored
@@ -236,6 +277,16 @@ static void ApolloChatPollObtainBearer(NSString *username, NSString *cookieHeade
             sChatPollBearerExpiry = ApolloChatPollJWTExpiry(bearer);
         } else {
             sChatPollMintBlockedUntil = [NSDate date].timeIntervalSince1970 + kChatPollMintBackoff;
+            // Production fallback: the login module's silent re-harvest
+            // refreshes the whole stored session from the persistent login
+            // webview jar (its own cooldown + coalescing apply). On success
+            // the store carries a fresh token_v2 and the next tick uses it.
+            [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username
+                                                                        completion:^(BOOL success) {
+                if (!success) return;
+                sChatPollMintBlockedUntil = 0;
+                ApolloChatUnreadPollerKick();
+            }];
         }
         completion(bearer.length > 0 ? bearer : nil);
     });
