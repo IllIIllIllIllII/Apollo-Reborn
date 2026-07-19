@@ -17,6 +17,11 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Login-persistence debug (dev-only, gated behind FLEX). Force the account keychain read to
+// miss (simulate the broken-keychain -25300), and/or disable enumeration recovery, so the
+// wipe->recover chain can be exercised on any device. Inert unless set.
+static NSString *const UDKeyDebugForceAccountReadMiss = @"ApolloDebugForceAccountReadMiss";
+static NSString *const UDKeyDebugDisableKeychainRecovery = @"ApolloDebugDisableKeychainRecovery";
 static NSString *const UDKeyShowRandNsfw = @"ShowRandNsfwButton";
 static NSString *const UDKeyRandomSubredditsSource = @"RandomSubredditsSource";
 static NSString *const UDKeyRandNsfwSubredditsSource = @"RandNsfwSubredditsSource";
@@ -87,6 +92,9 @@ static NSString *const UDKeyUseProfileAvatarTabIcon = @"UseProfileAvatarTabIcon"
 // See ApolloUserAvatars.xm and ApolloProfileSocialLinks.m. Default YES.
 static NSString *const UDKeyShowDetailedProfiles = @"ShowDetailedProfiles";
 static NSString *const UDKeyShowSubredditHeaders = @"ShowSubredditHeaders";
+// Backing values for the single Community Highlights picker. Keeping the old
+// keys maps existing settings naturally: both YES = Full, master only = Partial,
+// master NO = Off.
 static NSString *const UDKeyCommunityHighlights = @"CommunityHighlights";
 static NSString *const UDKeyCommunityHighlightsWeb = @"CommunityHighlightsWeb";
 static NSString *const UDKeyAutoHideTabBarShowOnIdle = @"AutoHideTabBarShowOnIdle";
@@ -287,6 +295,12 @@ static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
 // API-key-free accounts always use it because Apollo's native new-Modmail
 // endpoints require OAuth credentials they deliberately do not have.
 static NSString *const UDKeyUseModernRedditModmail = @"UseModernRedditModmail";
+// Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
+// an experimental feature that lets you vote in and create polls via a
+// per-account reddit.com web session (harvested once, then silent). Independent
+// of UDKeyWebJSONEnabled: turning polls on does NOT reroute the request
+// pipeline; it only unlocks the poll tap handler and the compose "Poll" type.
+static NSString *const UDKeyPollsEnabled = @"PollsEnabled";
 // Legacy NSUserDefaults location of the harvested "name=value; ..." Cookie
 // header. The cookie is now stored in the keychain (ApolloWebJSON.m); this key
 // is retained only so ApolloWebJSONLoadPersistedCredentials can migrate an older

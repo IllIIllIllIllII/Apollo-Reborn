@@ -57,14 +57,15 @@ extern BOOL sUseProfileAvatarTabIcon;
 // registerDefaults. See ApolloUserAvatars.xm and ApolloProfileSocialLinks.{h,m}.
 extern BOOL sShowDetailedProfiles;
 extern BOOL sShowSubredditHeaders;
-// When ON, a horizontally-scrolling "Community Highlights" carousel of the
-// subreddit's pinned/stickied posts is shown at the top of the feed (mirrors
-// new-Reddit / the official app). See ApolloSubredditHighlights.xm.
+// Backing booleans for the single Community Highlights mode picker:
+//   Off     = both NO
+//   Partial = sCommunityHighlights YES, sCommunityHighlightsWeb NO
+//   Full    = both YES
+// Kept as booleans so existing preferences/backups migrate without conversion.
+// The carousel shows the subreddit's pinned posts at the top of the feed.
 extern BOOL sCommunityHighlights;
-// When ON (and sCommunityHighlights ON), a hidden WKWebView loads the subreddit's
-// new-Reddit page to harvest the FULL highlights set (up to 6), beyond the 2 the
-// REST API exposes. Heavier (loads the web page per sub); opt-in. See
-// ApolloSubredditHighlights.xm (ApolloHLWebFetch).
+// Full mode uses a hidden WKWebView to harvest up to 6 highlights beyond the 2
+// Reddit's REST API exposes. See ApolloSubredditHighlights.xm (ApolloHLWebFetch).
 extern BOOL sCommunityHighlightsWeb;
 extern BOOL sAutoHideTabBarShowOnIdle;
 // Which side the iOS 26 minimized (Liquid Glass) tab bar pill docks on:
@@ -276,6 +277,12 @@ static inline BOOL IsAppleTranslationSupported(void) {
 // authenticated with a WKWebView-harvested session cookie instead of a bearer
 // token. Dormant escape hatch for Reddit API-key revocation waves. Default NO.
 extern BOOL sWebJSONEnabled;
+// Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm): master gate for
+// the experimental poll voting + creation feature. Default NO. Cached here (not
+// re-read from NSUserDefaults per call) because the poll node's layoutSubviews
+// hook checks it; loaded at launch and updated live by the Polls settings
+// toggle. Read through ApolloPollsFeatureEnabled() (ApolloCommon.h).
+extern BOOL sPollsFeatureEnabled;
 // Serialized "name=value; name=value" Cookie header harvested from a
 // www.reddit.com web login (must include reddit_session). nil until the user
 // completes the Web Session Login flow. Persisted in the keychain (it's a full

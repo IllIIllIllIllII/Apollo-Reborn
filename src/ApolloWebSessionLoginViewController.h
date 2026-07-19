@@ -37,8 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Modern Chat, modern Modmail, and native Polls need a Reddit web session even
 // when the Apollo account itself continues to use OAuth/API-key authentication.
-// This targeted variant accepts only a matching Reddit username and stores the
-// result as an auxiliary feature session, never as the account transport.
+// This targeted variant requires the web login to match `username` (preventing
+// the shared WebKit cookie jar from authenticating the wrong Reddit account),
+// stores the result as an auxiliary feature session — never as the account
+// transport — and reports whether a matching session was harvested.
 + (instancetype)loginControllerForUsername:(NSString *)username
                                 completion:(void (^)(BOOL success))completion;
 
@@ -76,9 +78,17 @@ NS_ASSUME_NONNULL_BEGIN
 // later callers' completions are dropped and the first attempt's outcome stands.
 + (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL success))completion;
 
-// Opportunistically captures the already-authenticated Reddit cookies from an
-// OAuth login webview. The result is auxiliary-only, so the explicit API-key
-// choice remains intact while web-backed features avoid a second login.
+// "Grab it once": opportunistically captures the already-authenticated Reddit
+// cookies from an OAuth login webview (probes /api/me.json for the username +
+// modhash, then sweeps its .reddit.com cookies). The result is stored as an
+// AUXILIARY feature session (ApolloWebSessionSetPollOnly — invisible to the
+// API-Key-Free transport spine, so it never reroutes a healthy OAuth account),
+// which is how Chat, Modmail, and Polls avoid a second login while the explicit
+// API-key choice remains intact. Best-effort and non-blocking: `completion` is
+// called on the main thread with the harvested (lowercased) username, or nil if
+// the webview is anonymous / nothing usable was found — callers MUST proceed
+// regardless (this is opportunistic, never on the critical path). Wired into the
+// tweak's WKWebView OAuth sign-in (ApolloWebAuthViewController).
 + (void)harvestFeatureSessionFromWebView:(WKWebView *)webView
                               completion:(void (^ _Nullable)(NSString * _Nullable username))completion;
 

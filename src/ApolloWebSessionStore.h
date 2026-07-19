@@ -27,11 +27,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *cookieHeader;
 @property (nonatomic, copy) NSString *modhash;
 // YES when this session was harvested only for Reddit web features (Polls,
-// Chat, or modern Modmail) while the account still authenticates through OAuth.
-// The historical persisted property name remains `pollOnly` for compatibility.
-// An auxiliary session is deliberately invisible to ApolloWebSessionFor /
-// ApolloActiveWebSession, so it never reroutes a healthy OAuth account through
-// cookie transport. Web-only features read it via ApolloWebSessionPollFor.
+// Chat, or modern Modmail) while the account still authenticates through OAuth
+// — auto-captured during an OAuth sign-in, or set up from the feature's own
+// settings. The historical persisted property name remains `pollOnly` for
+// compatibility. An auxiliary session is DELIBERATELY invisible to
+// ApolloWebSessionFor / ApolloActiveWebSession — i.e. to the whole API-Key-Free
+// transport + identity spine — so it never reroutes a healthy OAuth account
+// through cookie transport. Web-only features read it via ApolloWebSessionPollFor.
 @property (nonatomic) BOOL pollOnly;
 @end
 

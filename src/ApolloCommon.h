@@ -123,4 +123,37 @@ void ApolloInjectPublicStickyAsSubredditIfNeeded(NSMutableArray *children, NSStr
 // ActionController is tagged on first build so re-builds re-inject and other
 // menus can't claim the item.
 void ApolloInjectDeletedCommentsMenuItemIfNeeded(NSMutableArray *children, NSString *menuTitle, id actionController);
+
+// Whether the experimental native Polls feature (voting + creation) is enabled.
+// Off by default; toggled from Settings → Polls (UDKeyPollsEnabled). All poll
+// entry points — the poll-node tap handler, remembered-vote reconciliation, the
+// compose "Poll" post type, and the quick-menu Poll entry — gate on this, so
+// with it off the tweak leaves Apollo's stock behavior completely untouched.
+BOOL ApolloPollsFeatureEnabled(void);
+
+// ApolloPollCompose: quick post-type picker for the subreddit "..." menu.
+// Returns an inline UIMenu (ControlGroup-style icon row: Photo/Link/Text/Poll,
+// filtered by the current subreddit's submission rules) that replaces the
+// plain "Submit Post" row, or nil to keep the stock row. `selectRow` re-fires
+// the original Submit Post action; the tapped type is applied to the compose
+// sheet's segmented control when it appears. Called from
+// ApolloNativeActionMenuBuildMenu when it hits actionKind 51 (Submit Post).
+UIMenu *ApolloSubmitPostTypesMenu(id actionController, void (^selectRow)(void));
+
+// Container keychain mirror (Tweak.xm): the Valet items the real keychain could not persist
+// on a keychain-broken sideload, so a backup taken there still carries the signed-in account.
+// Returns an array of { "service", "account", "data" } dicts (empty when the mirror is dormant).
+NSArray<NSDictionary *> *ApolloKeychainMirrorItemsForBackup(void);
+
+// Append a login-persistence diagnostic line to the cross-launch buffer in the app container.
+// Mirrors the line into a file that survives force-quit, so Export Debug Logs carries the
+// session that actually signed the user out. Safe to call from any thread; never logs secrets.
+void ApolloAppendLoginDiag(NSString *line);
+
+// Dev-only login-persistence debug (see Tweak.xm): a report of where the account keychain item
+// lives (each copy's access group / size / protection class), and a FLEX-gated action that
+// poisons/restores the account item's protection class to reproduce the -25300 on demand. Both
+// also write to the diag log.
+NSString *ApolloDebugAccountKeychainReport(void);
+NSString *ApolloDebugPoisonAccountAccessibility(void);
 __END_DECLS

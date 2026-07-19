@@ -164,6 +164,7 @@
         didFinish = YES;
         [weakSelf _finishWithURL:url error:nil];
     };
+    // Safety net: never let a hung probe block sign-in.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (!didFinish) {

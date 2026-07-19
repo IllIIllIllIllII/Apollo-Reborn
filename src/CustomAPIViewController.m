@@ -16,6 +16,7 @@
 #import "ApolloDirectChatWeb.h"
 #import "ApolloLinkPreviewSettingsViewController.h"
 #import "InlineMediaSettingsViewController.h"
+#import "ApolloPollSettingsViewController.h"
 #import "InfoRowSettingsViewController.h"
 #import "ApolloOpenInAppViewController.h"
 #import "ApolloSubredditCustomBannerCache.h"
@@ -40,6 +41,7 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionInfoRow,       // single row -> InfoRowSettingsViewController
     SectionApolloAI,
     SectionInlineMedia,   // single row -> InlineMediaSettingsViewController
+    SectionPolls,         // single row -> ApolloPollSettingsViewController
     SectionLinkPreviews,
     SectionMedia,
     SectionSubreddits,
@@ -47,6 +49,15 @@ typedef NS_ENUM(NSInteger, SectionIndex) {
     SectionPrivacy,
     SectionAbout,
     SectionCount
+};
+
+// The settings UI presents Community Highlights as one three-way choice while
+// the runtime keeps the two existing booleans for compatibility with backups
+// and preferences from builds that exposed separate switches.
+typedef NS_ENUM(NSInteger, ApolloCommunityHighlightsMode) {
+    ApolloCommunityHighlightsModeOff = 0,
+    ApolloCommunityHighlightsModePartial,
+    ApolloCommunityHighlightsModeFull,
 };
 
 // Row indices within SectionNotificationBackend. The Bark rows are always
@@ -375,6 +386,83 @@ typedef NS_ENUM(NSInteger, Tag) {
     return (sPreferredGIFFallbackFormat == 0) ? @"GIF" : @"MP4";
 }
 
+- (ApolloCommunityHighlightsMode)communityHighlightsMode {
+    if (!sCommunityHighlights) return ApolloCommunityHighlightsModeOff;
+    return sCommunityHighlightsWeb ? ApolloCommunityHighlightsModeFull : ApolloCommunityHighlightsModePartial;
+}
+
+- (NSString *)communityHighlightsModeText {
+    switch ([self communityHighlightsMode]) {
+        case ApolloCommunityHighlightsModeFull:    return @"Full";
+        case ApolloCommunityHighlightsModePartial: return @"Partial";
+        case ApolloCommunityHighlightsModeOff:
+        default:                                   return @"Off";
+    }
+}
+
+- (NSInteger)subredditLogicalRowForVisibleRow:(NSInteger)row {
+    // Modern Dividers (logical row 1) is the only conditional row now. When it
+    // is hidden, every later visible row is shifted up by one.
+    return (!sSubredditListEnhancements && row >= 1) ? row + 1 : row;
+}
+
+- (NSInteger)visibleSubredditRowForLogicalRow:(NSInteger)row {
+    return (!sSubredditListEnhancements && row > 1) ? row - 1 : row;
+}
+
+- (void)setCommunityHighlightsMode:(ApolloCommunityHighlightsMode)mode {
+    if (mode < ApolloCommunityHighlightsModeOff || mode > ApolloCommunityHighlightsModeFull) {
+        mode = ApolloCommunityHighlightsModeOff;
+    }
+
+    BOOL enabled = (mode != ApolloCommunityHighlightsModeOff);
+    BOOL full = (mode == ApolloCommunityHighlightsModeFull);
+    if (sCommunityHighlights == enabled && sCommunityHighlightsWeb == full) return;
+
+    sCommunityHighlights = enabled;
+    sCommunityHighlightsWeb = full;
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:enabled forKey:UDKeyCommunityHighlights];
+    [defaults setBool:full forKey:UDKeyCommunityHighlightsWeb];
+
+    NSInteger visibleRow = [self visibleSubredditRowForLogicalRow:3];
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:visibleRow inSection:SectionSubreddits];
+    if ([[self.tableView indexPathsForVisibleRows] containsObject:indexPath]) {
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    }
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloCommunityHighlightsToggleChangedNotification" object:nil];
+}
+
+- (void)presentCommunityHighlightsModeSheetFromSourceView:(UIView *)sourceView {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Community Highlights"
+                                                                   message:@"Full loads every available highlight. Partial uses Reddit's API and shows up to two."
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    ApolloCommunityHighlightsMode current = [self communityHighlightsMode];
+
+    NSString *fullTitle = (current == ApolloCommunityHighlightsModeFull) ? @"Full (Current)" : @"Full";
+    NSString *partialTitle = (current == ApolloCommunityHighlightsModePartial) ? @"Partial (Current)" : @"Partial";
+    NSString *offTitle = (current == ApolloCommunityHighlightsModeOff) ? @"Off (Current)" : @"Off";
+
+    [sheet addAction:[UIAlertAction actionWithTitle:fullTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setCommunityHighlightsMode:ApolloCommunityHighlightsModeFull];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:partialTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setCommunityHighlightsMode:ApolloCommunityHighlightsModePartial];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:offTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self setCommunityHighlightsMode:ApolloCommunityHighlightsModeOff];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && sourceView) {
+        popover.sourceView = sourceView;
+        popover.sourceRect = sourceView.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 - (BOOL)apollo_supportsAutoHideTabBarIdleSetting {
     return IsLiquidGlass() &&
         [UITabBarController instancesRespondToSelector:NSSelectorFromString(@"setTabBarMinimizeBehavior:")];
@@ -678,6 +766,31 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
 }
 
+- (UITableViewCell *)pollsCellForTableView:(UITableView *)tableView {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Polls"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Polls"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    }
+    cell.textLabel.text = @"Polls";
+    cell.detailTextLabel.text = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled] ? @"On" : @"Off";
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    return cell;
+}
+
+- (void)openPollSettings {
+    ApolloPollSettingsViewController *vc =
+        [[ApolloPollSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    if (self.navigationController) {
+        [self.navigationController pushViewController:vc animated:YES];
+    } else {
+        UINavigationController *navigation =
+            [[UINavigationController alloc] initWithRootViewController:vc];
+        [self presentViewController:navigation animated:YES completion:nil];
+    }
+}
+
 // One-line state summary shown under the "Info Row" disclosure row: magnifier
 // state, the detail-icon display style (Popups / Overlays / off), then any action
 // icons the user turned off. Translation only counts as "off" when a marker is
@@ -828,9 +941,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         [self.tableView reloadRowsAtIndexPaths:modernMailboxPaths
                               withRowAnimation:UITableViewRowAnimationNone];
     }
-    // Refresh the Info Row, Apollo AI, Inline Media and Rich Link Previews status
-    // subtitles after returning from their subviews.
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 4)]
+    // Refresh the Info Row, Apollo AI, Inline Media, Polls and Rich Link Previews
+    // status subtitles after returning from their subviews. These five sections are
+    // contiguous (SectionInfoRow ... SectionLinkPreviews), so a single range covers them.
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(SectionInfoRow, 5)]
                   withRowAnimation:UITableViewRowAnimationNone];
 }
 
@@ -888,6 +1002,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: return 1;
         case SectionApolloAI: return 1;
         case SectionInlineMedia: return 1;
+        case SectionPolls: return 1;
         case SectionLinkPreviews: return 1;
         // Media base rows. The inline-media rows (Previews toggle, Alignment,
         // Autoplay Inline GIFs) and "Inline Media in Chat" moved to the Inline
@@ -895,10 +1010,14 @@ typedef NS_ENUM(NSInteger, Tag) {
         // Play Inline" toggle. The hold-speed picker (row 11) shows only while its
         // toggle is on.
         case SectionMedia: return 11 + (sVideoHoldSpeedEnabled ? 1 : 0);
-        case SectionSubreddits: return 10 - (sSubredditListEnhancements ? 0 : 1) - (sCommunityHighlights ? 0 : 1);
+        // One Community Highlights picker replaces the old master + web switches.
+        // Modern Dividers remains the only conditional row in this section.
+        case SectionSubreddits: return 9 - (sSubredditListEnhancements ? 0 : 1);
         case SectionNotificationBackend: return kNotifBackendRowCount;
         case SectionPrivacy: return 1; // Anonymous Install Count toggle
-        case SectionAbout: return 6; // GitHub + Reddit + Thanks To + Export Logs + Privacy Policy + Version
+        // GitHub + Reddit + Thanks To + Export Logs + Privacy Policy + Version, plus a dev-only
+        // "Login Persistence Debug" row when FLEX (developer mode) is enabled.
+        case SectionAbout: return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyEnableFLEX] ? 7 : 6;
         default: return 0;
     }
 }
@@ -911,6 +1030,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: return @"Info Row";
         case SectionApolloAI: return @"Apollo AI";
         case SectionInlineMedia: return @"Inline Media";
+        case SectionPolls: return @"Polls";
         case SectionLinkPreviews: return @"Rich Link Previews";
         case SectionMedia: return @"Media";
         case SectionSubreddits: return @"Subreddits";
@@ -930,6 +1050,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         case SectionInfoRow: cell = [self infoRowCellForTableView:tableView]; break;
         case SectionApolloAI: cell = [self apolloAICellForTableView:tableView]; break;
         case SectionInlineMedia: cell = [self inlineMediaCellForTableView:tableView]; break;
+        case SectionPolls: cell = [self pollsCellForTableView:tableView]; break;
         case SectionLinkPreviews: cell = [self linkPreviewsCellForTableView:tableView]; break;
         case SectionMedia: cell = [self mediaCellForRow:indexPath.row tableView:tableView]; break;
         case SectionSubreddits: cell = [self subredditCellForRow:indexPath.row tableView:tableView]; break;
@@ -1584,17 +1705,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (UITableViewCell *)subredditCellForRow:(NSInteger)row tableView:(UITableView *)tableView {
-    // Sub-options are hidden when their parent toggle is off: Modern Dividers (logical 1)
-    // under "Subreddit List Enhancements", and "Load All Highlights (Web)" (logical 4)
-    // under "Community Highlights". Map the display row to its logical case by walking the
-    // logical rows in order and skipping any that are currently hidden.
-    BOOL hideDividers = !sSubredditListEnhancements;
-    BOOL hideWeb = !sCommunityHighlights;
-    NSInteger logicalRow = -1;
-    for (NSInteger visible = -1; visible < row; ) {
-        logicalRow++;
-        if (!((logicalRow == 1 && hideDividers) || (logicalRow == 4 && hideWeb))) visible++;
-    }
+    NSInteger logicalRow = [self subredditLogicalRowForVisibleRow:row];
     switch (logicalRow) {
         case 0:
             return [self switchCellWithIdentifier:@"Cell_Sub_Enhancements"
@@ -1611,41 +1722,43 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             label:@"Show Subreddit Headers"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowSubredditHeaders]
                                            action:@selector(subredditHeadersSwitchToggled:)];
-        case 3:
-            return [self switchCellWithIdentifier:@"Cell_Sub_Highlights"
-                                            label:@"Community Highlights"
-                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlights]
-                                           action:@selector(communityHighlightsSwitchToggled:)];
+        case 3: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Sub_HighlightsMode"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Sub_HighlightsMode"];
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            }
+            cell.textLabel.text = @"Community Highlights";
+            cell.detailTextLabel.text = [self communityHighlightsModeText];
+            cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+            return cell;
+        }
         case 4:
-            return [self switchCellWithIdentifier:@"Cell_Sub_HighlightsWeb"
-                                            label:@"Load All Highlights (Web)"
-                                               on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb]
-                                           action:@selector(communityHighlightsWebSwitchToggled:)];
-        case 5:
             return [self textFieldCellWithIdentifier:@"Cell_Sub_TrendLimit"
                                                label:@"Trending Subreddits Limit"
                                          placeholder:@"(unlimited)"
                                                 text:sTrendingSubredditsLimit
                                                  tag:TagTrendingLimit
                                            numerical:YES];
-        case 6:
+        case 5:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Trending"
                                                       label:@"Trending Source"
                                                 placeholder:defaultTrendingSubredditsSource
                                                        text:sTrendingSubredditsSource
                                                         tag:TagTrendingSubredditsSource];
-        case 7:
+        case 6:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_Random"
                                                       label:@"Random Source"
                                                 placeholder:defaultRandomSubredditsSource
                                                        text:sRandomSubredditsSource
                                                         tag:TagRandomSubredditsSource];
-        case 8:
+        case 7:
             return [self switchCellWithIdentifier:@"Cell_Sub_RandNSFW"
                                             label:@"Show RandNSFW in Search"
                                                on:[[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowRandNsfw]
                                            action:@selector(randNsfwSwitchToggled:)];
-        case 9:
+        case 8:
             return [self stackedTextFieldCellWithIdentifier:@"Cell_Sub_RandNSFW_Source"
                                                       label:@"RandNSFW Source"
                                                 placeholder:@"(empty)"
@@ -1835,6 +1948,21 @@ typedef NS_ENUM(NSInteger, Tag) {
             }
             cell.textLabel.text = @"Version";
             cell.detailTextLabel.text = @TWEAK_VERSION;
+            return cell;
+        }
+        case 6: { // dev-only, only present when FLEX is enabled (see numberOfRowsInSection)
+            UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:@"Cell_About_LoginDebug"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_About_LoginDebug"];
+            }
+            cell.textLabel.text = @"🔧 Login Persistence Debug";
+            BOOL forceMiss = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDebugForceAccountReadMiss];
+            BOOL noRecover = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyDebugDisableKeychainRecovery];
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"force-miss %@ · recovery %@",
+                                         forceMiss ? @"ON" : @"off", noRecover ? @"OFF" : @"on"];
+            cell.detailTextLabel.textColor = (forceMiss || noRecover) ? [UIColor systemRedColor] : [UIColor secondaryLabelColor];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             return cell;
         }
         default: return [[UITableViewCell alloc] init];
@@ -2073,6 +2201,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         return;
     }
 
+    if (indexPath.section == SectionPolls) {
+        [self openPollSettings];
+        return;
+    }
+
     if (indexPath.section == SectionLinkPreviews) {
         [self openLinkPreviewSettings];
         return;
@@ -2129,6 +2262,8 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self exportLogs];
         } else if (indexPath.row == 4) {
             [self presentURLInApolloBrowser:[NSURL URLWithString:@"https://apolloreborn.app/privacy"]];
+        } else if (indexPath.row == 6) {
+            [self presentLoginPersistenceDebugSheetFromIndexPath:indexPath];
         }
     } else if (indexPath.section == SectionMedia) {
         UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
@@ -2142,6 +2277,12 @@ typedef NS_ENUM(NSInteger, Tag) {
             [self presentCommentLinkHostSheetFromSourceView:cell];
         } else if (indexPath.row == 11) {
             [self presentVideoHoldSpeedSheetFromSourceView:cell];
+        }
+    } else if (indexPath.section == SectionSubreddits) {
+        NSInteger logicalRow = [self subredditLogicalRowForVisibleRow:indexPath.row];
+        if (logicalRow == 3) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            [self presentCommunityHighlightsModeSheetFromSourceView:cell];
         }
     } else if (indexPath.section == SectionNotificationBackend) {
         NSInteger row = indexPath.row;
@@ -2256,6 +2397,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (indexPath.section == SectionInfoRow) return YES;
     if (indexPath.section == SectionApolloAI) return YES;
     if (indexPath.section == SectionInlineMedia) return YES;
+    if (indexPath.section == SectionPolls) return YES;
     if (indexPath.section == SectionLinkPreviews) return YES;
     if (indexPath.section == SectionGeneral) {
         // Only the "Deleted Comments" (row 3) and "Open in App" (row 7)
@@ -2266,7 +2408,10 @@ typedef NS_ENUM(NSInteger, Tag) {
         return (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 ||
                 indexPath.row == 3 || indexPath.row == 11);
     }
-    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 3 || indexPath.row == 4)) return YES;
+    if (indexPath.section == SectionSubreddits) {
+        return [self subredditLogicalRowForVisibleRow:indexPath.row] == 3;
+    }
+    if (indexPath.section == SectionAbout && (indexPath.row == 0 || indexPath.row == 1 || indexPath.row == 2 || indexPath.row == 3 || indexPath.row == 4 || indexPath.row == 6)) return YES;
     if (indexPath.section == SectionNotificationBackend) {
         return (indexPath.row == kNotifBackendRowTestConnection || indexPath.row == kNotifBackendRowTestBark);
     }
@@ -2308,6 +2453,76 @@ typedef NS_ENUM(NSInteger, Tag) {
             });
         });
     }];
+}
+
+#pragma mark - Login Persistence Debug (dev-only, FLEX-gated)
+
+- (void)presentLoginPersistenceDebugResult:(NSString *)text title:(NSString *)title {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:text preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Copy" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        UIPasteboard.generalPasteboard.string = text;
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentLoginPersistenceDebugSheetFromIndexPath:(NSIndexPath *)indexPath {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL forceMiss = [defaults boolForKey:UDKeyDebugForceAccountReadMiss];
+    BOOL noRecover = [defaults boolForKey:UDKeyDebugDisableKeychainRecovery];
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Login Persistence Debug"
+                         message:@"Dev-only fault injection. This simulates the broken-keychain read on THIS device to exercise the fix — a pass here is a regression check, not field confirmation. \"Disable recovery\" + \"force read-miss\" will actually sign you out (reproduces the bug)."
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:(forceMiss ? @"✓ Force account read-miss (ON)" : @"Force account read-miss (off)")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        [defaults setBool:!forceMiss forKey:UDKeyDebugForceAccountReadMiss];
+        [self.tableView reloadData];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:(noRecover ? @"✓ Disable recovery — watch the wipe (ON)" : @"Disable recovery — watch the wipe (off)")
+                                              style:(noRecover ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault)
+                                            handler:^(UIAlertAction *a) {
+        [defaults setBool:!noRecover forKey:UDKeyDebugDisableKeychainRecovery];
+        [self.tableView reloadData];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Dump account keychain report"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        [self presentLoginPersistenceDebugResult:ApolloDebugAccountKeychainReport() title:@"Account keychain report"];
+    }]];
+
+    // Rewrites the account item's protection class to WhenUnlocked, keeping the blob byte-for-byte
+    // so the OAuth token stays valid. Toggles: run it once to poison, again to restore.
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Poison account protection class (real -25300)"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *a) {
+        [self presentLoginPersistenceDebugResult:ApolloDebugPoisonAccountAccessibility() title:@"Poison protection class"];
+    }]];
+
+    if (forceMiss || noRecover) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Clear all fault flags"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction *a) {
+            [defaults setBool:NO forKey:UDKeyDebugForceAccountReadMiss];
+            [defaults setBool:NO forKey:UDKeyDebugDisableKeychainRecovery];
+            [self.tableView reloadData];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    UIPopoverPresentationController *pop = sheet.popoverPresentationController;
+    if (pop) {
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+        pop.sourceView = cell ?: self.view;
+        pop.sourceRect = cell ? cell.bounds : CGRectZero;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 #pragma mark - Troubleshooting VC
@@ -2811,30 +3026,6 @@ typedef NS_ENUM(NSInteger, Tag) {
     [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloSubredditHeaderToggleChangedNotification" object:nil];
 }
 
-- (void)communityHighlightsSwitchToggled:(UISwitch *)sender {
-    BOOL wasOn = sCommunityHighlights;
-    sCommunityHighlights = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sCommunityHighlights forKey:UDKeyCommunityHighlights];
-    if (sCommunityHighlights != wasOn) {
-        // The "Load All Highlights (Web)" sub-row (logical 4) only exists while this master
-        // toggle is on; its display index drops by 1 when the Modern Dividers row (logical 1)
-        // is itself hidden (enhancements off). Mirrors the Enhancements toggle's row anim.
-        NSArray<NSIndexPath *> *webPaths = @[[NSIndexPath indexPathForRow:(sSubredditListEnhancements ? 4 : 3) inSection:SectionSubreddits]];
-        if (sCommunityHighlights) {
-            [self.tableView insertRowsAtIndexPaths:webPaths withRowAnimation:UITableViewRowAnimationFade];
-        } else {
-            [self.tableView deleteRowsAtIndexPaths:webPaths withRowAnimation:UITableViewRowAnimationFade];
-        }
-    }
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloCommunityHighlightsToggleChangedNotification" object:nil];
-}
-
-- (void)communityHighlightsWebSwitchToggled:(UISwitch *)sender {
-    sCommunityHighlightsWeb = sender.isOn;
-    [[NSUserDefaults standardUserDefaults] setBool:sCommunityHighlightsWeb forKey:UDKeyCommunityHighlightsWeb];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloCommunityHighlightsToggleChangedNotification" object:nil];
-}
-
 - (void)textPostThumbnailsSwitchToggled:(UISwitch *)sender {
     sFeedTextPostThumbnails = sender.isOn;
     [[NSUserDefaults standardUserDefaults] setBool:sFeedTextPostThumbnails forKey:UDKeyFeedTextPostThumbnails];
@@ -3003,31 +3194,81 @@ static NSArray<NSDictionary *> *ApolloCaptureValetKeychainItems(void) {
         (__bridge id)kSecReturnAttributes: @YES,
         (__bridge id)kSecReturnData:       @YES,
     };
+    // Keyed by service+account so mirror-only items can be merged in without duplicating a key.
+    NSMutableDictionary<NSString *, NSDictionary *> *byKey = [NSMutableDictionary dictionary];
+
+    // The enumeration can fail (errSecMissingEntitlement -34018 on a broken-keychain device) or
+    // return nothing (errSecItemNotFound) — the exact devices the mirror exists for. Don't early
+    // return on that: fall through so the mirror merge below still runs and the backup carries
+    // the account.
     CFTypeRef result = NULL;
     OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (st != errSecSuccess || !result) {
-        if (result) CFRelease(result);
-        return items;
+    if (st == errSecSuccess && result) {
+        NSArray *found = (__bridge_transfer NSArray *)result;
+        for (NSDictionary *item in found) {
+            NSString *service = item[(__bridge id)kSecAttrService];
+            NSData *data = item[(__bridge id)kSecValueData];
+            if (![service isKindOfClass:[NSString class]] || ![service containsString:kValetServiceSubstring]) continue;
+            if (![data isKindOfClass:[NSData class]]) continue;
+            NSString *account = item[(__bridge id)kSecAttrAccount];
+            NSString *acct = [account isKindOfClass:[NSString class]] ? account : @"";
+            // The protection class isn't stored: it's recovered from the service name on replay
+            // (see ApolloAccessibleFromValetService), which is poison-proof — an item captured on
+            // an affected device carries the wrong class, but its service name still names the
+            // right one.
+            byKey[[NSString stringWithFormat:@"%@\n%@", service, acct]] = @{
+                @"service": service, @"account": acct, @"data": data,
+            };
+        }
+    } else if (result) {
+        CFRelease(result);
     }
-    NSArray *found = (__bridge_transfer NSArray *)result;
-    for (NSDictionary *item in found) {
-        NSString *service = item[(__bridge id)kSecAttrService];
-        NSData *data = item[(__bridge id)kSecValueData];
+
+    // Merge the container mirror. On a keychain-broken device the account item exists ONLY in
+    // the mirror (the real keychain enumeration above missed it), and where both exist the
+    // mirror value is the authoritative one (the real copy is the stale row that failed to
+    // update), so mirror entries win.
+    for (NSDictionary *item in ApolloKeychainMirrorItemsForBackup()) {
+        NSString *service = item[@"service"];
+        NSData *data = item[@"data"];
         if (![service isKindOfClass:[NSString class]] || ![service containsString:kValetServiceSubstring]) continue;
         if (![data isKindOfClass:[NSData class]]) continue;
-        NSString *account = item[(__bridge id)kSecAttrAccount];
-        [items addObject:@{
-            @"service": service,
-            @"account": ([account isKindOfClass:[NSString class]] ? account : @""),
-            @"data":    data,
-        }];
+        // Mirror entries carry no protection class (the container mirror only stores
+        // service/account/data), so a mirror-only item restores as AfterFirstUnlock — correct for
+        // the keychain-broken devices the mirror exists for.
+        NSString *acct = [item[@"account"] isKindOfClass:[NSString class]] ? item[@"account"] : @"";
+        byKey[[NSString stringWithFormat:@"%@\n%@", service, acct]] = @{
+            @"service": service, @"account": acct, @"data": data,
+        };
     }
+
+    [items addObjectsFromArray:byKey.allValues];
     return items;
 }
 
 // Replay captured Valet keychain items back into the keychain. On a device this writes the
 // real keychain (our SecItem hooks strip the access group so the unsigned/sideloaded app can
 // store them); in the simulator the tweak's keychain shim intercepts these adds.
+// Valet encodes the accessibility it reads with into its service name
+// (…_AccessibleAfterFirstUnlock), so that — not the item's stored class — is the class an item
+// under that service MUST carry to be readable. Derive it from the service string, which is the
+// same source of truth Valet uses. Returns NULL for a non-Valet or unrecognized service so the
+// caller can fall back. Deliberately ignores whatever class the item was captured with: a backup
+// taken on an already-affected device recorded WhenUnlocked (the poison), and replaying that
+// faithfully would recreate an item its own reader can't see.
+static CFStringRef ApolloAccessibleFromValetService(id service) {
+    if (![service isKindOfClass:[NSString class]]) return NULL;
+    NSRange r = [(NSString *)service rangeOfString:@"_Accessible" options:NSBackwardsSearch];
+    if (r.location == NSNotFound) return NULL;
+    NSString *suffix = [(NSString *)service substringFromIndex:r.location + r.length];
+    if ([suffix isEqualToString:@"AfterFirstUnlock"])               return kSecAttrAccessibleAfterFirstUnlock;
+    if ([suffix isEqualToString:@"AfterFirstUnlockThisDeviceOnly"]) return kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    if ([suffix isEqualToString:@"WhenUnlocked"])                   return kSecAttrAccessibleWhenUnlocked;
+    if ([suffix isEqualToString:@"WhenUnlockedThisDeviceOnly"])     return kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+    if ([suffix isEqualToString:@"WhenPasscodeSetThisDeviceOnly"])  return kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly;
+    return NULL;
+}
+
 static void ApolloReplayValetKeychainItems(NSArray<NSDictionary *> *items) {
     for (NSDictionary *item in items) {
         NSData *data = item[@"data"];
@@ -3038,6 +3279,14 @@ static void ApolloReplayValetKeychainItems(NSArray<NSDictionary *> *items) {
             (__bridge id)kSecAttrAccount:  (item[@"account"] ?: @""),
         };
         NSMutableDictionary *add = [identity mutableCopy];
+        // MANDATORY — see ApolloWebJSONWriteValetItem for why. Without a protection class,
+        // SecItemAdd defaults the item to kSecAttrAccessibleWhenUnlocked while Valet reads with
+        // AfterFirstUnlock, so the read misses an item that provably exists and AccountManager
+        // wipes the account. Take the class from the service name (the reader's own source of
+        // truth), falling back to AfterFirstUnlock — Apollo's account valet, and the safe floor
+        // for a credential that must be readable during background token refresh.
+        CFStringRef accessible = ApolloAccessibleFromValetService(item[@"service"]);
+        add[(__bridge id)kSecAttrAccessible] = (__bridge id)(accessible ?: kSecAttrAccessibleAfterFirstUnlock);
         add[(__bridge id)kSecValueData] = data;
         OSStatus st = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
         if (st == errSecDuplicateItem) {
