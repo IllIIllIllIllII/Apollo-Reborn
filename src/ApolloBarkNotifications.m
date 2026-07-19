@@ -315,6 +315,44 @@ void ApolloBarkSendTestNotification(void (^completion)(BOOL ok, NSString *messag
     }] resume];
 }
 
+// MARK: - Client-side chat push
+
+void ApolloBarkSendChatNotification(NSString *title, NSString *body, NSString *clickURLString) {
+    if (!ApolloBarkConfigured()) return;
+    NSURL *pushURL = ApolloBarkPushURL();
+    if (!pushURL || title.length == 0) return;
+
+    // Same payload shape the backend sends (see the test push above), with a
+    // dedicated group so chat threads separately in the Bark app.
+    NSDictionary *payload = @{
+        @"title": title,
+        @"body": body ?: @"",
+        @"url": clickURLString ?: @"apollo://reborn/chat",
+        @"group": @"apollo-chat",
+        @"icon": ApolloBarkNotificationIconURLString(),
+        @"sound": ApolloBarkSelectedSoundName() ?: @"traloop",
+    };
+    NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:pushURL];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = json;
+    request.timeoutInterval = 10;
+    [request setValue:@"application/json; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request
+                                      completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        if (error || status != 200) {
+            ApolloLog(@"[Bark] Chat push failed (HTTP %ld, %@)", (long)status,
+                      error.localizedDescription ?: @"server error");
+        } else {
+            ApolloLog(@"[Bark] Chat push delivered: %@", title);
+        }
+    }] resume];
+}
+
 // MARK: - Direct transport sync
 
 void ApolloBarkSyncBackendDeviceTransport(void) {

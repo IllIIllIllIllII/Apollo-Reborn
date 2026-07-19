@@ -208,8 +208,27 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         merged[@"username"] = username;
         NSString *surface = [status[@"surface"] isKindOfClass:[NSString class]] ? status[@"surface"] : @"threads";
         BOOL routeUnread = [status[@"hasUnread"] boolValue];
-        if ([surface isEqualToString:@"requests"]) {
-            merged[@"hasRequests"] = @([status[@"hasRequests"] boolValue]);
+        if ([surface isEqualToString:@"poll"]) {
+            // The background poller reads Reddit's own pre-computed counters,
+            // so one snapshot authoritatively covers both surfaces at once.
+            NSInteger unread = [status[@"unreadCount"] respondsToSelector:@selector(integerValue)]
+                ? MAX(0, [status[@"unreadCount"] integerValue]) : 0;
+            NSInteger requests = [status[@"requestsCount"] respondsToSelector:@selector(integerValue)]
+                ? MAX(0, [status[@"requestsCount"] integerValue]) : 0;
+            merged[@"hasThreadUnread"] = @(unread > 0);
+            merged[@"threadUnreadCount"] = @(unread);
+            merged[@"hasRequests"] = @(requests > 0);
+            merged[@"requestsCount"] = @(requests);
+            // Incremental syncs only carry previews for rooms with fresh
+            // events — keep the previous preview while anything stays unread.
+            if ([status[@"preview"] isKindOfClass:[NSString class]]) merged[@"preview"] = status[@"preview"];
+            else if (unread == 0) [merged removeObjectForKey:@"preview"];
+        } else if ([surface isEqualToString:@"requests"]) {
+            BOOL hasRequests = [status[@"hasRequests"] boolValue];
+            merged[@"hasRequests"] = @(hasRequests);
+            // The DOM scrape has no exact request count; only a definitive
+            // "no requests" may clear the poller's counted value.
+            if (!hasRequests) merged[@"requestsCount"] = @0;
         } else {
             merged[@"hasThreadUnread"] = @(routeUnread);
             merged[@"threadUnreadCount"] = [status[@"unreadCount"] isKindOfClass:[NSNumber class]]
@@ -223,7 +242,8 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         merged[@"checkedAt"] = status[@"checkedAt"] ?: @([[NSDate date] timeIntervalSince1970] * 1000.0);
 
         NSArray<NSString *> *meaningfulKeys = @[
-            @"username", @"hasUnread", @"hasThreadUnread", @"hasRequests", @"threadUnreadCount", @"preview"
+            @"username", @"hasUnread", @"hasThreadUnread", @"hasRequests",
+            @"threadUnreadCount", @"requestsCount", @"preview"
         ];
         BOOL changed = NO;
         for (NSString *key in meaningfulKeys) {
@@ -240,6 +260,13 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         }
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloModernChatStatusDidChangeNotification object:nil];
     });
+}
+
+void ApolloModernChatPublishPolledStatus(NSDictionary<NSString *, id> *status) {
+    if (![status isKindOfClass:[NSDictionary class]]) return;
+    NSMutableDictionary *tagged = [status mutableCopy];
+    tagged[@"surface"] = @"poll";
+    ApolloModernChatPublishStatus(tagged);
 }
 
 // The modern Chat app is made of nested web components, so install the same

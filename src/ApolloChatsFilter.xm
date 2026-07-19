@@ -15,6 +15,7 @@
 //      the real Messages row as a legacy fallback.
 //   4. In that fallback, filter the IGListKit objects to chat-subject messages.
 
+#import "ApolloChatUnreadPoller.h"
 #import "ApolloCommon.h"
 #import "ApolloDirectChatWeb.h"
 #import "ApolloState.h"
@@ -90,9 +91,12 @@ static NSInteger ApolloModernChatUnreadBadgeCount(void) {
     NSDictionary<NSString *, id> *status = ApolloModernChatCachedStatus();
     if (![status[@"hasUnread"] boolValue]) return 0;
     NSInteger exact = MAX(0, [status[@"threadUnreadCount"] integerValue]);
-    // Reddit does not expose an exact request count in the current Chat DOM.
-    // When only a request/unread marker is available, show one rather than
-    // pretending a more precise number is known.
+    // Reddit's global navigation counter may already fold pending requests
+    // in, so only fall back to the exact requests count (background poller)
+    // when no message count is available — never sum the two, which could
+    // double-count. When only an unread/request marker is known (webview DOM
+    // scrape), show one rather than pretending a precise number is known.
+    if (exact == 0) exact = MAX(0, [status[@"requestsCount"] integerValue]);
     return MAX(1, exact);
 }
 
@@ -119,11 +123,39 @@ static NSString *ApolloCombinedInboxBadgeValue(NSString *nativeValue) {
     return [NSString stringWithFormat:@"%ld", (long)chatCount];
 }
 
+// The Inbox tab bar item is normally captured when Apollo touches its badge
+// or the user visits the Inbox — neither is guaranteed by launch. A chat-only
+// unread (background poller, no native unreads, Inbox never opened) must
+// still be able to badge the tab, so fall back to locating the item by title
+// on a window's tab bar controller, exactly the identity check the
+// setBadgeValue: hook below uses.
+static void ApolloEnsureInboxTabBarItemCaptured(void) {
+    if (sApolloInboxTabBarItem) return;
+    for (UIWindow *window in ApolloAllWindows()) {
+        UIViewController *root = window.rootViewController;
+        if (![root isKindOfClass:[UITabBarController class]]) continue;
+        for (UITabBarItem *item in ((UITabBarController *)root).tabBar.items) {
+            if (item.title.length == 0 ||
+                [item.title caseInsensitiveCompare:@"Inbox"] != NSOrderedSame) continue;
+            sApolloInboxTabBarItem = item;
+            if (![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) {
+                objc_setAssociatedObject(item, &kApolloInboxNativeBadgeValueKey,
+                                         item.badgeValue, OBJC_ASSOCIATION_COPY_NONATOMIC);
+                objc_setAssociatedObject(item, &kApolloInboxBadgeInitializedKey,
+                                         @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            ChatsFilterLog(@"captured Inbox tab bar item by title fallback");
+            return;
+        }
+    }
+}
+
 static void ApolloApplyCombinedInboxBadge(void) {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{ ApolloApplyCombinedInboxBadge(); });
         return;
     }
+    ApolloEnsureInboxTabBarItemCaptured();
     UITabBarItem *item = sApolloInboxTabBarItem;
     if (!item || ![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) return;
     NSString *nativeValue = objc_getAssociatedObject(item, &kApolloInboxNativeBadgeValueKey);
@@ -249,7 +281,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 @property (nonatomic, strong) UIView *selectionView;
 @property (nonatomic, strong) UIButton *notificationsButton;
 @property (nonatomic, strong) UIButton *chatButton;
-@property (nonatomic, strong) UIView *chatUnreadDot;
+@property (nonatomic, strong) UILabel *chatUnreadBadge;
 @property (nonatomic, assign) ApolloInboxMode selectedMode;
 - (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated;
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits;
@@ -287,11 +319,16 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     [self.chatButton addTarget:self action:@selector(apollo_buttonTapped:) forControlEvents:UIControlEventTouchUpInside];
     [self.containerView addSubview:self.chatButton];
 
-    self.chatUnreadDot = [UIView new];
-    self.chatUnreadDot.userInteractionEnabled = NO;
-    self.chatUnreadDot.layer.cornerRadius = 4.5;
-    self.chatUnreadDot.hidden = YES;
-    [self.containerView addSubview:self.chatUnreadDot];
+    // Numeric unread pill beside the "Chat" title (the background poller
+    // supplies exact counts, so a bare dot undersells the state).
+    self.chatUnreadBadge = [UILabel new];
+    self.chatUnreadBadge.userInteractionEnabled = NO;
+    self.chatUnreadBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    self.chatUnreadBadge.textAlignment = NSTextAlignmentCenter;
+    self.chatUnreadBadge.layer.cornerRadius = 9.0;
+    self.chatUnreadBadge.clipsToBounds = YES;
+    self.chatUnreadBadge.hidden = YES;
+    [self.containerView addSubview:self.chatUnreadBadge];
 
     _selectedMode = ApolloInboxModeNotifications;
     return self;
@@ -309,8 +346,14 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.notificationsButton.frame = notificationsFrame;
     self.chatButton.frame = chatFrame;
     self.selectionView.frame = self.selectedMode == ApolloInboxModeChat ? chatFrame : notificationsFrame;
-    self.chatUnreadDot.frame = CGRectMake(CGRectGetMidX(chatFrame) + 24.0,
-                                          CGRectGetMidY(chatFrame) - 10.0, 9.0, 9.0);
+    CGFloat badgeWidth = 18.0;
+    if (self.chatUnreadBadge.text.length > 1) {
+        CGSize textSize = [self.chatUnreadBadge.text sizeWithAttributes:
+                           @{NSFontAttributeName: self.chatUnreadBadge.font}];
+        badgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
+    }
+    self.chatUnreadBadge.frame = CGRectMake(CGRectGetMidX(chatFrame) + 20.0,
+                                            CGRectGetMidY(chatFrame) - 9.0, badgeWidth, 18.0);
 }
 
 - (void)apollo_buttonTapped:(UIButton *)sender {
@@ -336,10 +379,14 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 }
 
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits {
-    NSDictionary *status = ApolloModernChatCachedStatus();
-    BOOL unread = [status[@"hasUnread"] boolValue];
-    self.chatUnreadDot.hidden = !unread;
-    self.chatButton.accessibilityValue = unread ? @"New activity" : nil;
+    NSInteger unreadCount = ApolloModernChatUnreadBadgeCount();
+    self.chatUnreadBadge.hidden = unreadCount <= 0;
+    if (unreadCount > 0) {
+        self.chatUnreadBadge.text = unreadCount > 99 ? @"99+"
+            : [NSString stringWithFormat:@"%ld", (long)unreadCount];
+    }
+    self.chatButton.accessibilityValue = unreadCount > 0
+        ? [NSString stringWithFormat:@"%ld unread", (long)unreadCount] : nil;
 
     UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
     UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
@@ -354,7 +401,8 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
                                     forState:UIControlStateNormal];
     [self.chatButton setTitleColor:self.selectedMode == ApolloInboxModeChat ? selectedText : secondaryText
                           forState:UIControlStateNormal];
-    self.chatUnreadDot.backgroundColor = UIColor.systemRedColor;
+    self.chatUnreadBadge.backgroundColor = UIColor.systemRedColor;
+    self.chatUnreadBadge.textColor = UIColor.whiteColor;
     [self setNeedsLayout];
 }
 
@@ -459,8 +507,14 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
             self.selectionView.frame = CGRectInset(messagesFrame, 3.0, 0.0);
             break;
     }
+    CGFloat requestsBadgeWidth = 18.0;
+    if (self.requestsBadge.text.length > 1) {
+        CGSize textSize = [self.requestsBadge.text sizeWithAttributes:
+                           @{NSFontAttributeName: self.requestsBadge.font}];
+        requestsBadgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
+    }
     self.requestsBadge.frame = CGRectMake(CGRectGetMidX(requestsFrame) + 34.0,
-                                          CGRectGetMidY(requestsFrame) - 15.0, 18.0, 18.0);
+                                          CGRectGetMidY(requestsFrame) - 15.0, requestsBadgeWidth, 18.0);
     self.bottomSeparator.frame = CGRectMake(0, CGRectGetHeight(self.bounds) - 0.5,
                                             CGRectGetWidth(self.bounds), 0.5);
 }
@@ -496,8 +550,15 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 - (void)apollo_refreshForTraits:(UITraitCollection *)traits {
     NSDictionary *status = ApolloModernChatCachedStatus();
     BOOL hasRequests = [status[@"hasRequests"] boolValue];
+    // Exact count comes from the background poller; the webview DOM scrape
+    // only knows a boolean, so keep 1 as the marker-only fallback.
+    NSInteger requestsCount = MAX(0, [status[@"requestsCount"] integerValue]);
+    if (hasRequests && requestsCount == 0) requestsCount = 1;
     self.requestsBadge.hidden = !hasRequests;
-    self.requestsButton.accessibilityValue = hasRequests ? @"1 new request" : nil;
+    self.requestsBadge.text = requestsCount > 99 ? @"99+"
+        : [NSString stringWithFormat:@"%ld", (long)MAX(1, requestsCount)];
+    self.requestsButton.accessibilityValue = hasRequests
+        ? [NSString stringWithFormat:@"%ld new", (long)requestsCount] : nil;
 
     UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
     UIColor *primary = ApolloModernChatThemeColor(traits, @"primary");
@@ -1153,6 +1214,9 @@ static BOOL sChatFilterActive = NO;
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = YES;
     ApolloInstallInboxModeSwitcher(self);
+    // The user is looking at the Inbox: refresh the chat unread count now
+    // rather than waiting out the periodic cadence.
+    ApolloChatUnreadPollerKick();
     if (ApolloInboxControllerIsAll(self) && ApolloModernChatShouldOpen() &&
         !objc_getAssociatedObject(self, &kInboxAllChatHubKey)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),

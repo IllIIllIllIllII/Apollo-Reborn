@@ -295,6 +295,15 @@ static NSString *const UDKeyUseModernRedditChat = @"UseModernRedditChat";
 // API-key-free accounts always use it because Apollo's native new-Modmail
 // endpoints require OAuth credentials they deliberately do not have.
 static NSString *const UDKeyUseModernRedditModmail = @"UseModernRedditModmail";
+// Modern Chat unread poller (ApolloChatUnreadPoller.m). Per-account high-water
+// marks of the unread/requests counts already announced through Bark, so a
+// relaunch doesn't re-push the same unread messages. Not user-facing.
+static NSString *const UDKeyChatUnreadNotifiedWatermarks = @"ChatUnreadNotifiedWatermarks";
+// Debug-only overrides for the poller (never surfaced in settings): point the
+// Matrix homeserver at a local mock, and shorten the poll cadence, so the
+// whole badge/notification pipeline can be exercised in the simulator.
+static NSString *const UDKeyChatPollerHomeserverOverride = @"ChatPollerHomeserverOverride";
+static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOverride";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent

@@ -21,6 +21,12 @@ BOOL ApolloModernModmailShouldOpen(void);
 UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role);
 NSDictionary<NSString *, id> * _Nullable ApolloModernChatCachedStatus(void);
 extern NSString * const ApolloModernChatStatusDidChangeNotification;
+// Authoritative full-state publish from the background unread poller
+// (ApolloChatUnreadPoller.m): {username, unreadCount, requestsCount,
+// preview?, unreadRoomId?, checkedAt}. Unlike the webview DOM scrape, one
+// polled snapshot covers both the messages and requests surfaces at once,
+// with exact counts.
+void ApolloModernChatPublishPolledStatus(NSDictionary<NSString *, id> *status);
 UIViewController *ApolloCreateModernChatViewController(void);
 // Notification/deep-link entry point. The optional destination must be a
 // Reddit Chat path such as /chat/room/<opaque-room-id>; invalid paths safely
