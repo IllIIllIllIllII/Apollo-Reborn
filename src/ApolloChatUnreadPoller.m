@@ -411,31 +411,61 @@ static void ApolloChatPollNotifyTransitions(NSString *username, NSDictionary *st
     BOOL newerMessage = unread > 0 && latestTs > 0 && latestTsMark > 0 && latestTs > latestTsMark;
     if (unread == unreadMark && requests == requestsMark && !newerMessage) return;
 
-    if (ApolloBarkConfigured()) {
-        if (unread > unreadMark || newerMessage) {
-            NSString *title = unread == 1 ? @"New Chat Message"
-                : [NSString stringWithFormat:@"%ld Unread Chat Messages", (long)unread];
-            NSString *preview = [status[@"preview"] isKindOfClass:[NSString class]] ? status[@"preview"] : nil;
-            NSString *roomId = [status[@"unreadRoomId"] isKindOfClass:[NSString class]] ? status[@"unreadRoomId"] : nil;
-            // Invalid room paths safely fall back to the Chat entry screen
-            // inside ApolloCreateModernChatViewControllerForPath.
-            NSString *link = @"apollo://reborn/chat";
-            if (roomId.length > 0) {
-                NSString *escaped = [roomId stringByAddingPercentEncodingWithAllowedCharacters:
-                                     NSCharacterSet.URLPathAllowedCharacterSet];
-                if (escaped.length > 0) link = [NSString stringWithFormat:@"apollo://reborn/chat/room/%@", escaped];
-            }
-            ApolloBarkSendChatNotification(title, preview ?: @"Open Chat to read it.", link);
-        }
-        if (requests > requestsMark) {
-            NSString *title = requests == 1 ? @"New Chat Request"
-                : [NSString stringWithFormat:@"%ld New Chat Requests", (long)requests];
-            ApolloBarkSendChatNotification(title, @"Someone wants to start a chat with you.",
-                                           @"apollo://reborn/chat/requests");
-        }
+    BOOL pushUnread = ApolloBarkConfigured() && (unread > unreadMark || newerMessage);
+    BOOL pushRequests = ApolloBarkConfigured() && requests > requestsMark;
+    if (!pushUnread && !pushRequests) {
+        // No push owed (Bark unconfigured, or pure decreases): persist
+        // immediately, so reading everything re-arms the next push.
+        ApolloChatPollSaveWatermarks(username, unread, requests, MAX(latestTs, latestTsMark));
+        return;
     }
-    // Track decreases too, so reading everything re-arms the next push.
-    ApolloChatPollSaveWatermarks(username, unread, requests, MAX(latestTs, latestTsMark));
+
+    // A pushed component's watermark only advances once Bark actually accepts
+    // the POST — on a transient failure it stays put, and the next 30s tick
+    // re-trips the same transition and retries. Components that merely
+    // decreased still land in the same single save below.
+    __block NSInteger unreadToSave = unread;
+    __block NSTimeInterval tsToSave = MAX(latestTs, latestTsMark);
+    __block NSInteger requestsToSave = requests;
+    dispatch_group_t group = dispatch_group_create();
+    if (pushUnread) {
+        NSString *title = unread == 1 ? @"New Chat Message"
+            : [NSString stringWithFormat:@"%ld Unread Chat Messages", (long)unread];
+        NSString *preview = [status[@"preview"] isKindOfClass:[NSString class]] ? status[@"preview"] : nil;
+        NSString *roomId = [status[@"unreadRoomId"] isKindOfClass:[NSString class]] ? status[@"unreadRoomId"] : nil;
+        // Invalid room paths safely fall back to the Chat entry screen
+        // inside ApolloCreateModernChatViewControllerForPath.
+        NSString *link = @"apollo://reborn/chat";
+        if (roomId.length > 0) {
+            NSString *escaped = [roomId stringByAddingPercentEncodingWithAllowedCharacters:
+                                 NSCharacterSet.URLPathAllowedCharacterSet];
+            if (escaped.length > 0) link = [NSString stringWithFormat:@"apollo://reborn/chat/room/%@", escaped];
+        }
+        dispatch_group_enter(group);
+        ApolloBarkSendChatNotification(title, preview ?: @"Open Chat to read it.", link, ^(BOOL delivered) {
+            if (!delivered) { unreadToSave = unreadMark; tsToSave = latestTsMark; }
+            dispatch_group_leave(group);
+        });
+    }
+    if (pushRequests) {
+        NSString *title = requests == 1 ? @"New Chat Request"
+            : [NSString stringWithFormat:@"%ld New Chat Requests", (long)requests];
+        dispatch_group_enter(group);
+        ApolloBarkSendChatNotification(title, @"Someone wants to start a chat with you.",
+                                       @"apollo://reborn/chat/requests", ^(BOOL delivered) {
+            if (!delivered) requestsToSave = requestsMark;
+            dispatch_group_leave(group);
+        });
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        // Stale-owner guard: an account switch while the POSTs were in flight
+        // means these marks belong to the previous account — drop them.
+        if (![username isEqualToString:sChatPollUsername]) return;
+        if (unreadToSave != unread || requestsToSave != requests) {
+            ApolloLog(@"[ChatPoller] Bark delivery failed — keeping the prior watermark so the next tick retries");
+        }
+        ApolloChatPollSaveWatermarks(username, unreadToSave, requestsToSave, tsToSave);
+    });
 }
 
 #pragma mark - The poll itself
@@ -586,11 +616,18 @@ static void ApolloChatPollTick(void) {
     // Feature gates: modern Chat surface in use AND a stored web session for
     // the active account. With the toggle off this never fires, keeping the
     // API-key path's stock Direct Chat / Modmail behavior byte-identical.
+    // Resolve the account identity ONCE per tick: ApolloActiveWebSessionUsername
+    // unarchives the RedditAccounts2 blob and ApolloWebSessionPollFor hits the
+    // keychain, so calling the three self-contained gate helpers here used to
+    // cost ~3 unarchives + ~6 synchronous keychain reads every 30s on the main
+    // thread — for every user, modern Chat or not.
     // Log the gate verdict, but only when it changes — not every 30 s.
-    BOOL shouldOpen = ApolloModernChatShouldOpen();
-    BOOL available = ApolloModernChatIsAvailable();
+    if (!ApolloModernMailboxOSSupported()) return;
     NSString *username = ApolloActiveWebSessionUsername();
-    ApolloWebSessionEntry *entry = ApolloWebSessionPollFor(username);
+    ApolloWebSessionEntry *entry = username.length > 0 ? ApolloWebSessionPollFor(username) : nil;
+    BOOL available = username.length > 0 && entry != nil;
+    BOOL shouldOpen = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat]
+        || ApolloModernChatIsRequiredForSession(entry);
     NSString *gateState = [NSString stringWithFormat:@"open=%d avail=%d user=%@ cookie=%d",
                            shouldOpen, available, username ?: @"-", entry.cookieHeader.length > 0];
     static NSString *sLastGateState = nil;
@@ -631,7 +668,10 @@ static void ApolloChatPollStartTimer(void) {
     if (sChatPollTimer) return;
     sChatPollTimer = [NSTimer timerWithTimeInterval:ApolloChatPollInterval() repeats:YES
                                               block:^(__unused NSTimer *timer) { ApolloChatPollTick(); }];
-    [[NSRunLoop mainRunLoop] addTimer:sChatPollTimer forMode:NSRunLoopCommonModes];
+    // Default mode, NOT common modes: a 30s unread poll has no business firing
+    // mid-scroll — deferring the tick until tracking ends costs nothing and
+    // keeps the account/keychain gate work out of scroll frames.
+    [[NSRunLoop mainRunLoop] addTimer:sChatPollTimer forMode:NSDefaultRunLoopMode];
     ApolloLog(@"[ChatPoller] Started (%.0fs cadence)", ApolloChatPollInterval());
 }
 

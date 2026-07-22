@@ -273,11 +273,17 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 };
 
 // Keep Chat beside the existing notifications instead of presenting it as a
-// large promotional card. This deliberately behaves like a two-tab switcher,
-// but is drawn with ordinary UIKit so it follows every Apollo theme rather than
-// inheriting the stock blue UISegmentedControl appearance.
+// large promotional card. This deliberately behaves like a two-tab switcher.
+// On Liquid Glass builds it embeds a real UISegmentedControl so it gets the
+// native glass thumb, morphing, and accessibility for free (tinted with the
+// theme accent); everywhere else it stays hand-drawn with ordinary UIKit so
+// it follows every Apollo theme rather than inheriting the stock blue
+// segmented-control appearance. Both variants expose the same external API,
+// so ApolloSetInboxChatHubVisible / ApolloInstallInboxModeSwitcher never care
+// which one is live.
 @interface ApolloInboxModeSwitcherView : UIControl
-@property (nonatomic, strong) UIView *containerView;
+@property (nonatomic, strong) UISegmentedControl *segmentedControl;   // Liquid Glass builds only
+@property (nonatomic, strong) UIView *containerView;                  // custom (non-LG) drawing
 @property (nonatomic, strong) UIView *selectionView;
 @property (nonatomic, strong) UIButton *notificationsButton;
 @property (nonatomic, strong) UIButton *chatButton;
@@ -292,6 +298,34 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (!self) return nil;
+
+    if (IsLiquidGlass()) {
+        self.segmentedControl = [[UISegmentedControl alloc]
+            initWithItems:@[@"Notifications", @"Chat"]];
+        self.segmentedControl.selectedSegmentIndex = 0;
+        [self.segmentedControl addTarget:self
+                                  action:@selector(apollo_segmentChanged:)
+                        forControlEvents:UIControlEventValueChanged];
+        [self addSubview:self.segmentedControl];
+
+        // Same numeric unread pill as the custom variant, overlaid on the
+        // Chat segment (UISegmentedControl has no badge API, and digging into
+        // its private segment subviews would be brittle).
+        self.chatUnreadBadge = [UILabel new];
+        self.chatUnreadBadge.userInteractionEnabled = NO;
+        self.chatUnreadBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+        self.chatUnreadBadge.textAlignment = NSTextAlignmentCenter;
+        self.chatUnreadBadge.layer.cornerRadius = 9.0;
+        self.chatUnreadBadge.clipsToBounds = YES;
+        self.chatUnreadBadge.hidden = YES;
+        // The count is spoken via the control's accessibilityValue; the pill
+        // itself must not appear as a second VoiceOver element.
+        self.chatUnreadBadge.isAccessibilityElement = NO;
+        [self addSubview:self.chatUnreadBadge];
+
+        _selectedMode = ApolloInboxModeNotifications;
+        return self;
+    }
 
     self.containerView = [UIView new];
     self.containerView.userInteractionEnabled = YES;
@@ -340,6 +374,32 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (CGRectGetWidth(self.bounds) <= 24.0 || CGRectGetHeight(self.bounds) <= 16.0) return;
+
+    CGFloat badgeWidth = 18.0;
+    if (self.chatUnreadBadge.text.length > 1) {
+        CGSize textSize = [self.chatUnreadBadge.text sizeWithAttributes:
+                           @{NSFontAttributeName: self.chatUnreadBadge.font}];
+        badgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
+    }
+
+    if (self.segmentedControl) {
+        // Native control at its intrinsic Liquid Glass height, centered in
+        // the same 60pt strip the custom variant fills.
+        CGFloat controlHeight = self.segmentedControl.intrinsicContentSize.height;
+        if (controlHeight <= 0) controlHeight = 32.0;
+        controlHeight = MIN(controlHeight, CGRectGetHeight(self.bounds) - 12.0);
+        CGRect controlFrame = CGRectMake(12.0,
+                                         floor((CGRectGetHeight(self.bounds) - controlHeight) / 2.0),
+                                         CGRectGetWidth(self.bounds) - 24.0, controlHeight);
+        self.segmentedControl.frame = controlFrame;
+        // Overlay the pill beside the "Chat" title (right segment's midpoint,
+        // same +20pt offset as the custom variant).
+        CGFloat chatSegmentMidX = CGRectGetMinX(controlFrame) + controlFrame.size.width * 0.75;
+        self.chatUnreadBadge.frame = CGRectMake(chatSegmentMidX + 20.0,
+                                                CGRectGetMidY(controlFrame) - 9.0, badgeWidth, 18.0);
+        return;
+    }
+
     self.containerView.frame = CGRectInset(self.bounds, 12.0, 8.0);
     CGRect content = CGRectInset(self.containerView.bounds, 3.0, 3.0);
     CGFloat halfWidth = floor(content.size.width / 2.0);
@@ -349,12 +409,6 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     self.notificationsButton.frame = notificationsFrame;
     self.chatButton.frame = chatFrame;
     self.selectionView.frame = self.selectedMode == ApolloInboxModeChat ? chatFrame : notificationsFrame;
-    CGFloat badgeWidth = 18.0;
-    if (self.chatUnreadBadge.text.length > 1) {
-        CGSize textSize = [self.chatUnreadBadge.text sizeWithAttributes:
-                           @{NSFontAttributeName: self.chatUnreadBadge.font}];
-        badgeWidth = MAX(18.0, ceil(textSize.width) + 10.0);
-    }
     self.chatUnreadBadge.frame = CGRectMake(CGRectGetMidX(chatFrame) + 20.0,
                                             CGRectGetMidY(chatFrame) - 9.0, badgeWidth, 18.0);
 }
@@ -365,8 +419,22 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     [self sendActionsForControlEvents:UIControlEventValueChanged];
 }
 
+- (void)apollo_segmentChanged:(UISegmentedControl *)sender {
+    _selectedMode = sender.selectedSegmentIndex == 1 ? ApolloInboxModeChat : ApolloInboxModeNotifications;
+    [self apollo_refreshForTraits:self.traitCollection];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+}
+
 - (void)apollo_setSelectedMode:(ApolloInboxMode)mode animated:(BOOL)animated {
     _selectedMode = mode;
+    if (self.segmentedControl) {
+        // Programmatic index changes never re-fire apollo_segmentChanged:
+        // (UIKit only sends valueChanged for user interaction), so the two
+        // synced switcher instances cannot ping-pong.
+        self.segmentedControl.selectedSegmentIndex = mode == ApolloInboxModeChat ? 1 : 0;
+        [self apollo_refreshForTraits:self.traitCollection];
+        return;
+    }
     void (^changes)(void) = ^{
         [self setNeedsLayout];
         if (CGRectGetWidth(self.bounds) > 24.0 && CGRectGetHeight(self.bounds) > 16.0) {
@@ -388,15 +456,32 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
         self.chatUnreadBadge.text = unreadCount > 99 ? @"99+"
             : [NSString stringWithFormat:@"%ld", (long)unreadCount];
     }
-    self.chatButton.accessibilityValue = unreadCount > 0
+    NSString *unreadValue = unreadCount > 0
         ? [NSString stringWithFormat:@"%ld unread", (long)unreadCount] : nil;
 
     UIColor *accent = ApolloModernChatThemeColor(traits, @"accent");
+    UIColor *selectedText = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
+    self.backgroundColor = ApolloModernChatThemeColor(traits, @"primary");
+    self.chatUnreadBadge.backgroundColor = UIColor.systemRedColor;
+    self.chatUnreadBadge.textColor = UIColor.whiteColor;
+
+    if (self.segmentedControl) {
+        // Native Liquid Glass chrome; only the tint comes from the theme.
+        self.segmentedControl.selectedSegmentTintColor = accent;
+        UIColor *text = ApolloModernChatThemeColor(traits, @"text");
+        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: text}
+                                             forState:UIControlStateNormal];
+        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: selectedText}
+                                             forState:UIControlStateSelected];
+        self.segmentedControl.accessibilityValue = unreadValue;
+        [self setNeedsLayout];
+        return;
+    }
+
+    self.chatButton.accessibilityValue = unreadValue;
     UIColor *raised = ApolloModernChatThemeColor(traits, @"tertiary");
     UIColor *separator = ApolloModernChatThemeColor(traits, @"separator");
     UIColor *secondaryText = ApolloModernChatThemeColor(traits, @"secondaryText");
-    UIColor *selectedText = ApolloColorIsLight(accent) ? UIColor.blackColor : UIColor.whiteColor;
-    self.backgroundColor = ApolloModernChatThemeColor(traits, @"primary");
     self.containerView.backgroundColor = raised;
     self.containerView.layer.borderColor = [separator resolvedColorWithTraitCollection:traits].CGColor;
     self.selectionView.backgroundColor = accent;
@@ -404,8 +489,6 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
                                     forState:UIControlStateNormal];
     [self.chatButton setTitleColor:self.selectedMode == ApolloInboxModeChat ? selectedText : secondaryText
                           forState:UIControlStateNormal];
-    self.chatUnreadBadge.backgroundColor = UIColor.systemRedColor;
-    self.chatUnreadBadge.textColor = UIColor.whiteColor;
     [self setNeedsLayout];
 }
 
@@ -604,6 +687,7 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
 static ApolloInboxChatHubViewController *ApolloEnsureInboxChatHub(UIViewController *host);
 static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, BOOL animated);
+static void ApolloDismantleInboxChatHub(UIViewController *host, NSString *reason);
 
 @implementation ApolloInboxChatHubViewController
 
@@ -756,6 +840,14 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
 static ApolloInboxChatHubViewController *ApolloEnsureInboxChatHub(UIViewController *host) {
     if (!host || !ApolloModernChatShouldOpen()) return nil;
     ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+    // A retained hub is only reusable while it still represents the active
+    // account's live web session. After an account switch (or a cookie
+    // rotation from a re-harvest) the embedded WebKit client would keep
+    // showing — and composing as — the PREVIOUS identity, so replace it.
+    if (hub && !ApolloModernChatControllerSessionIsCurrent(hub.chatController)) {
+        ApolloDismantleInboxChatHub(host, @"stale session identity");
+        hub = nil;
+    }
     if (hub) return hub;
 
     hub = [ApolloInboxChatHubViewController new];
@@ -787,6 +879,14 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
     }
 
     ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+    // Never reveal a hub seeded for a different account/session — dismantle
+    // and let the ensure below rebuild one for the CURRENT identity. (The
+    // dismantle's internal hide call cannot recurse here: it passes
+    // visible=NO, which skips this branch.)
+    if (visible && hub && !ApolloModernChatControllerSessionIsCurrent(hub.chatController)) {
+        ApolloDismantleInboxChatHub(host, @"stale session at reveal");
+        hub = nil;
+    }
     if (visible && !hub) hub = ApolloEnsureInboxChatHub(host);
     if (!hub) return;
 
@@ -855,6 +955,30 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
     }
 }
 
+// Full teardown of the persistent Chat hub: used when the modern Chat setting
+// turns off, and whenever the retained hub no longer matches the active
+// account's session. Releasing the hub deallocs the embedded web controller,
+// whose dealloc invalidates its 20s status timer and observers — the WebKit
+// client, injected scripts, and private data store all go with it.
+static void ApolloDismantleInboxChatHub(UIViewController *host, NSString *reason) {
+    if (!host) return;
+    ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(host, &kInboxAllChatHubKey);
+    if (!hub) return;
+    // Hiding first restores the host's saved right bar items, hands the
+    // shared tab bar back to Notifications, and resets the visible flag —
+    // the hide path has no ShouldOpen gate, so this works mid-disable too.
+    ApolloSetInboxChatHubVisible(host, NO, NO);
+    [hub willMoveToParentViewController:nil];
+    [hub.view removeFromSuperview];
+    [hub removeFromParentViewController];
+    objc_setAssociatedObject(host, &kInboxAllChatHubKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(host, &kInboxAllChatHubVisibleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // The restored right bar items are live on the navigation item again;
+    // clear the stash so a later re-enable captures a fresh copy.
+    objc_setAssociatedObject(host, &kInboxAllOriginalRightItemsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ChatsFilterLog(@"dismantled Inbox chat hub (%@)", reason ?: @"unknown");
+}
+
 static BOOL ApolloInboxControllerIsAll(id controller) {
     Ivar ivar = class_getInstanceVariable([controller class], "inboxType");
     if (ivar) {
@@ -882,6 +1006,12 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
     ApolloInboxModeSwitcherView *switcher = objc_getAssociatedObject(controller, &kInboxAllModeSwitcherKey);
     UIView *navigationBackdrop = objc_getAssociatedObject(controller, &kInboxAllNavigationBackdropKey);
     if (!ApolloModernChatShouldOpen()) {
+        // Turning the feature off must dismantle the retained hub too — not
+        // just the native chrome — or its WebKit client, injected scripts,
+        // and status timer would keep running invisibly (and a visible Chat
+        // overlay would survive the setting change with the Inbox nav items
+        // still stripped).
+        ApolloDismantleInboxChatHub((UIViewController *)controller, @"modern Chat disabled");
         if (switcher) {
             tableView.tableHeaderView = objc_getAssociatedObject(controller, &kInboxAllOriginalHeaderKey);
             [switcher removeFromSuperview];
@@ -1233,6 +1363,23 @@ static BOOL sChatFilterActive = NO;
 - (void)viewWillDisappear:(BOOL)animated {
     %orig;
     if ([objc_getAssociatedObject(self, &kChatFilterKey) boolValue]) sChatFilterActive = NO;
+}
+
+// Apollo notifies every inbox surface on account switches. The persistent
+// Chat hub is seeded with one account's cookies, so it must be destroyed at
+// this exact moment — keeping it would show (and compose as) the previous
+// account. The switcher install below re-derives ShouldOpen for the new
+// account, and the ensure re-preloads a hub with the new identity.
+- (void)redditAccountChangedWithNotification:(id)notification {
+    %orig;
+    if (!ApolloInboxControllerIsAll(self)) return;
+    ApolloDismantleInboxChatHub((UIViewController *)self, @"account changed");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloInstallInboxModeSwitcher(self);
+        if (ApolloModernChatShouldOpen()) {
+            ApolloEnsureInboxChatHub((UIViewController *)self);
+        }
+    });
 }
 
 - (void)dealloc {

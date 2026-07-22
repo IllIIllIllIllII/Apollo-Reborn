@@ -317,10 +317,16 @@ void ApolloBarkSendTestNotification(void (^completion)(BOOL ok, NSString *messag
 
 // MARK: - Client-side chat push
 
-void ApolloBarkSendChatNotification(NSString *title, NSString *body, NSString *clickURLString) {
-    if (!ApolloBarkConfigured()) return;
+void ApolloBarkSendChatNotification(NSString *title, NSString *body, NSString *clickURLString,
+                                    void (^completion)(BOOL delivered)) {
+    completion = [completion copy];
+    void (^finish)(BOOL) = ^(BOOL delivered) {
+        if (!completion) return;
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(delivered); });
+    };
+    if (!ApolloBarkConfigured()) { finish(NO); return; }
     NSURL *pushURL = ApolloBarkPushURL();
-    if (!pushURL || title.length == 0) return;
+    if (!pushURL || title.length == 0) { finish(NO); return; }
 
     // Same payload shape the backend sends (see the test push above), with a
     // dedicated group so chat threads separately in the Bark app.
@@ -344,12 +350,14 @@ void ApolloBarkSendChatNotification(NSString *title, NSString *body, NSString *c
                                       completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
             ? [(NSHTTPURLResponse *)response statusCode] : 0;
-        if (error || status != 200) {
+        BOOL delivered = !error && status == 200;
+        if (!delivered) {
             ApolloLog(@"[Bark] Chat push failed (HTTP %ld, %@)", (long)status,
                       error.localizedDescription ?: @"server error");
         } else {
             ApolloLog(@"[Bark] Chat push delivered: %@", title);
         }
+        finish(delivered);
     }] resume];
 }
 

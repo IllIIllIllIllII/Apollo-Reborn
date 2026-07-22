@@ -12,12 +12,29 @@ typedef NS_ENUM(NSInteger, ApolloModernChatInboxSection) {
     ApolloModernChatInboxSectionThreads,
 };
 
+@class ApolloWebSessionEntry;
+
 __BEGIN_DECLS
 
+// Modern reddit.com (shreddit) fails to render below iOS 16 — the same floor
+// the web-session login enforces by rewriting to old.reddit.com. Every modern
+// Chat/Modmail gate below returns NO under it, so pre-16 devices keep
+// Apollo's stock (dormant) chat UI instead of a blank web page.
+BOOL ApolloModernMailboxOSSupported(void);
 BOOL ApolloModernChatIsAvailable(void);
 BOOL ApolloModernChatIsRequiredForActiveAccount(void);
+// Per-session variant for callers that already resolved the active account's
+// web-session entry (the 30s unread poller): identical verdict to
+// ApolloModernChatIsRequiredForActiveAccount without re-unarchiving the
+// account blob or re-reading the keychain.
+BOOL ApolloModernChatIsRequiredForSession(ApolloWebSessionEntry * _Nullable entry);
 BOOL ApolloModernChatShouldOpen(void);
 BOOL ApolloModernModmailShouldOpen(void);
+// YES iff `controller` (a modern mailbox controller) was cookie-seeded for
+// the account that is active RIGHT NOW. The persistent Inbox Chat hub uses
+// this to detect account switches and cookie rotations, so a retained hub can
+// never keep showing — or composing as — a previous account.
+BOOL ApolloModernChatControllerSessionIsCurrent(UIViewController * _Nullable controller);
 UIColor *ApolloModernChatThemeColor(UITraitCollection *traits, NSString *role);
 NSDictionary<NSString *, id> * _Nullable ApolloModernChatCachedStatus(void);
 extern NSString * const ApolloModernChatStatusDidChangeNotification;

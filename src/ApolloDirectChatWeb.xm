@@ -388,8 +388,16 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
         "const sweep=()=>{themeRoots();const giphyGrids=fixGiphy();return {roots:roots().length,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
-        "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});}"
-        "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>window.__apolloChatEnhancementSweep?.(),700);"
+        // The hidden preloaded Inbox hub reports document.hidden=true (WebKit
+        // derives page visibility from the view hierarchy), so gate the
+        // watchdog interval on it: MutationObservers keep coalescing dirty
+        // marks through rAF (which WebKit parks until the first visible
+        // frame), and the visibilitychange catch-up below sweeps immediately
+        // when the hub is revealed. Net effect: zero periodic DOM work —
+        // including fixChatScrollPhysics's whole-tree getComputedStyle pass —
+        // while Chat is hidden behind Notifications or another tab.
+        "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});document.addEventListener('visibilitychange',()=>{if(!document.hidden)window.__apolloChatScheduleSweep?.();});}"
+        "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>{if(!document.hidden)window.__apolloChatEnhancementSweep?.();},700);"
         "return sweep();})()"];
     return script;
 }
@@ -483,6 +491,14 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, strong) UILabel *loadingDetailLabel;
 @property (nonatomic, strong) UIImageView *loadingIconView;
 @property (nonatomic, strong) UIButton *reauthenticateButton;
+// Every load-error state must carry a visible retry action: the embedded
+// Inbox hub has no navigation bar, so the standalone-only refresh bar button
+// cannot be the only way out of "Chat couldn't be opened".
+@property (nonatomic, strong) UIButton *retryButton;
+// Cookie header this controller last seeded into its private WKWebsiteDataStore
+// (apollo_seedAndLoad). Together with `username` this is the controller's
+// session identity, checked by ApolloModernChatControllerSessionIsCurrent.
+@property (nonatomic, copy) NSString *seededCookieHeader;
 @property (nonatomic, copy) NSString *username;
 // A validated same-origin Reddit path supplied by a notification deep link.
 // Keeping only the path (never an arbitrary URL) preserves the isolated
@@ -769,10 +785,21 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
                                   action:@selector(apollo_presentAuthenticationPrompt)
                         forControlEvents:UIControlEventTouchUpInside];
 
+    self.retryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.retryButton.hidden = YES;
+    self.retryButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    self.retryButton.layer.cornerRadius = 12.0;
+    self.retryButton.layer.borderWidth = 1.0;
+    self.retryButton.contentEdgeInsets = UIEdgeInsetsMake(11.0, 22.0, 11.0, 22.0);
+    [self.retryButton setTitle:@"Try Again" forState:UIControlStateNormal];
+    [self.retryButton addTarget:self
+                         action:@selector(apollo_reloadChat)
+               forControlEvents:UIControlEventTouchUpInside];
+
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     UIStackView *loadingStack = [[UIStackView alloc] initWithArrangedSubviews:@[
         iconView, self.loadingTitleLabel, self.loadingDetailLabel, self.spinner,
-        self.reauthenticateButton
+        self.retryButton, self.reauthenticateButton
     ]];
     loadingStack.translatesAutoresizingMaskIntoConstraints = NO;
     loadingStack.axis = UILayoutConstraintAxisVertical;
@@ -957,6 +984,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     [self.reauthenticateButton setTitleColor:accent forState:UIControlStateNormal];
     self.reauthenticateButton.backgroundColor = [accent colorWithAlphaComponent:0.14];
     self.reauthenticateButton.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
+    [self.retryButton setTitleColor:accent forState:UIControlStateNormal];
+    self.retryButton.backgroundColor = [accent colorWithAlphaComponent:0.14];
+    self.retryButton.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
     if (!self.embeddedInInbox) {
         self.navigationItem.rightBarButtonItem.tintColor = accent;
         self.navigationController.navigationBar.tintColor = accent;
@@ -999,6 +1029,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.authenticationRequired = NO;
     self.authenticationPromptAutomaticallyOffered = NO;
     self.reauthenticateButton.hidden = YES;
+    self.retryButton.hidden = YES;
     self.didRevealChat = NO;
     self.readinessGeneration += 1;
     self.modmailThreadTransitionPending = NO;
@@ -1039,13 +1070,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Moderator Mail" : @"Reddit Chat";
         ApolloLog(@"[DirectChatWeb] %@ loading watchdog fired", surface);
         [self.webView stopLoading];
-        [self apollo_showLoadError:[NSString stringWithFormat:@"%@ took too long to respond. Tap refresh to try again.", surface]];
+        [self apollo_showLoadError:[NSString stringWithFormat:@"%@ took too long to respond. Tap Try Again to reload.", surface]];
     });
 }
 
 - (void)apollo_showLoadError:(NSString *)detail {
     self.authenticationRequired = NO;
     self.reauthenticateButton.hidden = YES;
+    self.retryButton.hidden = NO;
     self.readinessGeneration += 1;
     self.modmailThreadTransitionPending = NO;
     self.modmailThreadTransitionGeneration += 1;
@@ -1062,6 +1094,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     [self apollo_showLoadError:detail];
     self.authenticationRequired = YES;
     self.reauthenticateButton.hidden = NO;
+    // An expired session cannot be fixed by reloading — keep the single
+    // relevant action (Sign In Again) instead of two competing buttons.
+    self.retryButton.hidden = YES;
     if (automaticallyPrompt && !self.authenticationPromptAutomaticallyOffered && self.view.window) {
         [self apollo_presentAuthenticationPrompt];
     }
@@ -1358,6 +1393,12 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)apollo_captureChatStatus {
     if (self.mailboxKind != ApolloModernMailboxKindChat || !self.webView.URL ||
         ![self apollo_urlMatchesMailboxRoute:self.webView.URL]) return;
+    // This scan walks every element of every shadow root. Skip it while the
+    // app is inactive — the Matrix poller resumes on the next activation and
+    // republishes exact counts anyway, so nothing is lost. It intentionally
+    // KEEPS running while the hub is merely hidden behind Notifications:
+    // this DOM scrape is what feeds the unread badge shown on that screen.
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     NSString *script =
         @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
          "const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';};"
@@ -1697,6 +1738,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 - (void)apollo_seedAndLoad {
     self.username = ApolloActiveWebSessionUsername() ?: @"";
     ApolloWebSessionEntry *session = ApolloWebSessionPollFor(self.username);
+    // Record the exact identity this controller is about to authenticate as;
+    // ApolloModernChatControllerSessionIsCurrent compares against it so the
+    // persistent Inbox hub can detect account switches / cookie rotations.
+    self.seededCookieHeader = session.cookieHeader ?: @"";
     if (session.cookieHeader.length == 0) {
         NSString *detail = self.username.length > 0
             ? [NSString stringWithFormat:@"Sign in as u/%@ to continue.", self.username]
@@ -1776,6 +1821,12 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
              // both markers together as ready instead of leaving an already
              // complete screen behind the loading cover for 15 seconds.
              "const rootList=location.pathname==='/chat'||location.pathname==='/chat/';"
+             // Locale-independent ready marker: a painted conversation row
+             // (.room-name — the same class fixChatListTypography styles)
+             // proves the list hydrated, without depending on any English
+             // button/empty-state text. Keeps non-English accounts off the
+             // 15-second timeout fallback on the most common route.
+             "if(rootList&&all.some(e=>visible(e)&&e.matches?.('.room-name')))return 'ready';"
              "const hydratedEmpty=rootList&&controls.some(e=>visible(e)&&text(e)==='no messages')&&controls.some(e=>visible(e)&&text(e)==='clear filters');"
              "if(hydratedEmpty)return 'ready';"
              "const ready=controls.some(e=>{if(!visible(e))return false;const t=text(e),a=(e.getAttribute('aria-label')||'').trim().toLowerCase();"
@@ -1815,7 +1866,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
             NSString *surface = self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat";
             ApolloLog(@"[DirectChatWeb] %@ readiness probe timed out", surface);
             if (self.mailboxKind == ApolloModernMailboxKindModmail) {
-                [self apollo_showLoadError:@"Moderator Mail took too long to finish loading. Tap refresh to try again."];
+                [self apollo_showLoadError:@"Moderator Mail took too long to finish loading. Tap Try Again to reload."];
             } else {
                 // Chat's markup changes frequently; if its expected route did
                 // finish, preserve the prior behavior and reveal it rather
@@ -2087,29 +2138,47 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
-        [self apollo_showLoadError:@"Check your connection, then tap refresh."];
+        [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
     ApolloLog(@"[DirectChatWeb] Provisional navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (error.code != NSURLErrorCancelled)
-        [self apollo_showLoadError:@"Check your connection, then tap refresh."];
+        [self apollo_showLoadError:@"Check your connection, then tap Try Again."];
     ApolloLog(@"[DirectChatWeb] Navigation failed for u/%@: %@", self.username, error.localizedDescription);
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     ApolloLog(@"[DirectChatWeb] Reddit web process terminated for u/%@", self.username);
-    [self apollo_showLoadError:@"Reddit stopped responding. Tap refresh to reconnect."];
+    [self apollo_showLoadError:@"Reddit stopped responding. Tap Try Again to reconnect."];
 }
 
 @end
 
+BOOL ApolloModernMailboxOSSupported(void) {
+    // Same iOS 16 floor _isModernRedditSupported enforces for the web-session
+    // login (ApolloWebSessionLoginViewController.m): modern reddit.com does
+    // not render on iOS 14/15 WebKit, so never route anyone into it there.
+    if (@available(iOS 16.0, *)) return YES;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ApolloLog(@"[DirectChatWeb] iOS < 16 — modern Chat/Modmail gates disabled");
+    });
+    return NO;
+}
+
 BOOL ApolloModernChatIsAvailable(void) {
+    if (!ApolloModernMailboxOSSupported()) return NO;
     NSString *username = ApolloActiveWebSessionUsername();
     return username.length > 0 && ApolloWebSessionPollFor(username) != nil;
 }
 
-BOOL ApolloModernChatIsRequiredForActiveAccount(void) {
+BOOL ApolloModernChatIsRequiredForSession(ApolloWebSessionEntry *entry) {
+    if (!ApolloModernMailboxOSSupported()) return NO;
+    // Only a PRIMARY (API-key-free) session can force the modern surface —
+    // an auxiliary poll-only entry rides along an OAuth account that keeps
+    // Apollo's stock chat unless the user opts in via the settings toggle.
+    if (!entry || entry.pollOnly) return NO;
     // API-key-free synthesized RDKClient accounts deliberately carry an empty
     // authorizationCredential.clientIdentifier. Inspect the active client
     // itself instead of the global default API key, which may belong to a
@@ -2121,15 +2190,27 @@ BOOL ApolloModernChatIsRequiredForActiveAccount(void) {
         ? ((id (*)(id, SEL))objc_msgSend)(client, @selector(authorizationCredential)) : nil;
     NSString *clientIdentifier = [credential respondsToSelector:@selector(clientIdentifier)]
         ? ((id (*)(id, SEL))objc_msgSend)(credential, @selector(clientIdentifier)) : nil;
-    return ApolloActiveWebSession() != nil && clientIdentifier.length == 0;
+    return clientIdentifier.length == 0;
+}
+
+BOOL ApolloModernChatIsRequiredForActiveAccount(void) {
+    if (!ApolloModernMailboxOSSupported()) return NO;
+    // A poll-only entry reports pollOnly=YES and is rejected by the session
+    // helper, so resolving via PollFor is equivalent to the primary-only
+    // ApolloActiveWebSession() != nil check at half the account-blob cost.
+    NSString *username = ApolloActiveWebSessionUsername();
+    return ApolloModernChatIsRequiredForSession(
+        username.length > 0 ? ApolloWebSessionPollFor(username) : nil);
 }
 
 BOOL ApolloModernChatShouldOpen(void) {
+    if (!ApolloModernMailboxOSSupported()) return NO;
     if (ApolloModernChatIsRequiredForActiveAccount()) return YES;
     return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditChat];
 }
 
 BOOL ApolloModernModmailShouldOpen(void) {
+    if (!ApolloModernMailboxOSSupported()) return NO;
     if (ApolloModernChatIsRequiredForActiveAccount()) return YES;
     return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyUseModernRedditModmail];
 }
@@ -2176,6 +2257,18 @@ void ApolloModernChatControllerShowInboxSection(UIViewController *controller,
                                                 ApolloModernChatInboxSection section) {
     if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
     [(ApolloDirectChatWebViewController *)controller apollo_showEmbeddedInboxSection:section];
+}
+
+BOOL ApolloModernChatControllerSessionIsCurrent(UIViewController *controller) {
+    if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return NO;
+    ApolloDirectChatWebViewController *chatController =
+        (ApolloDirectChatWebViewController *)controller;
+    NSString *activeUsername = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    NSString *activeCookies = ApolloWebSessionPollFor(activeUsername).cookieHeader ?: @"";
+    NSString *seededUsername = chatController.username.lowercaseString ?: @"";
+    NSString *seededCookies = chatController.seededCookieHeader ?: @"";
+    return [seededUsername isEqualToString:activeUsername] &&
+           [seededCookies isEqualToString:activeCookies];
 }
 
 void ApolloModernChatControllerSetInboxVisible(UIViewController *controller, BOOL visible) {

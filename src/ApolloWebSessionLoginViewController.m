@@ -72,6 +72,14 @@ static const NSUInteger kMaxIncompleteHarvestAttempts = 5;
 @property (nonatomic, copy) NSString *username;      // lowercased target
 @property (nonatomic, copy) void (^completion)(BOOL);
 @property (nonatomic) BOOL done;
+// Classification of the session being refreshed, captured at entry: a
+// re-harvest must store the fresh cookies with the SAME visibility the dying
+// entry had. The chat unread poller triggers re-harvests for auxiliary
+// (poll-only) sessions riding along API-key accounts — storing those as
+// primary would flip the account onto Web JSON transport behind the user's
+// back (the exact opposite of the "your sign-in choice will not change"
+// promise the feature sign-in makes).
+@property (nonatomic) BOOL pollOnly;
 - (void)_finish:(BOOL)success;
 @end
 
@@ -788,6 +796,12 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         ApolloWebSessionSilentReharvester *r = [ApolloWebSessionSilentReharvester new];
         r.username = key;
         r.completion = completion;
+        // Primary sessions are visible to ApolloWebSessionFor; auxiliary
+        // (poll-only) ones are not. If the entry vanished mid-flight,
+        // poll-only is the safe non-escalating default: ApolloWebSessionSetPollOnly
+        // never flips the global transport flag, and it refreshes an existing
+        // primary entry AS primary anyway.
+        r.pollOnly = (ApolloWebSessionFor(key) == nil);
 
         WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
         config.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
@@ -900,12 +914,15 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
             typeof(self) s2 = weakSelf;
             if (!s2 || s2.done) return;
             WKHTTPCookieStore *store = webView.configuration.websiteDataStore.httpCookieStore;
-            // Silent re-harvest only ever runs for PRIMARY sessions (auxiliary
-            // sessions are invisible to the transport expiry detection that
-            // triggers it), so store primary here.
-            ApolloWebSessionHarvestFromCookieStore(store, s2.username, modhash, NO,
+            // Store the fresh cookies with the classification captured at
+            // entry. The transport expiry detection only fires for primary
+            // sessions, but the chat unread poller also triggers re-harvests
+            // for auxiliary (poll-only) sessions — those must stay auxiliary
+            // or an API-key account would silently become a Web JSON account.
+            ApolloWebSessionHarvestFromCookieStore(store, s2.username, modhash, s2.pollOnly,
                                                    ^(NSUInteger cookieCount) {
-                ApolloLog(@"[WebJSON] Silently re-harvested session for u/%@ (%lu cookies, modhash %@) — expiry prompt suppressed",
+                ApolloLog(@"[WebJSON] Silently re-harvested %@ session for u/%@ (%lu cookies, modhash %@) — expiry prompt suppressed",
+                          s2.pollOnly ? @"auxiliary" : @"primary",
                           s2.username, (unsigned long)cookieCount, modhash.length > 0 ? @"captured" : @"absent");
                 [s2 _finish:cookieCount > 0];
             });
