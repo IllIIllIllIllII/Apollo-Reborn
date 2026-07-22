@@ -304,6 +304,9 @@ static NSString *const UDKeyChatUnreadNotifiedWatermarks = @"ChatUnreadNotifiedW
 // whole badge/notification pipeline can be exercised in the simulator.
 static NSString *const UDKeyChatPollerHomeserverOverride = @"ChatPollerHomeserverOverride";
 static NSString *const UDKeyChatPollerIntervalOverride = @"ChatPollerIntervalOverride";
+// Debug-only override (seconds, >= 5) for how long the modern Chat surface
+// must be hidden/inactive before returning to it auto-refreshes the list.
+static NSString *const UDKeyChatStaleRefreshOverride = @"ChatStaleRefreshOverride";
 // Native Polls (ApolloPollVoting.xm / ApolloPollCompose.xm). Off by default —
 // an experimental feature that lets you vote in and create polls via a
 // per-account reddit.com web session (harvested once, then silent). Independent

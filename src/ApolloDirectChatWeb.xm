@@ -499,6 +499,16 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 // (apollo_seedAndLoad). Together with `username` this is the controller's
 // session identity, checked by ApolloModernChatControllerSessionIsCurrent.
 @property (nonatomic, copy) NSString *seededCookieHeader;
+// Reddit's web client stops syncing while its document is hidden or the app
+// is suspended, and does not reliably catch up when it comes back — the list
+// stays stale until something forces a navigation. Track when this surface
+// last went away (hub hidden behind Notifications, app resigned active, or
+// the standalone controller disappeared) so returning after a real absence
+// can replay the current list load automatically.
+@property (nonatomic) NSTimeInterval chatWentAwayAt;
+// Mirrors the Inbox hub's cross-fade state (child appearance callbacks never
+// fire for it): YES while Chat is the visible Inbox mode.
+@property (nonatomic) BOOL embeddedInboxVisible;
 @property (nonatomic, copy) NSString *username;
 // A validated same-origin Reddit path supplied by a notification deep link.
 // Keeping only the path (never an arbitrary URL) preserves the isolated
@@ -555,6 +565,8 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_showAuthenticationError:(NSString *)detail automaticallyPrompt:(BOOL)automaticallyPrompt;
 - (void)apollo_presentAuthenticationPrompt;
 - (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section;
+- (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section forceReload:(BOOL)forceReload;
+- (void)apollo_refreshAfterAwayIfStale;
 - (void)apollo_clearEmbeddedChatTypeFiltersForGeneration:(NSUInteger)generation
                                                completion:(void (^)(BOOL changed))completion;
 - (void)apollo_applyEmbeddedInboxFilterAttempt:(NSUInteger)attempt generation:(NSUInteger)generation;
@@ -565,6 +577,7 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 - (void)apollo_updateEmbeddedWebChromeForURL:(NSURL *)url;
 - (void)apollo_startChatStatusRefreshIfNeeded;
 - (void)apollo_applicationDidBecomeActive:(NSNotification *)notification;
+- (void)apollo_applicationWillResignActive:(NSNotification *)notification;
 - (void)apollo_enableNativeScrollBounce;
 - (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance;
 @end
@@ -827,6 +840,10 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
                                              selector:@selector(apollo_applicationDidBecomeActive:)
                                                  name:UIApplicationDidBecomeActiveNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_applicationWillResignActive:)
+                                                 name:UIApplicationWillResignActiveNotification
+                                               object:nil];
     [self apollo_applyActiveTheme];
     [self apollo_seedAndLoad];
 }
@@ -924,10 +941,17 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     if (self.authenticationRequired && !self.authenticationPromptAutomaticallyOffered) {
         [self apollo_presentAuthenticationPrompt];
     }
+    // Appearance propagates to the hub child even while it sits hidden behind
+    // Notifications; only refresh here when this surface is the visible one —
+    // a hidden hub keeps its timestamp and refreshes on its next reveal.
+    if (!self.embeddedInInbox || self.embeddedInboxVisible) {
+        [self apollo_refreshAfterAwayIfStale];
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     if (self.mailboxKind == ApolloModernMailboxKindChat) [self apollo_captureChatStatus];
+    if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
     // The tab bar is a shared UITabBarController state. Always hand it back
     // before this controller leaves, even when Apollo Back exits from a room.
     [self apollo_restoreTabBarVisibility];
@@ -952,6 +976,64 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         [self apollo_captureChatStatus];
         [self apollo_startChatStatusRefreshIfNeeded];
     }
+    // Only refresh a surface the user can actually see; a hidden hub keeps
+    // its away timestamp and refreshes when it is next revealed instead.
+    BOOL surfaceVisible = self.embeddedInInbox ? self.embeddedInboxVisible
+        : (self.viewIfLoaded.window != nil);
+    if (surfaceVisible) [self apollo_refreshAfterAwayIfStale];
+}
+
+- (void)apollo_applicationWillResignActive:(NSNotification *)notification {
+    (void)notification;
+    if (self.chatWentAwayAt <= 0) self.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
+}
+
+// How long the surface must be away before returning triggers a refresh.
+// Short flips (checking a notification, quick tab switch) stay instant and
+// keep the cross-fade-in-place behavior; a real absence pays one list reload
+// — the exact action users otherwise perform by re-tapping a section tab.
+static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
+    double override = [[NSUserDefaults standardUserDefaults] doubleForKey:UDKeyChatStaleRefreshOverride];
+    return override >= 5.0 ? override : 60.0;
+}
+
+// Reddit's web chat client pauses its Matrix sync while the document is
+// hidden or the app is suspended and does not reliably resume it — the room
+// list keeps showing pre-absence state until a real navigation replaces
+// Reddit's in-memory store. When the user returns after a genuine absence,
+// replay the current LIST route through the normal load pipeline (identical
+// to tapping its section tab). Conversation routes are never reloaded — that
+// could discard a draft reply — they get a synthetic visibility/focus/online
+// nudge, which is enough for Reddit's client to re-establish its sync loop.
+- (void)apollo_refreshAfterAwayIfStale {
+    NSTimeInterval wentAwayAt = self.chatWentAwayAt;
+    self.chatWentAwayAt = 0;
+    if (wentAwayAt <= 0) return;
+    NSTimeInterval away = [NSDate date].timeIntervalSince1970 - wentAwayAt;
+    if (away < ApolloChatStaleRefreshThreshold()) return;
+    if (!self.didRevealChat || self.authenticationRequired || self.presentedViewController) return;
+    if (self.mailboxKind != ApolloModernMailboxKindChat) return;
+    if (![self apollo_urlMatchesMailboxRoute:self.webView.URL]) return;
+
+    NSString *path = self.webView.URL.path ?: @"";
+    BOOL messagesList = [path isEqualToString:@"/chat"] || [path isEqualToString:@"/chat/"];
+    BOOL requestsList = [path isEqualToString:@"/chat/requests"] || [path isEqualToString:@"/chat/requests/"];
+    BOOL threadsList = [path isEqualToString:@"/chat/threads"] || [path isEqualToString:@"/chat/threads/"];
+    if (messagesList || requestsList || threadsList) {
+        ApolloLog(@"[DirectChatWeb] Refreshing stale chat list (%@) after %.0fs away", path, away);
+        if (self.embeddedInInbox) {
+            [self apollo_showEmbeddedInboxSection:self.embeddedInboxSection forceReload:YES];
+        } else {
+            [self apollo_reloadChat];
+        }
+        return;
+    }
+    ApolloLog(@"[DirectChatWeb] Nudging open conversation to resync after %.0fs away", away);
+    [self.webView evaluateJavaScript:
+        @"(()=>{try{document.dispatchEvent(new Event('visibilitychange'));"
+         "window.dispatchEvent(new Event('focus'));"
+         "window.dispatchEvent(new Event('online'));return 1;}catch(e){return 0;}})()"
+              completionHandler:nil];
 }
 
 - (void)apollo_applyActiveTheme {
@@ -1640,6 +1722,14 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section {
+    [self apollo_showEmbeddedInboxSection:section forceReload:NO];
+}
+
+// forceReload replays the full load/filter pipeline even for the section that
+// is already selected and on-route. Used by the stale-return refresh: simply
+// re-applying the filter over the existing document would keep Reddit's stale
+// in-memory room list — only a real navigation refetches it.
+- (void)apollo_showEmbeddedInboxSection:(ApolloModernChatInboxSection)section forceReload:(BOOL)forceReload {
     if (!self.embeddedInInbox || self.mailboxKind != ApolloModernMailboxKindChat) return;
     if (section < ApolloModernChatInboxSectionMessages ||
         section > ApolloModernChatInboxSectionThreads) {
@@ -1678,7 +1768,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     // Re-selecting the active list is intentionally inert, matching a native
     // tab bar. If a conversation room is open, however, tapping the selected
     // tab returns to that section's list.
-    if (sameSection && alreadyOnTarget && self.didRevealChat) return;
+    if (!forceReload && sameSection && alreadyOnTarget && self.didRevealChat) return;
 
     NSString *detail;
     switch (section) {
@@ -1707,7 +1797,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
             __strong typeof(weakSelf) self = weakSelf;
             if (!self || generation != self.readinessGeneration ||
                 self.embeddedInboxSection != section) return;
-            if (alreadyOnTarget && !changed) {
+            if (!forceReload && alreadyOnTarget && !changed) {
                 [self apollo_waitForChatReadinessAttempt:0 generation:generation];
                 return;
             }
@@ -1720,7 +1810,7 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
         return;
     }
 
-    if (alreadyOnTarget) {
+    if (!forceReload && alreadyOnTarget) {
         [self apollo_applyEmbeddedInboxFilterAttempt:0 generation:generation];
         return;
     }
@@ -2275,10 +2365,17 @@ void ApolloModernChatControllerSetInboxVisible(UIViewController *controller, BOO
     if (![controller isKindOfClass:[ApolloDirectChatWebViewController class]]) return;
     ApolloDirectChatWebViewController *chatController =
         (ApolloDirectChatWebViewController *)controller;
+    chatController.embeddedInboxVisible = visible;
     if (visible) {
         [chatController apollo_updateTabBarVisibilityForURL:chatController.webView.URL animated:NO];
+        // Returning to Chat after a real absence must show current messages,
+        // not whatever Reddit's paused client last rendered.
+        [chatController apollo_refreshAfterAwayIfStale];
     } else {
         [chatController apollo_restoreTabBarVisibility];
+        if (chatController.chatWentAwayAt <= 0) {
+            chatController.chatWentAwayAt = [NSDate date].timeIntervalSince1970;
+        }
     }
 }
 
