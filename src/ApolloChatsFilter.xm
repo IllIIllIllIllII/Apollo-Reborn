@@ -1294,16 +1294,36 @@ static NSInteger ApolloRealMessagesRow(ApolloBoxesRowState *state, NSInteger dis
 
 #pragma mark - messages list: filter to chats
 
-// Keep only chat-subject messages (direct + group chats both carry a "chat room" subject;
-// regular PMs/modmail have a real subject, so they fall away).
+// Reddit's legacy-inbox chat mirrors carry a bracketed whole-subject marker —
+// "[direct chat room]" / "[group chat room]" — never free text. Anchor the
+// match to that exact shape (single bracket pair spanning the entire trimmed
+// subject, ending in "chat room") so a real PM that merely mentions a chat
+// room in its subject can never be misclassified in either direction.
+// (Raised by @jordanearle in review.)
+static BOOL ApolloMessageSubjectIsChatRoomMirror(NSString *subject) {
+    if (![subject isKindOfClass:[NSString class]] || subject.length == 0) return NO;
+    NSString *trimmed = [[subject stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    if (![trimmed hasPrefix:@"["] || ![trimmed hasSuffix:@" chat room]"]) return NO;
+    // Exactly one bracketed token and nothing outside it: the first closing
+    // bracket must be the subject's final character.
+    return [trimmed rangeOfString:@"]"].location == trimmed.length - 1;
+}
+
+static BOOL ApolloMessageIsChatRoomMirror(id msg) {
+    NSString *subject = nil;
+    if ([msg respondsToSelector:@selector(subject)])
+        subject = ((NSString *(*)(id, SEL))objc_msgSend)(msg, @selector(subject));
+    return ApolloMessageSubjectIsChatRoomMirror(subject);
+}
+
+// Keep only chat-mirror messages (direct + group chats; regular PMs/modmail
+// have a real subject, so they fall away).
 static NSArray *ApolloChatFilterToChats(NSArray *messages) {
     if (![messages isKindOfClass:[NSArray class]]) return messages;
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:messages.count];
     for (id msg in messages) {
-        NSString *subject = nil;
-        if ([msg respondsToSelector:@selector(subject)])
-            subject = ((NSString *(*)(id, SEL))objc_msgSend)(msg, @selector(subject));
-        if (subject && [subject localizedCaseInsensitiveContainsString:@"chat room"]) [out addObject:msg];
+        if (ApolloMessageIsChatRoomMirror(msg)) [out addObject:msg];
     }
     ChatsFilterLog(@"filtered messages %lu -> %lu chats", (unsigned long)messages.count, (unsigned long)out.count);
     return out;
@@ -1315,21 +1335,21 @@ static NSArray *ApolloChatFilterToChats(NSArray *messages) {
 // the flag, so it stays unfiltered.
 static BOOL sChatFilterActive = NO;
 
-// Inverse of ApolloChatFilterToChats: drop the "[direct chat room]" items and
-// keep everything else. Reddit mirrors every chat message into the legacy
-// message inbox; while modern Chat owns the conversation surface those
-// mirrors would render in Notifications/Unread/Messages, open Apollo's
-// LEGACY thread UI on tap, and double-count the combined Inbox badge — the
-// Chat mode of the switcher is their real home now.
+// Inverse of ApolloChatFilterToChats: drop the "[direct chat room]" /
+// "[group chat room]" marker items and keep everything else. Reddit mirrors
+// every chat message into the legacy message inbox; while modern Chat owns
+// the conversation surface those mirrors would render in
+// Notifications/Unread/Messages, open Apollo's LEGACY thread UI on tap, and
+// double-count the combined Inbox badge — the Chat mode of the switcher is
+// their real home now. Both directions share ApolloMessageIsChatRoomMirror,
+// so what the legacy list considers a chat and what the native inbox hides
+// can never drift apart.
 static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
     if (![messages isKindOfClass:[NSArray class]]) return messages;
     NSMutableArray *out = [NSMutableArray arrayWithCapacity:messages.count];
     NSUInteger dropped = 0;
     for (id msg in messages) {
-        NSString *subject = nil;
-        if ([msg respondsToSelector:@selector(subject)])
-            subject = ((NSString *(*)(id, SEL))objc_msgSend)(msg, @selector(subject));
-        if (subject && [subject localizedCaseInsensitiveContainsString:@"chat room"]) {
+        if (ApolloMessageIsChatRoomMirror(msg)) {
             dropped++;
             continue;
         }
