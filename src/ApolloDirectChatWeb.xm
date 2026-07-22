@@ -335,7 +335,16 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "const isChatTextEntry=node=>!!node?.matches?.('textarea,[contenteditable=true],[role=textbox],input:not([type=file]):not([type=button]):not([type=submit])');"
         "const deepActiveElement=root=>{let node=root?.activeElement||document.activeElement;while(node?.shadowRoot?.activeElement)node=node.shadowRoot.activeElement;return node;};"
         "const blurMediaGestureTextEntry=root=>{const active=deepActiveElement(root);if(!isChatTextEntry(active))return false;active.blur?.();return true;};"
-        "const installChatInteractionHooks=root=>{if(!root||root.__apolloChatInteractionHooks)return;try{Object.defineProperty(root,'__apolloChatInteractionHooks',{value:true,configurable:true});const beginMediaGesture=event=>{const control=mediaControlForEvent(event);if(!control)return;window.__apolloChatMediaGestureUntil=Date.now()+1600;const title=control.getAttribute?.('title');if(title&&!control.hasAttribute('aria-label')&&!control.hasAttribute('aria-labelledby'))control.setAttribute('aria-label',title);control.removeAttribute?.('title');control.blur?.();blurMediaGestureTextEntry(root);queueMicrotask(()=>blurMediaGestureTextEntry(root));requestAnimationFrame(()=>blurMediaGestureTextEntry(root));};const rejectMediaGestureFocus=event=>{if(Date.now()>window.__apolloChatMediaGestureUntil)return;const target=event.composedPath?.()[0]||event.target;if(!isChatTextEntry(target))return;target.blur?.();queueMicrotask(()=>blurMediaGestureTextEntry(root));};root.addEventListener('pointerdown',beginMediaGesture,true);root.addEventListener('touchstart',beginMediaGesture,{capture:true,passive:true});root.addEventListener('click',beginMediaGesture,true);root.addEventListener('focusin',rejectMediaGestureFocus,true);}catch(e){console.debug('[ApolloFix][DirectChatWeb] Chat media interaction hook failed',e);}};"
+        // Reddit's in-room back control performs a client-side pane flip: the
+        // conversation list becomes visible again while location stays on
+        // /chat/room/…. Every list treatment — the chrome hiding above, the
+        // native crop, and the shared tab-bar restore — keys off the route,
+        // so the flipped-back list would show Reddit's own header/rows with
+        // Apollo's tab bar still hidden. In the embedded Inbox, replace that
+        // flip with a real navigation to /chat (same pattern as the
+        // empty-requests redirect), which re-runs the whole list pipeline.
+        "const redirectEmbeddedRoomBack=event=>{if(mailRoute()||!window.__apolloEmbeddedInboxMessages)return;if(!location.pathname.startsWith('/chat/room/'))return;for(const node of event.composedPath?.()||[]){if(!(node instanceof Element)||!node.matches?.('button,[role=button],a'))continue;const rect=node.getBoundingClientRect();if(rect.top>140||rect.left>120)continue;const marker=[node.getAttribute('aria-label'),node.getAttribute('title'),node.getAttribute('data-testid'),node.textContent].filter(Boolean).join(' ').replace(/\\s+/g,' ').trim().toLowerCase();const isBack=/(^|[\\s_-])back([\\s_-]|$)/.test(marker)||!!node.querySelector('[icon-name*=back i],[name*=back i],[aria-label*=back i]');if(!isBack)continue;event.preventDefault();event.stopImmediatePropagation();location.assign('/chat');return;}};"
+        "const installChatInteractionHooks=root=>{if(!root||root.__apolloChatInteractionHooks)return;try{Object.defineProperty(root,'__apolloChatInteractionHooks',{value:true,configurable:true});const beginMediaGesture=event=>{const control=mediaControlForEvent(event);if(!control)return;window.__apolloChatMediaGestureUntil=Date.now()+1600;const title=control.getAttribute?.('title');if(title&&!control.hasAttribute('aria-label')&&!control.hasAttribute('aria-labelledby'))control.setAttribute('aria-label',title);control.removeAttribute?.('title');control.blur?.();blurMediaGestureTextEntry(root);queueMicrotask(()=>blurMediaGestureTextEntry(root));requestAnimationFrame(()=>blurMediaGestureTextEntry(root));};const rejectMediaGestureFocus=event=>{if(Date.now()>window.__apolloChatMediaGestureUntil)return;const target=event.composedPath?.()[0]||event.target;if(!isChatTextEntry(target))return;target.blur?.();queueMicrotask(()=>blurMediaGestureTextEntry(root));};root.addEventListener('pointerdown',beginMediaGesture,true);root.addEventListener('touchstart',beginMediaGesture,{capture:true,passive:true});root.addEventListener('click',beginMediaGesture,true);root.addEventListener('click',redirectEmbeddedRoomBack,true);root.addEventListener('focusin',rejectMediaGestureFocus,true);}catch(e){console.debug('[ApolloFix][DirectChatWeb] Chat media interaction hook failed',e);}};"
         "const observeRoot=r=>{if(!r)return;installChatInteractionHooks(r);if(r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});}catch(e){}};"
         "const themeRoots=()=>{for(const r of roots()){themeRoot(r);observeRoot(r);}};"
         // Patch attachShadow at document start. Reddit constructs the thread
@@ -2202,6 +2211,23 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
             }
             if (wantsRequests || wantsThreads) {
                 [self apollo_waitForChatReadinessAttempt:0 generation:self.readinessGeneration];
+            } else if (self.didRevealChat) {
+                // Post-reveal return to the Messages list (the in-room back
+                // control is redirected here by the enhancement script). The
+                // readiness pipeline is reveal-gated and would no-op, but the
+                // fresh document needs the embedded-list treatment again:
+                // alignEmbeddedMessages sets the __apolloEmbeddedInboxMessages
+                // flag, sweeps Reddit's redundant chrome away, and re-measures
+                // the crop. Run it now and once more after hydration settles.
+                [self apollo_alignEmbeddedMessagesForGeneration:self.readinessGeneration completion:nil];
+                __weak typeof(self) weakSelf = self;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)),
+                               dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) self = weakSelf;
+                    if (!self || self.embeddedInboxSection != ApolloModernChatInboxSectionMessages) return;
+                    [self apollo_alignEmbeddedMessagesForGeneration:self.readinessGeneration completion:nil];
+                    [self apollo_enableNativeScrollBounce];
+                });
             } else {
                 // The filter helper is itself a readiness loop and handles
                 // Reddit's shadow-DOM rerenders. Starting it immediately after
