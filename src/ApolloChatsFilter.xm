@@ -1315,6 +1315,33 @@ static NSArray *ApolloChatFilterToChats(NSArray *messages) {
 // the flag, so it stays unfiltered.
 static BOOL sChatFilterActive = NO;
 
+// Inverse of ApolloChatFilterToChats: drop the "[direct chat room]" items and
+// keep everything else. Reddit mirrors every chat message into the legacy
+// message inbox; while modern Chat owns the conversation surface those
+// mirrors would render in Notifications/Unread/Messages, open Apollo's
+// LEGACY thread UI on tap, and double-count the combined Inbox badge — the
+// Chat mode of the switcher is their real home now.
+static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
+    if (![messages isKindOfClass:[NSArray class]]) return messages;
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:messages.count];
+    NSUInteger dropped = 0;
+    for (id msg in messages) {
+        NSString *subject = nil;
+        if ([msg respondsToSelector:@selector(subject)])
+            subject = ((NSString *(*)(id, SEL))objc_msgSend)(msg, @selector(subject));
+        if (subject && [subject localizedCaseInsensitiveContainsString:@"chat room"]) {
+            dropped++;
+            continue;
+        }
+        [out addObject:msg];
+    }
+    if (dropped > 0) {
+        ChatsFilterLog(@"dropped %lu legacy chat mirror(s) from a native inbox page (modern Chat active)",
+                       (unsigned long)dropped);
+    }
+    return out;
+}
+
 %hook _TtC6Apollo19InboxViewController
 
 - (void)viewDidLoad {
@@ -1423,14 +1450,67 @@ static BOOL sChatFilterActive = NO;
 // ever toggled synchronously on the main thread around the nested call (the call just kicks off an
 // async task and returns), so a plain BOOL needs no lock.
 static BOOL sChatPagingInProgress = NO;
+// Same guard for the inverse (mirror-stripping) accumulator below.
+static BOOL sMirrorPagingInProgress = NO;
 static const NSInteger kMaxChatFilterPages = 8;   // cap so a chat-sparse account can't page forever
 
 %hook RDKClient
 // NOTE: `category` is an enum (NSInteger), NOT an object — declaring it `id` makes ARC retain
 // the integer value as a pointer (EXC_BAD_ACCESS at 0x2). It MUST be a scalar type.
 - (id)messagesInCategory:(long long)category pagination:(id)pagination markRead:(BOOL)markRead completion:(id)completion {
-    ChatsFilterLog(@"messagesInCategory cat=%lld active=%d nested=%d", category, sChatFilterActive, sChatPagingInProgress);
-    if (!completion || !sChatFilterActive) return %orig;
+    ChatsFilterLog(@"messagesInCategory cat=%lld active=%d nested=%d/%d",
+                   category, sChatFilterActive, sChatPagingInProgress, sMirrorPagingInProgress);
+    if (!completion) return %orig;
+
+    // Modern Chat active and no legacy chat-filter list on screen: strip the
+    // legacy chat mirrors from every native message fetch (see
+    // ApolloChatFilterOutChats). Uses the same accumulate-until-nonempty
+    // shape as the chat filter below — a page consisting entirely of chat
+    // mirrors would otherwise deliver an empty page, and IGListKit's
+    // LoadNextPage cell never appears for an empty list, stalling pagination.
+    if (!sChatFilterActive && ApolloModernChatShouldOpen()) {
+        if (sMirrorPagingInProgress) {
+            id wrapped = ^(NSArray *messages, id page, NSError *error) {
+                ((void (^)(NSArray *, id, NSError *))completion)(ApolloChatFilterOutChats(messages), page, error);
+            };
+            return %orig(category, pagination, NO, wrapped);
+        }
+        NSMutableArray *acc = [NSMutableArray array];
+        __block NSInteger pages = 0;
+        __weak id weakSelf = self;
+        void (^deliver)(id, NSError *) = ^(id page, NSError *error) {
+            ((void (^)(NSArray *, id, NSError *))completion)(acc, page, error);
+        };
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-retain-cycles"
+        __block void (^step)(NSArray *, id, NSError *) = nil;
+        step = ^(NSArray *kept, id page, NSError *error) {
+            [acc addObjectsFromArray:(kept ?: @[])];
+            pages++;
+            NSString *after = [page respondsToSelector:@selector(after)]
+                ? ((NSString *(*)(id, SEL))objc_msgSend)(page, @selector(after)) : nil;
+            BOOL morePages = ([after isKindOfClass:[NSString class]] && after.length > 0);
+            id ss = weakSelf;
+            if (acc.count == 0 && morePages && !error && ss && pages < kMaxChatFilterPages) {
+                ChatsFilterLog(@"page %ld was all chat mirrors; pulling next (after=%@)", (long)pages, after);
+                sMirrorPagingInProgress = YES;
+                ((id (*)(id, SEL, long long, id, BOOL, id))objc_msgSend)(
+                    ss, @selector(messagesInCategory:pagination:markRead:completion:), category, page, (BOOL)NO, step);
+                sMirrorPagingInProgress = NO;
+            } else {
+                deliver(page, error);
+                step = nil;   // break the recursive block's self-reference so it deallocs
+            }
+        };
+#pragma clang diagnostic pop
+        id firstWrapped = ^(NSArray *messages, id page, NSError *error) {
+            step(ApolloChatFilterOutChats(messages), page, error);
+        };
+        // Keep the caller's markRead for its own page; nested catch-up pulls
+        // above never mark anything read.
+        return %orig(category, pagination, markRead, firstWrapped);
+    }
+    if (!sChatFilterActive) return %orig;
 
     // A nested page-pull kicked off by the accumulator below: filter this one page and pass the real
     // pagination token straight through so the accumulator can decide whether to keep going.
