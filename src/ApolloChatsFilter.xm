@@ -1051,10 +1051,14 @@ static UITableView *ApolloInboxControllerTableView(id controller) {
 // ~60 points below the safe area — exactly the band the opaque pinned
 // switcher occupies — so with the switcher installed the pull-to-refresh
 // circle spins invisibly behind it and the revealed gap looks blank. Shift
-// the whole control down by the switcher height so the spinner appears in
-// the empty header slot beneath the switcher instead. UIKit manages the
-// control's frame/bounds during a pull but never writes its transform, so a
-// translation survives the control's internal layout in every pull phase.
+// the drawn spinner down by the switcher height so it appears in the empty
+// header slot beneath the switcher instead. A view-level transform does NOT
+// work here: UIKit re-sets the control's frame on every layout pass, and
+// setFrame: on a transformed view recomputes center so the visual box still
+// lands where UIKit asked — silently cancelling the translation. The layer's
+// sublayerTransform is outside UIKit's layout writes, so the control's own
+// geometry stays exactly where UIKit expects while its content (the spinner)
+// renders 60pt lower; the layer doesn't mask to bounds, so nothing clips.
 static void ApolloInboxAdjustRefreshControlForSwitcher(UITableView *tableView, BOOL switcherInstalled) {
     if (!tableView) return;
     UIRefreshControl *refreshControl = tableView.refreshControl;
@@ -1067,12 +1071,16 @@ static void ApolloInboxAdjustRefreshControlForSwitcher(UITableView *tableView, B
         }
     }
     if (!refreshControl) return;
+    // Clear any view-level transform a previous iteration of this fix left.
+    if (!CGAffineTransformIsIdentity(refreshControl.transform)) {
+        refreshControl.transform = CGAffineTransformIdentity;
+    }
     // 60.0 = the switcher band height (matches the header slot + height anchor below).
-    CGAffineTransform transform = switcherInstalled
-        ? CGAffineTransformMakeTranslation(0.0, 60.0)
-        : CGAffineTransformIdentity;
-    if (!CGAffineTransformEqualToTransform(refreshControl.transform, transform)) {
-        refreshControl.transform = transform;
+    CATransform3D shift = switcherInstalled
+        ? CATransform3DMakeTranslation(0.0, 60.0, 0.0)
+        : CATransform3DIdentity;
+    if (!CATransform3DEqualToTransform(refreshControl.layer.sublayerTransform, shift)) {
+        refreshControl.layer.sublayerTransform = shift;
     }
 }
 
