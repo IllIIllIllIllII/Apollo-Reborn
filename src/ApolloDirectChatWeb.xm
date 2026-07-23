@@ -425,6 +425,16 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // chrome instead, and repeat on every sweep in case Reddit virtualizes
         // or replaces the list after a status update.
         "const fixEmbeddedMessagesChrome=()=>{if(!window.__apolloEmbeddedInboxMessages||!chatListRoute())return 0;let hidden=0;const hide=e=>{if(!e)return;if(e.style.getPropertyValue('display')!=='none'||e.style.getPropertyPriority('display')!=='important'){e.style.setProperty('display','none','important');}hidden++;};for(const r of roots()){for(const e of r.querySelectorAll('li[data-testid=\"requests-button\"],li[data-testid=\"threads-button\"],rs-rooms-nav-filter-chips'))hide(e);if(r instanceof ShadowRoot&&r.host?.tagName==='RS-ROOMS-NAV'){const home=r.querySelector('a[aria-label=\"Go to Reddit home\"]');let header=home;while(header?.parentElement)header=header.parentElement;hide(header);}}return hidden;};"
+        // Apollo's floating tab bar overlaps the bottom of the embedded list
+        // routes. The native side measures that overlap and publishes it as
+        // __apolloChatBottomAllowance (0 when the tab bar is hidden or the
+        // surface is standalone); applying it from the sweep — instead of a
+        // one-shot native pass — keeps the extra scroll range alive when
+        // Reddit re-creates its virtualized scrollers, and targets both the
+        // list's rs-virtual-scroll and the dynamic variant used by rooms and
+        // Threads. The pre-hide base padding is remembered per element so a
+        // later allowance of 0 restores Reddit's own value exactly.
+        "const fixBottomAllowance=()=>{if(mailRoute())return 0;const a=window.__apolloChatBottomAllowance||0;let applied=0;for(const r of roots())for(const e of r.querySelectorAll('rs-virtual-scroll,rs-virtual-scroll-dynamic')){if(e.dataset.apolloNativePaddingBottom===undefined){if(!a)continue;e.dataset.apolloNativePaddingBottom=String(parseFloat(getComputedStyle(e).paddingBottom)||0);}const total=(parseFloat(e.dataset.apolloNativePaddingBottom)||0)+a;const want=total+'px';if(e.style.getPropertyValue('padding-bottom')!==want){e.style.setProperty('padding-bottom',want,'important');e.style.setProperty('scroll-padding-bottom',want,'important');}applied++;}return applied;};"
         // Reddit disables scroll chaining on its virtualized list, which also
         // suppresses WebKit's edge stretch. Restore ordinary touch scrolling
         // on every actual overflow container. UIKit separately enables bounce
@@ -439,7 +449,7 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // dialog. Fit only that dialog into the actual visual viewport so its
         // close button and final help rows are both reachable on every iPhone.
         "const fitMarkdownHelp=()=>{if(!mailRoute())return 0;const all=roots().flatMap(r=>[...r.querySelectorAll('*')]);let fitted=0;for(const dialog of all.filter(e=>e.tagName==='FACEPLATE-MODAL'||e.getAttribute?.('role')==='dialog')){const text=(dialog.textContent||'').replace(/\\s+/g,' ').trim();if(!text.includes('Markdown Help')&&!text.includes('Markdown is a way to quickly format text'))continue;const viewport=Math.round(window.visualViewport?.height||window.innerHeight||0);let top=96;for(const e of all){if(e===dialog||dialog.contains(e))continue;const b=e.getBoundingClientRect(),label=(e.textContent||'').replace(/\\s+/g,' ').trim();if(label&&b.width>innerWidth*0.8&&b.height>=60&&b.height<=180&&b.top>=0&&b.top<=32&&b.bottom>top)top=Math.ceil(b.bottom+8);}top=Math.min(top,Math.max(96,viewport-220));const height=Math.max(212,viewport-top-8);dialog.style.setProperty('position','fixed','important');dialog.style.setProperty('top',top+'px','important');dialog.style.setProperty('right','12px','important');dialog.style.setProperty('bottom','auto','important');dialog.style.setProperty('left','12px','important');dialog.style.setProperty('width','auto','important');dialog.style.setProperty('height',height+'px','important');dialog.style.setProperty('max-height','none','important');dialog.style.setProperty('overflow','auto','important');dialog.style.setProperty('-webkit-overflow-scrolling','touch','important');dialog.style.setProperty('transform','none','important');dialog.style.setProperty('z-index','2147483647','important');dialog.style.setProperty('box-sizing','border-box','important');fitted++;}return fitted;};"
-        "const sweep=()=>{themeRoots();const giphyGrids=fixGiphy();return {roots:roots().length,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
+        "const sweep=()=>{themeRoots();const giphyGrids=fixGiphy();return {roots:roots().length,giphyGrids,giphyScrollRestores:fixGiphyScroll(),defaultProfileAvatars:fixDefaultProfileAvatars(),chatListTypography:fixChatListTypography(),embeddedMessagesChrome:fixEmbeddedMessagesChrome(),bottomAllowance:fixBottomAllowance(),chatScrollers:fixChatScrollPhysics(),blockedHomeLinks:blockRedditHomeLogo(),previewFixes:fixModmailPreview(),markdownDialogs:fitMarkdownHelp()};};"
         "window.__apolloChatEnhancementSweep=sweep;"
         // The hidden preloaded Inbox hub reports document.hidden=true (WebKit
         // derives page visibility from the view hierarchy), so gate the
@@ -636,6 +646,9 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
                                        lastSignature:(NSString *)lastSignature
                                        stableSamples:(NSUInteger)stableSamples;
 - (void)apollo_finishChatTransitionForGeneration:(NSUInteger)generation;
+- (void)apollo_revealChatTransition:(BOOL)isList;
+- (void)apollo_pinCoveredConversationToLatestForGeneration:(NSUInteger)generation
+                                                   attempt:(NSUInteger)attempt;
 - (void)apollo_cancelChatTransition;
 - (void)apollo_revealChat;
 - (void)apollo_routeURLOutsideMailbox:(NSURL *)url;
@@ -950,7 +963,9 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
     self.bounceConfiguredScrollViewCount = configured;
     self.lastAppliedBottomScrollAllowance = bottomAllowance;
     self.bottomScrollAllowanceGeneration = self.readinessGeneration;
-    if (bottomAllowance > 0.0 && (countChanged || allowanceChanged || generationChanged)) {
+    // Publish 0 too: entering a room hides the tab bar, and the sweep then
+    // restores Reddit's own scroller padding instead of leaving a stale gap.
+    if (countChanged || allowanceChanged || generationChanged) {
         [self apollo_applyEmbeddedBottomScrollAllowance:bottomAllowance];
     }
     if (countChanged || allowanceChanged || generationChanged) {
@@ -961,21 +976,17 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 
 // WKChildScrollView accepts bounces, but WebKit immediately resets its native
 // contentInset to zero because the scroll range belongs to a CSS overflow
-// element. Add the measured tab-bar overlap to Reddit's actual virtual scroller
-// instead. This increases scrollHeight, so the final Threads reply composer can
-// move completely above Apollo's floating tab bar. Keep Reddit's own padding
-// as the base in case its mobile layout changes later.
+// element. Publish the measured tab-bar overlap to the page instead; the
+// enhancement sweep's fixBottomAllowance pads Reddit's actual virtualized
+// scrollers (rs-virtual-scroll on the Messages list, the dynamic variant in
+// rooms and Threads) so the last row and the final reply composer can rest
+// above Apollo's floating tab bar — and keeps re-applying it whenever Reddit
+// re-creates those elements. Publishing 0 restores Reddit's own padding.
 - (void)apollo_applyEmbeddedBottomScrollAllowance:(CGFloat)bottomAllowance {
-    if (!self.embeddedInInbox || bottomAllowance <= 0.0) return;
+    if (!self.embeddedInInbox) return;
     NSString *script = [NSString stringWithFormat:
-        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
-         "const visible=e=>{const b=e.getBoundingClientRect(),s=getComputedStyle(e);return b.width>0&&b.height>0&&s.display!=='none'&&s.visibility!=='hidden';};"
-         "let applied=0;for(const e of roots.flatMap(r=>[...r.querySelectorAll('rs-virtual-scroll-dynamic')])){if(!visible(e))continue;"
-         "if(e.dataset.apolloNativePaddingBottom===undefined)e.dataset.apolloNativePaddingBottom=String(parseFloat(getComputedStyle(e).paddingBottom)||0);"
-         "const total=(parseFloat(e.dataset.apolloNativePaddingBottom)||0)+%.1f;"
-         "e.style.setProperty('padding-bottom',total+'px','important');"
-         "e.style.setProperty('scroll-padding-bottom',total+'px','important');applied++;}return applied;})()",
-         bottomAllowance];
+        @"window.__apolloChatBottomAllowance=%.1f;window.__apolloChatScheduleSweep?.();",
+        MAX(0.0, bottomAllowance)];
     [self.webView evaluateJavaScript:script completionHandler:nil];
 }
 
@@ -1625,7 +1636,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
     // that has not routed yet it simply reports off-route and retries.
     NSUInteger generation = self.chatTransitionGeneration;
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [weakSelf apollo_waitForChatTransitionStabilityAttempt:0
                                                     generation:generation
@@ -1662,7 +1673,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
              "const signature=[all.length,rows.map(e=>((e.textContent||'').replace(/\\s+/g,' ').trim().length)+'@'+rect(e).join(',')).join(';'),images.map(e=>[e.naturalWidth,e.naturalHeight,rect(e).join(',')].join(':')).join(';')].join('|');"
              "return {ready,onRoute:true,signature};})()";
     } else {
-        script =
+        script = [NSString stringWithFormat:
             @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
              "const onRoute=location.pathname.startsWith('/chat/room/')||/^\\/chat\\/threads\\/[^/]+/.test(location.pathname);"
              "if(!onRoute)return {ready:false,onRoute:false,signature:''};"
@@ -1675,12 +1686,17 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
              // marker so request rooms don't sit through the probe timeout.
              "const invite=all.some(e=>{if(!visible(e)||!e.matches?.('button,[role=button]'))return false;const t=(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();return t==='accept'||t==='ignore'||t==='block'||t==='view request'||t==='join';});"
              "const images=all.filter(e=>e.tagName==='IMG'&&visible(e));"
+             // In-flight message media would pop in right after an early
+             // reveal; hold readiness for them briefly (failed loads flip
+             // complete=true, and the attempt cap bounds a stalled fetch).
+             "const pendingImg=images.some(e=>!e.complete);"
              "const fontsReady=!document.fonts||document.fonts.status==='loaded';"
              "const text=(document.body?.innerText||'').replace(/\\s+/g,' ').trim();"
              "const scrollSig=all.filter(e=>e.scrollHeight>e.clientHeight+1).map(e=>Math.round(e.scrollTop)+'x'+e.scrollHeight).join(',');"
-             "const ready=(!!composer||invite)&&fontsReady;"
+             "const ready=(!!composer||invite)&&fontsReady&&(!pendingImg||%lu>=15);"
              "const signature=[all.length,text.length,rect(composer).join(','),scrollSig,images.map(e=>[e.naturalWidth,e.naturalHeight,rect(e).join(',')].join(':')).join(';')].join('|');"
-             "return {ready,onRoute:true,signature};})()";
+             "return {ready,onRoute:true,signature};})()",
+            (unsigned long)attempt];
     }
 
     __weak typeof(self) weakSelf = self;
@@ -1708,9 +1724,10 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         }
         NSUInteger nextStableSamples = ready && signature.length > 0 &&
             [signature isEqualToString:lastSignature] ? stableSamples + 1 : 0;
-        // Rooms keep correcting scroll while media measure in; require a
-        // slightly longer quiet period there than on the list.
-        NSUInteger requiredStableSamples = isList ? 3 : 4;
+        // Three identical 80ms samples of the full structure/geometry/media
+        // signature; rooms additionally hold readiness on in-flight images,
+        // so the shorter quiet period stays safe there too.
+        NSUInteger requiredStableSamples = 3;
         if (ready && nextStableSamples >= requiredStableSamples) {
             [self apollo_finishChatTransitionForGeneration:generation];
             return;
@@ -1721,7 +1738,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
             [self apollo_finishChatTransitionForGeneration:generation];
             return;
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             [self apollo_waitForChatTransitionStabilityAttempt:attempt + 1
                                                     generation:generation
@@ -1733,14 +1750,25 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 
 - (void)apollo_finishChatTransitionForGeneration:(NSUInteger)generation {
     if (!self.chatTransitionPending || generation != self.chatTransitionGeneration) return;
-    BOOL initialReveal = !self.didRevealChat;
     BOOL isList = self.chatTransitionIsList;
     self.chatTransitionPending = NO;
+    // Reddit sometimes parks a freshly-opened conversation mid-history: the
+    // virtualized rows above the fold change height as their media measure
+    // in, dragging the scroll anchor with them. The document is still covered
+    // here, so pin it to the latest message before anything becomes visible.
+    if (!isList && [self apollo_isChatConversationPath:self.webView.URL.path]) {
+        [self apollo_pinCoveredConversationToLatestForGeneration:generation attempt:0];
+        return;
+    }
+    [self apollo_revealChatTransition:isList];
+}
+
+- (void)apollo_revealChatTransition:(BOOL)isList {
     self.webView.userInteractionEnabled = YES;
     // Configure bounce and the tab-bar scroll allowance before the first
     // visible frame so the revealed layout does not shift again afterwards.
     [self apollo_enableNativeScrollBounce];
-    if (initialReveal) {
+    if (!self.didRevealChat) {
         // A deep-linked conversation can arrive before the hub was ever
         // revealed; reuse the normal reveal path so it also removes the
         // native loading cover.
@@ -1750,6 +1778,43 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         [UIView animateWithDuration:0.15 animations:^{ self.webView.alpha = 1.0; }];
     }
     ApolloLog(@"[DirectChatWeb] Revealed settled Chat %@", isList ? @"list" : @"conversation");
+}
+
+// Scrolls the covered conversation's on-screen virtualized scroller to its
+// latest message. Only viewport-intersecting scrollers move, so the hidden
+// list pane behind a room keeps the user's list position. When the pin
+// actually moved the scroller, one short second pass re-pins after the
+// newly-materialized bottom rows settle their heights.
+- (void)apollo_pinCoveredConversationToLatestForGeneration:(NSUInteger)generation
+                                                   attempt:(NSUInteger)attempt {
+    if (self.chatTransitionPending || generation != self.chatTransitionGeneration) return;
+    NSString *script =
+        @"(()=>{const roots=[];const visit=r=>{if(!r||roots.includes(r))return;roots.push(r);for(const e of r.querySelectorAll('*'))if(e.shadowRoot)visit(e.shadowRoot);};visit(document);"
+         "let moved=false;for(const r of roots)for(const e of r.querySelectorAll('rs-virtual-scroll,rs-virtual-scroll-dynamic')){"
+         "if(e.clientHeight<150||e.scrollHeight<=e.clientHeight+8)continue;"
+         "const b=e.getBoundingClientRect();if(b.width<=0||b.height<=0||b.bottom<=0||b.top>=innerHeight)continue;"
+         "const target=e.scrollHeight-e.clientHeight;if(Math.abs(e.scrollTop-target)>24){e.scrollTop=target;moved=true;}}"
+         "return moved;})()";
+    __weak typeof(self) weakSelf = self;
+    [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+        __strong typeof(weakSelf) self = weakSelf;
+        // A newer transition begun while the pin was in flight owns the
+        // cover now; never reveal on its behalf.
+        if (!self || self.chatTransitionPending ||
+            generation != self.chatTransitionGeneration) return;
+        BOOL moved = !error && [result respondsToSelector:@selector(boolValue)] &&
+            [result boolValue];
+        if (moved && attempt == 0) {
+            ApolloLog(@"[DirectChatWeb] Pinned covered conversation to its latest message");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                [self apollo_pinCoveredConversationToLatestForGeneration:generation
+                                                                 attempt:1];
+            });
+            return;
+        }
+        [self apollo_revealChatTransition:NO];
+    }];
 }
 
 - (void)apollo_revealChat {
