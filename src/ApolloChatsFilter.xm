@@ -70,8 +70,10 @@ static BOOL sNextInboxIsChatFilter = NO;    // armed when the Direct Chat row is
 static char kChatFilterKey;                 // on InboxViewController: this list is chat-filtered
 static __weak id sLatestBoxesController = nil;
 static char kInboxAllModeSwitcherKey;
-static char kInboxAllOriginalHeaderKey;
+static char kInboxAllSwitcherInsetKey;
+static char kInboxAllInsetBaseKey;
 static char kInboxAllNavigationBackdropKey;
+static char kInboxRefreshHapticKey;
 static char kInboxAllStatusObserverKey;
 static char kInboxAllChatHubKey;
 static char kInboxAllChatHubVisibleKey;
@@ -1047,41 +1049,110 @@ static UITableView *ApolloInboxControllerTableView(id controller) {
     return nil;
 }
 
-// The native inbox list's UIRefreshControl parks its spinner in the first
-// ~60 points below the safe area — exactly the band the opaque pinned
-// switcher occupies — so with the switcher installed the pull-to-refresh
-// circle spins invisibly behind it and the revealed gap looks blank. Shift
-// the drawn spinner down by the switcher height so it appears in the empty
-// header slot beneath the switcher instead. A view-level transform does NOT
-// work here: UIKit re-sets the control's frame on every layout pass, and
-// setFrame: on a transformed view recomputes center so the visual box still
-// lands where UIKit asked — silently cancelling the translation. The layer's
-// sublayerTransform is outside UIKit's layout writes, so the control's own
-// geometry stays exactly where UIKit expects while its content (the spinner)
-// renders 60pt lower; the layer doesn't mask to bounds, so nothing clips.
-static void ApolloInboxAdjustRefreshControlForSwitcher(UITableView *tableView, BOOL switcherInstalled) {
-    if (!tableView) return;
+static UIRefreshControl *ApolloInboxRefreshControl(UITableView *tableView) {
     UIRefreshControl *refreshControl = tableView.refreshControl;
-    if (!refreshControl) {
-        for (UIView *subview in tableView.subviews) {
-            if ([subview isKindOfClass:[UIRefreshControl class]]) {
-                refreshControl = (UIRefreshControl *)subview;
-                break;
-            }
+    if (refreshControl) return refreshControl;
+    for (UIView *subview in tableView.subviews) {
+        if ([subview isKindOfClass:[UIRefreshControl class]]) return (UIRefreshControl *)subview;
+    }
+    return nil;
+}
+
+// The opaque switcher band must be reserved through the table's contentInset,
+// not a tableHeaderView slot: UIKit anchors UIRefreshControl — and its whole
+// native pull choreography (progressive spoke reveal while dragging, the
+// trigger, the held-open spin, the settle) — at the ADJUSTED content top.
+// With a header slot that anchor stays at the safe-area top, directly behind
+// the opaque switcher, so the spinner ran invisibly; as an inset the anchor
+// moves below the switcher and the stock animation plays out in full view.
+// Drawing-level workarounds can't get this right: UIKit rewrites the
+// control's frame on every pull tick (cancelling view transforms), and
+// offsetting the layer's content detaches the spinner from the reveal
+// choreography.
+//
+// Apollo manages this table's ENTIRE top inset itself (the ~116pt nav-bar
+// allowance is Apollo's own contentInset, not a safe-area contribution) and
+// re-asserts it on layout passes — including read-modify-write passes that
+// would compound a naive additive boost (+60 per pass). The setter hook
+// therefore tracks Apollo's intended BASE inset and forces top = base + 60
+// while the table carries the switcher-inset flag. A write matching the
+// currently boosted value is Apollo echoing back what it read (keep the
+// recorded base); anything else is a fresh base from Apollo (nav metrics,
+// rotation) and replaces it.
+%hook ASTableView
+- (void)setContentInset:(UIEdgeInsets)contentInset {
+    if ([objc_getAssociatedObject(self, &kInboxAllSwitcherInsetKey) boolValue]) {
+        NSNumber *recordedBase = objc_getAssociatedObject(self, &kInboxAllInsetBaseKey);
+        CGFloat base = recordedBase ? recordedBase.doubleValue : contentInset.top;
+        if (!recordedBase || fabs(contentInset.top - (base + 60.0)) > 0.5) {
+            base = contentInset.top;
+            objc_setAssociatedObject(self, &kInboxAllInsetBaseKey, @(base), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        contentInset.top = base + 60.0;   // 60 = the switcher band height
     }
+    %orig(contentInset);
+}
+// Apollo's load/reset paths also scroll the list to ITS notion of the top
+// (exactly -base). While the band is installed the true rest is 60 lower;
+// retarget only that precise programmatic write — user-driven scrolling
+// (tracking/decelerating) and every other offset pass through untouched.
+- (void)setContentOffset:(CGPoint)contentOffset {
+    NSNumber *recordedBase = objc_getAssociatedObject(self, &kInboxAllInsetBaseKey);
+    if (recordedBase &&
+        [objc_getAssociatedObject(self, &kInboxAllSwitcherInsetKey) boolValue] &&
+        !((UIScrollView *)self).tracking && !((UIScrollView *)self).decelerating &&
+        fabs(contentOffset.y + recordedBase.doubleValue) < 0.5) {
+        contentOffset.y = -(recordedBase.doubleValue + 60.0);
+    }
+    %orig(contentOffset);
+}
+%end
+
+static void ApolloInboxApplySwitcherInset(UITableView *tableView, BOOL install) {
+    BOOL applied = [objc_getAssociatedObject(tableView, &kInboxAllSwitcherInsetKey) boolValue];
+    if (install == applied) return;
+    objc_setAssociatedObject(tableView, &kInboxAllSwitcherInsetKey,
+                             install ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (install) {
+        // Current top IS Apollo's base; re-writing it through the hook
+        // records that base and applies the band.
+        tableView.contentInset = tableView.contentInset;
+    } else {
+        NSNumber *recordedBase = objc_getAssociatedObject(tableView, &kInboxAllInsetBaseKey);
+        objc_setAssociatedObject(tableView, &kInboxAllInsetBaseKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UIEdgeInsets baseInset = tableView.contentInset;
+        baseInset.top = recordedBase ? recordedBase.doubleValue : MAX(0.0, baseInset.top - 60.0);
+        tableView.contentInset = baseInset;   // flag cleared → passes through untouched
+    }
+    CGPoint contentOffset = tableView.contentOffset;
+    contentOffset.y += install ? -60.0 : 60.0;    // move the rows below the band (and back)
+    tableView.contentOffset = contentOffset;
+}
+
+// Target object for the refresh control's trigger event; UIControl holds its
+// targets weakly, so the singleton lives in the dispatch_once static below.
+@interface ApolloInboxRefreshFeedback : NSObject
+- (void)apollo_inboxRefreshTriggered:(UIRefreshControl *)sender;
+@end
+@implementation ApolloInboxRefreshFeedback
+- (void)apollo_inboxRefreshTriggered:(UIRefreshControl *)sender {
+    [[[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight] impactOccurred];
+}
+@end
+
+// The native inbox control fires no trigger haptic of its own; add the same
+// light impact the tweak uses elsewhere, at the moment the refresh arms.
+static void ApolloInboxEnsureRefreshHaptic(UITableView *tableView) {
+    UIRefreshControl *refreshControl = ApolloInboxRefreshControl(tableView);
     if (!refreshControl) return;
-    // Clear any view-level transform a previous iteration of this fix left.
-    if (!CGAffineTransformIsIdentity(refreshControl.transform)) {
-        refreshControl.transform = CGAffineTransformIdentity;
-    }
-    // 60.0 = the switcher band height (matches the header slot + height anchor below).
-    CATransform3D shift = switcherInstalled
-        ? CATransform3DMakeTranslation(0.0, 60.0, 0.0)
-        : CATransform3DIdentity;
-    if (!CATransform3DEqualToTransform(refreshControl.layer.sublayerTransform, shift)) {
-        refreshControl.layer.sublayerTransform = shift;
-    }
+    if ([objc_getAssociatedObject(refreshControl, &kInboxRefreshHapticKey) boolValue]) return;
+    static ApolloInboxRefreshFeedback *feedback;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ feedback = [ApolloInboxRefreshFeedback new]; });
+    [refreshControl addTarget:feedback
+                       action:@selector(apollo_inboxRefreshTriggered:)
+             forControlEvents:UIControlEventValueChanged];
+    objc_setAssociatedObject(refreshControl, &kInboxRefreshHapticKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void ApolloInstallInboxModeSwitcher(id controller) {
@@ -1099,14 +1170,13 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         // still stripped).
         ApolloDismantleInboxChatHub((UIViewController *)controller, @"modern Chat disabled");
         if (switcher) {
-            tableView.tableHeaderView = objc_getAssociatedObject(controller, &kInboxAllOriginalHeaderKey);
             [switcher removeFromSuperview];
             objc_setAssociatedObject(controller, &kInboxAllModeSwitcherKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
         [navigationBackdrop removeFromSuperview];
         objc_setAssociatedObject(controller, &kInboxAllNavigationBackdropKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        ApolloInboxAdjustRefreshControlForSwitcher(tableView, NO);
+        ApolloInboxApplySwitcherInset(tableView, NO);
         return;
     }
 
@@ -1139,24 +1209,17 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
     }
 
     if (!switcher) {
-        UIView *original = tableView.tableHeaderView;
-        objc_setAssociatedObject(controller, &kInboxAllOriginalHeaderKey, original, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        CGFloat oldHeight = original ? CGRectGetHeight(original.frame) : 0.0;
-        CGFloat width = CGRectGetWidth(tableView.bounds) ?: CGRectGetWidth(((UIViewController *)controller).view.bounds);
-        UIView *wrapper = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, oldHeight + 60.0)];
-        if (original) {
-            original.frame = CGRectMake(0, 0, width, oldHeight);
-            [wrapper addSubview:original];
-        }
-        // Keep an empty 60-point slot in the table header so the first
-        // notification begins below the switcher. The switcher itself belongs
-        // to the host view and stays pinned beneath the navigation bar while
-        // rows scroll underneath it. This prevents the Notifications / Chat
-        // labels from colliding with the centered Inbox title.
+        // Reserve a 60-point band via contentInset so the first notification
+        // begins below the switcher (see ApolloInboxApplySwitcherInset for
+        // why this must be an inset and not a header slot). The switcher
+        // itself belongs to the host view and stays pinned beneath the
+        // navigation bar while rows scroll underneath it. This prevents the
+        // Notifications / Chat labels from colliding with the centered
+        // Inbox title.
+        ApolloInboxApplySwitcherInset(tableView, YES);
         switcher = [ApolloInboxModeSwitcherView new];
         switcher.translatesAutoresizingMaskIntoConstraints = NO;
         [switcher addTarget:controller action:NSSelectorFromString(@"apollo_inboxModeChanged:") forControlEvents:UIControlEventValueChanged];
-        tableView.tableHeaderView = wrapper;
         [hostView addSubview:switcher];
         [NSLayoutConstraint activateConstraints:@[
             [switcher.topAnchor constraintEqualToAnchor:hostView.safeAreaLayoutGuide.topAnchor],
@@ -1191,7 +1254,7 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
     }
     [switcher apollo_setSelectedMode:chatVisible ? ApolloInboxModeChat : ApolloInboxModeNotifications animated:NO];
     [switcher apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
-    ApolloInboxAdjustRefreshControlForSwitcher(tableView, YES);
+    ApolloInboxEnsureRefreshHaptic(tableView);
 }
 
 #pragma mark - Boxes list: add the Direct Chat row
