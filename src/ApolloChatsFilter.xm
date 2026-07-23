@@ -73,6 +73,8 @@ static char kInboxAllModeSwitcherKey;
 static char kInboxAllOriginalHeaderKey;
 static char kInboxAllSwitcherTableKey;
 static char kInboxAllSwitcherRefKey;
+static char kInboxAllFadeGenerationKey;
+static char kInboxAllShowPendingKey;
 static char kInboxAllNavigationBackdropKey;
 static char kInboxRefreshHapticKey;
 static char kInboxAllStatusObserverKey;
@@ -1080,13 +1082,50 @@ static UIRefreshControl *ApolloInboxRefreshControl(UITableView *tableView) {
     if (!switcher) return;
     // 8pt of grace keeps ordinary edge-bounce jitter from flickering the bar.
     BOOL overscrolled = contentOffset.y < -((UIScrollView *)self).adjustedContentInset.top - 8.0;
-    BOOL fadedOut = switcher.alpha < 0.5;
-    if (overscrolled == fadedOut) return;
-    [UIView animateWithDuration:0.15
-                          delay:0
-                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                     animations:^{ switcher.alpha = overscrolled ? 0.0 : 1.0; }
-                     completion:nil];
+    BOOL visible = switcher.alpha > 0.5;   // UIView animations update the model value immediately
+    BOOL showPending = [objc_getAssociatedObject(self, &kInboxAllShowPendingKey) boolValue];
+
+    if (overscrolled) {
+        if (!visible && !showPending) return;
+        // Invalidate any queued fade-in, then hide immediately.
+        NSInteger generation = [objc_getAssociatedObject(self, &kInboxAllFadeGenerationKey) integerValue] + 1;
+        objc_setAssociatedObject(self, &kInboxAllFadeGenerationKey, @(generation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, &kInboxAllShowPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (visible) {
+            [UIView animateWithDuration:0.15
+                                  delay:0
+                                options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                             animations:^{ switcher.alpha = 0.0; }
+                             completion:nil];
+        }
+        return;
+    }
+
+    if (visible || showPending) return;
+    // Debounce the return: Apollo's post-refresh content reload briefly
+    // re-holds the list a moment after the settle starts, so an immediate
+    // fade-in made the bar blink in, out, and in again. Fade back only once
+    // the list has stayed at rest for a beat; a new overscroll in the
+    // window invalidates the queued show via the generation counter.
+    NSInteger generation = [objc_getAssociatedObject(self, &kInboxAllFadeGenerationKey) integerValue] + 1;
+    objc_setAssociatedObject(self, &kInboxAllFadeGenerationKey, @(generation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, &kInboxAllShowPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UITableView *weakTable = (UITableView *)self;
+    __weak ApolloInboxModeSwitcherView *weakSwitcher = switcher;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UITableView *table = weakTable;
+        ApolloInboxModeSwitcherView *bar = weakSwitcher;
+        if (!table || !bar) return;
+        if ([objc_getAssociatedObject(table, &kInboxAllFadeGenerationKey) integerValue] != generation) return;
+        objc_setAssociatedObject(table, &kInboxAllShowPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (![objc_getAssociatedObject(table, &kInboxAllSwitcherTableKey) boolValue]) return;
+        [UIView animateWithDuration:0.2
+                              delay:0
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                         animations:^{ bar.alpha = 1.0; }
+                         completion:nil];
+    });
 }
 %end
 
