@@ -926,6 +926,13 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
     BOOL wasVisible = [objc_getAssociatedObject(host, &kInboxAllChatHubVisibleKey) boolValue];
     objc_setAssociatedObject(host, &kInboxAllChatHubVisibleKey, @(visible), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloInboxModeSwitcherView *notificationsSwitcher = objc_getAssociatedObject(host, &kInboxAllModeSwitcherKey);
+    // With a host switcher present there is exactly ONE visible mode control:
+    // the host's, kept above the hub in both modes. Cross-fading the hub's own
+    // copy over it blended a static thumb into the tapped control's in-flight
+    // Liquid Glass morph (a visible double exposure / saturation pop at the
+    // end of every switch). The hub keeps its switcher only when presented
+    // standalone, where no host switcher exists.
+    hub.modeSwitcher.hidden = (notificationsSwitcher != nil);
     [notificationsSwitcher apollo_setSelectedMode:visible ? ApolloInboxModeChat : ApolloInboxModeNotifications
                                           animated:animated];
     [hub.modeSwitcher apollo_setSelectedMode:visible ? ApolloInboxModeChat : ApolloInboxModeNotifications
@@ -947,6 +954,16 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
         hub.view.hidden = NO;
         hub.view.userInteractionEnabled = YES;
         [host.view bringSubviewToFront:hub.view];
+        // Keep the single live mode control (and its opaque backdrop strip)
+        // above the hub so both mode switches happen on one control with an
+        // uninterrupted native thumb animation.
+        UIView *navigationBackdrop = objc_getAssociatedObject(host, &kInboxAllNavigationBackdropKey);
+        if (navigationBackdrop.superview == host.view) {
+            [host.view bringSubviewToFront:navigationBackdrop];
+        }
+        if (notificationsSwitcher.superview == host.view) {
+            [host.view bringSubviewToFront:notificationsSwitcher];
+        }
         // Every deliberate Notifications -> Chat switch starts at Messages.
         // A quietly-preloaded hub already starts there, so do not restart its
         // in-flight readiness/filter work just because it became visible.
@@ -972,17 +989,12 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
         if (!stillVisible) hub.view.hidden = YES;
     };
     if (animated && host.view.window) {
-        // The Liquid Glass segmented switcher's thumb morph (~0.25s) cannot
-        // be mirrored programmatically on the counterpart instance, so
-        // cross-fading immediately blends a mid-morph thumb with an
-        // already-arrived one — a visible double exposure over the control.
-        // Let the tapped, fully-opaque control finish its native morph first,
-        // then run the surface cross-fade between now state-matched rows.
-        // The custom (non-LG) switcher animates both instances in lockstep,
-        // so it keeps the immediate fade.
-        NSTimeInterval fadeDelay = IsLiquidGlass() ? 0.30 : 0.0;
+        // The single host-owned switcher stays above the fading hub, so the
+        // content cross-fade can run immediately alongside its native thumb
+        // animation — exactly like a stock segmented control driving a
+        // content switch.
         [UIView animateWithDuration:0.20
-                              delay:fadeDelay
+                              delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
                          animations:changes
                          completion:completion];
@@ -1115,10 +1127,12 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         ChatsFilterLog(@"installed sticky Notifications / Chat switcher in Inbox (All)");
     }
     BOOL chatVisible = [objc_getAssociatedObject(controller, &kInboxAllChatHubVisibleKey) boolValue];
-    [hostView bringSubviewToFront:navigationBackdrop];
-    [hostView bringSubviewToFront:switcher];
     ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(controller, &kInboxAllChatHubKey);
     if (chatVisible && hub.view.superview == hostView) [hostView bringSubviewToFront:hub.view];
+    // The host switcher is the single live mode control in BOTH modes; it and
+    // its backdrop always sit above the hub (see ApolloSetInboxChatHubVisible).
+    [hostView bringSubviewToFront:navigationBackdrop];
+    [hostView bringSubviewToFront:switcher];
     [switcher apollo_setSelectedMode:chatVisible ? ApolloInboxModeChat : ApolloInboxModeNotifications animated:NO];
     [switcher apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
 }
@@ -1479,6 +1493,16 @@ static NSArray *ApolloChatFilterOutChats(NSArray *messages) {
 
 %new
 - (void)apollo_inboxModeChanged:(ApolloInboxModeSwitcherView *)sender {
+    // The host switcher stays above the hub as the single live mode control,
+    // so it now receives the Chat -> Notifications tap too (the hub's own
+    // switcher is hidden whenever a host switcher exists).
+    if (sender.selectedMode == ApolloInboxModeNotifications) {
+        BOOL chatVisible = [objc_getAssociatedObject(self, &kInboxAllChatHubVisibleKey) boolValue];
+        if (!chatVisible) return;
+        ChatsFilterLog(@"Inbox (All) switching in place from Chat hub back to Notifications");
+        ApolloSetInboxChatHubVisible((UIViewController *)self, NO, YES);
+        return;
+    }
     if (sender.selectedMode != ApolloInboxModeChat || !ApolloModernChatShouldOpen()) return;
     ChatsFilterLog(@"Inbox (All) switching in place from Notifications to Chat hub");
     ApolloSetInboxChatHubVisible((UIViewController *)self, YES, YES);
