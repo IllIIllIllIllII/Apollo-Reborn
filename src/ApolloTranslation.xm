@@ -1072,19 +1072,25 @@ static NSString *ApolloProtectTranslationLinks(NSString *sourceText, NSDictionar
         }
     };
 
-    NSError *regexError = nil;
-    NSRegularExpression *markdownLinkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[[^\\]\\n]+\\]\\([^\\s)]+(?:\\s+\\\"[^\\\"]*\\\")?\\)"
-                                                                                       options:0
-                                                                                         error:&regexError];
-    if (!regexError && markdownLinkRegex) {
+    // Compiled once — this runs per title/body per node event on the main
+    // thread during scrolling, and NSRegularExpression is immutable and
+    // thread-safe for concurrent matching (same rationale as the PR #652
+    // display-text regex caching).
+    static NSRegularExpression *markdownLinkRegex;
+    static NSRegularExpression *bareURLRegex;
+    static dispatch_once_t regexOnce;
+    dispatch_once(&regexOnce, ^{
+        markdownLinkRegex = [NSRegularExpression regularExpressionWithPattern:@"\\[[^\\]\\n]+\\]\\([^\\s)]+(?:\\s+\\\"[^\\\"]*\\\")?\\)"
+                                                                      options:0
+                                                                        error:NULL];
+        bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
+                                                                 options:0
+                                                                   error:NULL];
+    });
+    if (markdownLinkRegex) {
         replaceMatches(markdownLinkRegex, NO);
     }
-
-    regexError = nil;
-    NSRegularExpression *bareURLRegex = [NSRegularExpression regularExpressionWithPattern:@"(?i)\\bhttps?://[^\\s<>()\\[\\]{}\\\"']+"
-                                                                                options:0
-                                                                                  error:&regexError];
-    if (!regexError && bareURLRegex) {
+    if (bareURLRegex) {
         replaceMatches(bareURLRegex, YES);
     }
 
@@ -3076,6 +3082,22 @@ static NSString *ApolloDetectDominantLanguage(NSString *text) {
     NSString *detected = ApolloDominantLanguageWithConfidence(trimmed, NULL);
     [sDetectedLanguageCache setObject:(detected ?: kApolloNoDetectedLanguage) forKey:trimmed];
     return detected;
+}
+
+// Serial background queue for cache-warming language detection. Serial on
+// purpose: a fast scroll schedules many detections in bursts, often for the
+// same string via multiple node events — on a concurrent queue those raced
+// dozens of recognizer runs side by side (measured 33 worker threads all
+// inside NLLanguageRecognizer); serialized, the first warm populates the
+// cache and every duplicate behind it becomes a cache hit.
+static dispatch_queue_t ApolloTranslationDetectionQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.apollofix.translation.detect",
+                                      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+    });
+    return queue;
 }
 
 // Cache-only probe of the detector. Returns the cached verdict (nil can mean
@@ -8160,7 +8182,7 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
         // re-run this whole pass: every gate above re-validates against current
         // node/VC state, and the warm cache makes the re-run synchronous.
         __weak id weakRetryTitleNode = titleNode;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_async(ApolloTranslationDetectionQueue(), ^{
             (void)ApolloDetectDominantLanguage(detectionText);
             dispatch_async(dispatch_get_main_queue(), ^{
                 id strongRetryTitleNode = weakRetryTitleNode;
@@ -8320,7 +8342,7 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
         // NLLanguageRecognizer on the main thread at cell-appear time.
         __weak id weakRetryCellNode = feedCellNode;
         __weak id weakRetryTitleNode = excludeTitleNode;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_async(ApolloTranslationDetectionQueue(), ^{
             (void)ApolloDetectDominantLanguage(detectionText);
             dispatch_async(dispatch_get_main_queue(), ^{
                 id strongRetryCellNode = weakRetryCellNode;
