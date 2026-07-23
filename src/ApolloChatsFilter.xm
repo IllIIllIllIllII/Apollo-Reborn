@@ -1047,6 +1047,35 @@ static UITableView *ApolloInboxControllerTableView(id controller) {
     return nil;
 }
 
+// The native inbox list's UIRefreshControl parks its spinner in the first
+// ~60 points below the safe area — exactly the band the opaque pinned
+// switcher occupies — so with the switcher installed the pull-to-refresh
+// circle spins invisibly behind it and the revealed gap looks blank. Shift
+// the whole control down by the switcher height so the spinner appears in
+// the empty header slot beneath the switcher instead. UIKit manages the
+// control's frame/bounds during a pull but never writes its transform, so a
+// translation survives the control's internal layout in every pull phase.
+static void ApolloInboxAdjustRefreshControlForSwitcher(UITableView *tableView, BOOL switcherInstalled) {
+    if (!tableView) return;
+    UIRefreshControl *refreshControl = tableView.refreshControl;
+    if (!refreshControl) {
+        for (UIView *subview in tableView.subviews) {
+            if ([subview isKindOfClass:[UIRefreshControl class]]) {
+                refreshControl = (UIRefreshControl *)subview;
+                break;
+            }
+        }
+    }
+    if (!refreshControl) return;
+    // 60.0 = the switcher band height (matches the header slot + height anchor below).
+    CGAffineTransform transform = switcherInstalled
+        ? CGAffineTransformMakeTranslation(0.0, 60.0)
+        : CGAffineTransformIdentity;
+    if (!CGAffineTransformEqualToTransform(refreshControl.transform, transform)) {
+        refreshControl.transform = transform;
+    }
+}
+
 static void ApolloInstallInboxModeSwitcher(id controller) {
     if (!ApolloInboxControllerIsAll(controller)) return;
     UITableView *tableView = ApolloInboxControllerTableView(controller);
@@ -1069,6 +1098,7 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         [navigationBackdrop removeFromSuperview];
         objc_setAssociatedObject(controller, &kInboxAllNavigationBackdropKey, nil,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloInboxAdjustRefreshControlForSwitcher(tableView, NO);
         return;
     }
 
@@ -1094,8 +1124,11 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
         objc_setAssociatedObject(controller, &kInboxAllNavigationBackdropKey, navigationBackdrop,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    navigationBackdrop.backgroundColor =
+    UIColor *backdropColor =
         ApolloModernChatThemeColor(((UIViewController *)controller).traitCollection, @"primary");
+    if (![backdropColor isEqual:navigationBackdrop.backgroundColor]) {
+        navigationBackdrop.backgroundColor = backdropColor;
+    }
 
     if (!switcher) {
         UIView *original = tableView.tableHeaderView;
@@ -1128,13 +1161,29 @@ static void ApolloInstallInboxModeSwitcher(id controller) {
     }
     BOOL chatVisible = [objc_getAssociatedObject(controller, &kInboxAllChatHubVisibleKey) boolValue];
     ApolloInboxChatHubViewController *hub = objc_getAssociatedObject(controller, &kInboxAllChatHubKey);
-    if (chatVisible && hub.view.superview == hostView) [hostView bringSubviewToFront:hub.view];
     // The host switcher is the single live mode control in BOTH modes; it and
     // its backdrop always sit above the hub (see ApolloSetInboxChatHubVisible).
-    [hostView bringSubviewToFront:navigationBackdrop];
-    [hostView bringSubviewToFront:switcher];
+    // This function re-runs constantly (viewWillAppear, every chat-status
+    // poll, trait changes), so every mutation below must be a no-op when the
+    // state already matches. Unconditionally reordering the host view's
+    // subviews on each pass permanently disengaged the native inbox list's
+    // UIRefreshControl — after a routine status tick, pull-to-refresh stopped
+    // triggering at all until the view controller was rebuilt.
+    UIView *hubView = (chatVisible && hub.view.superview == hostView) ? hub.view : nil;
+    NSArray<UIView *> *siblings = hostView.subviews;
+    NSUInteger count = siblings.count;
+    BOOL stackedCorrectly = count >= 2 &&
+        siblings[count - 1] == switcher &&
+        siblings[count - 2] == navigationBackdrop &&
+        (!hubView || (count >= 3 && siblings[count - 3] == hubView));
+    if (!stackedCorrectly) {
+        if (hubView) [hostView bringSubviewToFront:hubView];
+        [hostView bringSubviewToFront:navigationBackdrop];
+        [hostView bringSubviewToFront:switcher];
+    }
     [switcher apollo_setSelectedMode:chatVisible ? ApolloInboxModeChat : ApolloInboxModeNotifications animated:NO];
     [switcher apollo_refreshForTraits:((UIViewController *)controller).traitCollection];
+    ApolloInboxAdjustRefreshControlForSwitcher(tableView, YES);
 }
 
 #pragma mark - Boxes list: add the Direct Chat row
