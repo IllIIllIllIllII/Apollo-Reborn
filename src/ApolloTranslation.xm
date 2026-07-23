@@ -3078,6 +3078,23 @@ static NSString *ApolloDetectDominantLanguage(NSString *text) {
     return detected;
 }
 
+// Cache-only probe of the detector. Returns the cached verdict (nil can mean
+// "cached: no detectable language") and reports via *outCached whether the
+// verdict is final without running the recognizer. Inputs the full detector
+// would reject without caching (non-strings, <8 chars) are also final. Never
+// runs NLLanguageRecognizer, so scroll-time main-thread callers can use it to
+// decide whether the real detection needs a background hop first.
+static NSString *ApolloDetectDominantLanguageIfCached(NSString *text, BOOL *outCached) {
+    if (outCached) *outCached = NO;
+    if (![text isKindOfClass:[NSString class]]) { if (outCached) *outCached = YES; return nil; }
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length < 8) { if (outCached) *outCached = YES; return nil; }
+    NSString *cached = [sDetectedLanguageCache objectForKey:trimmed];
+    if (!cached) return nil;
+    if (outCached) *outCached = YES;
+    return [cached isEqualToString:kApolloNoDetectedLanguage] ? nil : cached;
+}
+
 // YES if `langCode` (a base ISO code like "it") is one the user added to the
 // "Don't Translate" skip list. Skip codes are persisted lowercase and base-only
 // (TranslationSettingsViewController -normalizedLanguageCodeFromIdentifier:), and
@@ -8132,7 +8149,26 @@ static void ApolloMaybeTranslatePostTitleNode(id titleNode) {
 
     // Strip links so URLs don't pollute language detection.
     NSString *detectionText = ApolloProtectTranslationLinks(titleText, NULL);
-    NSString *detected = ApolloDetectDominantLanguage(detectionText);
+    BOOL detectionCached = NO;
+    NSString *detected = ApolloDetectDominantLanguageIfCached(detectionText, &detectionCached);
+    if (!detectionCached) {
+        // NLLanguageRecognizer costs several ms per fresh string — running it
+        // inline meant every newly appearing post paid it on the main thread at
+        // cell-appear time, the worst moment of a scroll frame (a Time Profiler
+        // pass put the detection cluster at ~25% of main-thread busy time during
+        // feed scrolling). Warm the shared cache on a background queue, then
+        // re-run this whole pass: every gate above re-validates against current
+        // node/VC state, and the warm cache makes the re-run synchronous.
+        __weak id weakRetryTitleNode = titleNode;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            (void)ApolloDetectDominantLanguage(detectionText);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                id strongRetryTitleNode = weakRetryTitleNode;
+                if (strongRetryTitleNode) ApolloMaybeTranslatePostTitleNode(strongRetryTitleNode);
+            });
+        });
+        return;
+    }
     if ([detected isEqualToString:targetLanguage]) return;
 
     // TAP-TO-TRANSLATE: marker + hold as soon as the title is detectably
@@ -8277,7 +8313,22 @@ static void ApolloMaybeTranslateFeedPostBodyNode(id feedCellNode, id excludeTitl
     if (targetLanguage.length == 0) return;
 
     NSString *detectionText = ApolloProtectTranslationLinks(previewText, NULL);
-    NSString *detected = ApolloDetectDominantLanguage(detectionText);
+    BOOL detectionCached = NO;
+    NSString *detected = ApolloDetectDominantLanguageIfCached(detectionText, &detectionCached);
+    if (!detectionCached) {
+        // Same background warm-then-rerun as the title path above: never run
+        // NLLanguageRecognizer on the main thread at cell-appear time.
+        __weak id weakRetryCellNode = feedCellNode;
+        __weak id weakRetryTitleNode = excludeTitleNode;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            (void)ApolloDetectDominantLanguage(detectionText);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                id strongRetryCellNode = weakRetryCellNode;
+                if (strongRetryCellNode) ApolloMaybeTranslateFeedPostBodyNode(strongRetryCellNode, weakRetryTitleNode);
+            });
+        });
+        return;
+    }
     if ([detected isEqualToString:targetLanguage]) return;
 
     ApolloLog(@"[FeedBodyDBG] body translate (len=%lu)", (unsigned long)previewText.length);
