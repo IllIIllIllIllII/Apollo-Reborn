@@ -208,6 +208,21 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         merged[@"username"] = username;
         NSString *surface = [status[@"surface"] isKindOfClass:[NSString class]] ? status[@"surface"] : @"threads";
         BOOL routeUnread = [status[@"hasUnread"] boolValue];
+        // Count authority: the Matrix poller reads Reddit's OWN exact counters,
+        // so once a poll result owns the counts it stays authoritative until
+        // the next poll. A scrape of the HIDDEN hub renders Reddit's PAUSED web
+        // client, whose DOM lags reality in BOTH directions — it can show a
+        // stale-low "nothing unread" (new arrival not yet rendered) OR a
+        // stale-high count (already read elsewhere, receipt not synced). Either
+        // way it is not authoritative, so a hidden scrape contributes nothing
+        // to counts while a poll owns them; it neither clears nor raises. A
+        // VISIBLE scrape is the user actually reading, so it may still move
+        // counts (and the next poll re-takes ownership regardless).
+        BOOL hiddenScrape = [status[@"origin"] isKindOfClass:[NSString class]] &&
+            [status[@"origin"] isEqualToString:@"dom-hidden"];
+        BOOL pollOwnsCounts = [old[@"countsSource"] isKindOfClass:[NSString class]] &&
+            [old[@"countsSource"] isEqualToString:@"poll"];
+        BOOL suppressCountWrites = hiddenScrape && pollOwnsCounts;
         if ([surface isEqualToString:@"poll"]) {
             // The background poller reads Reddit's own pre-computed counters,
             // so one snapshot authoritatively covers both surfaces at once.
@@ -219,20 +234,27 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
             merged[@"threadUnreadCount"] = @(unread);
             merged[@"hasRequests"] = @(requests > 0);
             merged[@"requestsCount"] = @(requests);
+            merged[@"countsSource"] = @"poll";
             // Incremental syncs only carry previews for rooms with fresh
             // events — keep the previous preview while anything stays unread.
             if ([status[@"preview"] isKindOfClass:[NSString class]]) merged[@"preview"] = status[@"preview"];
             else if (unread == 0) [merged removeObjectForKey:@"preview"];
+        } else if (suppressCountWrites) {
+            // Paused hidden DOM vs an authoritative poll — ignore its counts
+            // and preview entirely; the merged dict keeps the poll's values.
         } else if ([surface isEqualToString:@"requests"]) {
             BOOL hasRequests = [status[@"hasRequests"] boolValue];
             merged[@"hasRequests"] = @(hasRequests);
             // The DOM scrape has no exact request count; only a definitive
             // "no requests" may clear the poller's counted value.
             if (!hasRequests) merged[@"requestsCount"] = @0;
+            if (!hiddenScrape) merged[@"countsSource"] = @"dom";
         } else {
+            NSInteger scrapeCount = [status[@"unreadCount"] isKindOfClass:[NSNumber class]]
+                ? MAX(0, [status[@"unreadCount"] integerValue]) : 0;
             merged[@"hasThreadUnread"] = @(routeUnread);
-            merged[@"threadUnreadCount"] = [status[@"unreadCount"] isKindOfClass:[NSNumber class]]
-                ? status[@"unreadCount"] : @0;
+            merged[@"threadUnreadCount"] = @(scrapeCount);
+            if (!hiddenScrape) merged[@"countsSource"] = @"dom";
             if ([status[@"preview"] isKindOfClass:[NSString class]]) merged[@"preview"] = status[@"preview"];
             else [merged removeObjectForKey:@"preview"];
         }
@@ -241,23 +263,37 @@ static void ApolloModernChatPublishStatus(NSDictionary<NSString *, id> *status) 
         merged[@"hasUnread"] = @(hasThreadUnread || hasRequests);
         merged[@"checkedAt"] = status[@"checkedAt"] ?: @([[NSDate date] timeIntervalSince1970] * 1000.0);
 
+        // countsSource is internal authority bookkeeping, deliberately NOT a
+        // meaningful key: a poll<->visible-DOM handoff that leaves every count
+        // unchanged must not fire a spurious status-change NOTIFICATION.
         NSArray<NSString *> *meaningfulKeys = @[
             @"username", @"hasUnread", @"hasThreadUnread", @"hasRequests",
             @"threadUnreadCount", @"requestsCount", @"preview"
         ];
-        BOOL changed = NO;
+        BOOL meaningfulChange = NO;
         for (NSString *key in meaningfulKeys) {
             id before = old[key];
             id after = merged[key];
             if ((before || after) && ![before isEqual:after]) {
-                changed = YES;
+                meaningfulChange = YES;
                 break;
             }
         }
-        if (!changed) return;
+        // Persistence and notification must be decoupled: a poll that merely
+        // CONFIRMS the cached counts still needs to record its countsSource=poll
+        // ownership (so a later hidden scrape stays suppressed), even though it
+        // fires no notification. Gating the cache write on meaningfulChange
+        // alone would drop that ownership update and let the hidden scraper
+        // clobber poll-correct counts. So persist whenever anything — including
+        // countsSource — differs; notify only on a meaningful change.
+        id oldSource = old[@"countsSource"];
+        id newSource = merged[@"countsSource"];
+        BOOL sourceChanged = (oldSource || newSource) && ![oldSource isEqual:newSource];
+        if (!meaningfulChange && !sourceChanged) return;
         @synchronized (ApolloModernChatStatusLock()) {
             sApolloModernChatStatus = [merged copy];
         }
+        if (!meaningfulChange) return;
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloModernChatStatusDidChangeNotification object:nil];
     });
 }
@@ -389,7 +425,13 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         "addEventListener('popstate',()=>clearTimeout(eject),{once:true});return;}"
         "event.preventDefault();event.stopImmediatePropagation();location.assign('/chat');return;}};"
         "const installChatInteractionHooks=root=>{if(!root||root.__apolloChatInteractionHooks)return;try{Object.defineProperty(root,'__apolloChatInteractionHooks',{value:true,configurable:true});const beginMediaGesture=event=>{const control=mediaControlForEvent(event);if(!control)return;window.__apolloChatMediaGestureUntil=Date.now()+1600;const title=control.getAttribute?.('title');if(title&&!control.hasAttribute('aria-label')&&!control.hasAttribute('aria-labelledby'))control.setAttribute('aria-label',title);control.removeAttribute?.('title');control.blur?.();blurMediaGestureTextEntry(root);queueMicrotask(()=>blurMediaGestureTextEntry(root));requestAnimationFrame(()=>blurMediaGestureTextEntry(root));};const rejectMediaGestureFocus=event=>{if(Date.now()>window.__apolloChatMediaGestureUntil)return;const target=event.composedPath?.()[0]||event.target;if(!isChatTextEntry(target))return;target.blur?.();queueMicrotask(()=>blurMediaGestureTextEntry(root));};root.addEventListener('pointerdown',beginMediaGesture,true);root.addEventListener('touchstart',beginMediaGesture,{capture:true,passive:true});root.addEventListener('click',beginMediaGesture,true);root.addEventListener('click',redirectEmbeddedRoomBack,true);root.addEventListener('focusin',rejectMediaGestureFocus,true);}catch(e){console.debug('[ApolloFix][DirectChatWeb] Chat media interaction hook failed',e);}};"
-        "const observeRoot=r=>{if(!r)return;installChatInteractionHooks(r);if(r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});}catch(e){}};"
+        // The scroll-skip stamp below must catch scrolls of the real chat list
+        // scroller, which lives in a shadow root (rs-virtual-scroll inside
+        // rs-rooms-nav). A 'scroll' event is composed:false, so a single
+        // window-level listener never sees it — stamp from a capture-phase
+        // listener on EVERY captured root instead (document + each shadow
+        // root), added exactly once per root alongside its observer.
+        "const observeRoot=r=>{if(!r)return;installChatInteractionHooks(r);if(r.__apolloChatObserver)return;try{Object.defineProperty(r,'__apolloChatObserver',{value:new MutationObserver(()=>window.__apolloChatScheduleSweep?.()),configurable:true});r.__apolloChatObserver.observe(r,{childList:true,subtree:true});r.addEventListener('scroll',()=>{window.__apolloChatScrollStamp=Date.now();},{capture:true,passive:true});}catch(e){}};"
         "const themeRoots=()=>{for(const r of roots()){themeRoot(r);observeRoot(r);}};"
         // Patch attachShadow at document start. Reddit constructs the thread
         // composer as an SPA transition, so waiting for the periodic sweep
@@ -460,7 +502,24 @@ static NSString *ApolloDirectChatEnhancementScript(NSDictionary *palette) {
         // including fixChatScrollPhysics's whole-tree getComputedStyle pass —
         // while Chat is hidden behind Notifications or another tab.
         "if(!window.__apolloChatViewportHooks){window.__apolloChatViewportHooks=true;window.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());window.visualViewport?.addEventListener('resize',()=>window.__apolloChatScheduleSweep?.());document.addEventListener('DOMContentLoaded',()=>window.__apolloChatScheduleSweep?.(),{once:true});document.addEventListener('visibilitychange',()=>{if(!document.hidden)window.__apolloChatScheduleSweep?.();});}"
-        "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>{if(!document.hidden)window.__apolloChatEnhancementSweep?.();},700);"
+        // The MutationObservers + rAF coalescing above are the PRIMARY sweep
+        // trigger — every real DOM change lands there. This interval is only
+        // a safety net for state the observers can't see (style/layout-only
+        // drift), so it runs rarely and never during active scrolling: each
+        // sweep does whole-tree getComputedStyle work, and on a 120Hz frame
+        // budget (~8ms) a mid-scroll sweep is a visible hitch.
+        // Initialize the scroll stamp once (a plain 0 test would re-run on
+        // every re-injection and stack duplicate window listeners). observeRoot
+        // stamps per-root for shadow scrollers; the window listener here still
+        // covers main-document / light-DOM scrolls.
+        "if(!window.__apolloChatScrollHooks){window.__apolloChatScrollHooks=true;window.__apolloChatScrollStamp=0;window.addEventListener('scroll',()=>{window.__apolloChatScrollStamp=Date.now();},{capture:true,passive:true});}"
+        // Watchdog is a SAFETY NET for style/layout drift the MutationObservers
+        // can't see; the observers + rAF are the primary trigger. 2000ms is
+        // ~3x slower than the old 700ms (big CPU/battery win Jordan asked for)
+        // while capping observer-miss latency at ~2s, and the scroll-skip guard
+        // (now shadow-aware) keeps the whole-tree getComputedStyle sweep from
+        // ever firing mid-drag.
+        "if(!window.__apolloChatEnhancementTimer)window.__apolloChatEnhancementTimer=setInterval(()=>{if(document.hidden)return;if(Date.now()-window.__apolloChatScrollStamp<600)return;window.__apolloChatEnhancementSweep?.();},2000);"
         "return sweep();})()"];
     return script;
 }
@@ -628,6 +687,9 @@ typedef NS_ENUM(NSUInteger, ApolloModernMailboxKind) {
 @property (nonatomic, assign) NSUInteger bottomScrollAllowanceGeneration;
 @property (nonatomic, strong) NSTimer *chatStatusRefreshTimer;
 @property (nonatomic, assign) BOOL mailboxConversationHidesTabBar;
+// Set once a standalone mailbox discovers its seeded account is no longer the
+// active one; the controller blanks itself and leaves its navigation stack.
+@property (nonatomic, assign) BOOL sessionIdentityInvalidated;
 - (BOOL)apollo_urlMatchesMailboxRoute:(NSURL *)url;
 - (BOOL)apollo_isModmailConversationURL:(NSURL *)url;
 - (BOOL)apollo_isConversationURL:(NSURL *)url;
@@ -937,8 +999,73 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
                                              selector:@selector(apollo_applicationWillResignActive:)
                                                  name:UIApplicationWillResignActiveNotification
                                                object:nil];
+    // A standalone mailbox retained on some navigation stack must never keep
+    // showing — or compose as — an account the user has switched away from.
+    // The embedded Inbox hub is torn down by InboxViewController's own
+    // account-change hook; standalone controllers watch for themselves.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_activeRedditAccountChanged:)
+                                                 name:@"com.christianselig.RedditCurrentAccountChanged"
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(apollo_activeRedditAccountChanged:)
+                                                 name:@"com.christianselig.RedditAccountChanged"
+                                               object:nil];
     [self apollo_applyActiveTheme];
     [self apollo_seedAndLoad];
+}
+
+// The hard privacy line is the USERNAME: account A's conversations rendering
+// (or a reply sending) while account B is active. Cookie drift for the same
+// user — rotation, a silent re-harvest — deliberately does not eject: the
+// page's own session keeps working server-side, and yanking a controller
+// mid-conversation over a snapshot delta would destroy a half-typed reply
+// for no privacy gain. (An actually-dead session still lands in the existing
+// Sign In Again flow.)
+- (BOOL)apollo_sessionIdentityIsStale {
+    if (self.embeddedInInbox) return NO;
+    NSString *seededUsername = self.username.lowercaseString ?: @"";
+    NSString *activeUsername = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
+    return seededUsername.length > 0 && ![seededUsername isEqualToString:activeUsername];
+}
+
+- (void)apollo_activeRedditAccountChanged:(__unused NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self apollo_ejectIfSessionIdentityStale];
+    });
+}
+
+- (void)apollo_ejectIfSessionIdentityStale {
+    // An already-invalidated controller is a blanked zombie: eject it even if
+    // the user has since switched back to the account it was seeded for.
+    if (!self.sessionIdentityInvalidated && ![self apollo_sessionIdentityIsStale]) return;
+    if (!self.sessionIdentityInvalidated) {
+        self.sessionIdentityInvalidated = YES;
+        ApolloLog(@"[DirectChatWeb] Ejecting stale %@ mailbox seeded for u/%@ after an account switch",
+                  self.mailboxKind == ApolloModernMailboxKindModmail ? @"Modmail" : @"Chat",
+                  self.username.lowercaseString ?: @"");
+        // Stop the wrong-account surface immediately even while buried in a
+        // navigation stack: no further rendering, loads, or status scrapes
+        // with the old account's cookies. Hiding beats loading about:blank —
+        // it takes effect synchronously and never runs the navigation
+        // delegate's routing logic.
+        [self.webView stopLoading];
+        self.webView.hidden = YES;
+        [self.chatStatusRefreshTimer invalidate];
+        self.chatStatusRefreshTimer = nil;
+    }
+    UINavigationController *navigationController = self.navigationController;
+    if (navigationController) {
+        if (navigationController.topViewController == self && self.viewIfLoaded.window != nil) {
+            [navigationController popViewControllerAnimated:NO];
+        } else if ([navigationController.viewControllers containsObject:self]) {
+            NSMutableArray *stack = [navigationController.viewControllers mutableCopy];
+            [stack removeObject:self];
+            navigationController.viewControllers = stack;
+        }
+    } else if (self.presentingViewController) {
+        [self dismissViewControllerAnimated:NO completion:nil];
+    }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1095,6 +1222,16 @@ static BOOL ApolloReturnToMailboxFromNavigationController(UINavigationController
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    // Belt for a stale controller that reappears before (or without) the
+    // account-change notification path ejecting it: never show the old
+    // account's content, and leave the stack as soon as the transition
+    // machinery allows.
+    if (self.sessionIdentityInvalidated || [self apollo_sessionIdentityIsStale]) {
+        self.webView.hidden = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self apollo_ejectIfSessionIdentityStale];
+        });
+    }
     if (self.nativeReturnPathActive) {
         [self apollo_prepareForMailboxReturnAnimated:animated];
     } else {
@@ -1178,6 +1315,7 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 // could discard a draft reply — they get a synthetic visibility/focus/online
 // nudge, which is enough for Reddit's client to re-establish its sync loop.
 - (void)apollo_refreshAfterAwayIfStale {
+    if (self.sessionIdentityInvalidated) return;
     NSTimeInterval wentAwayAt = self.chatWentAwayAt;
     self.chatWentAwayAt = 0;
     if (wentAwayAt <= 0) return;
@@ -1850,6 +1988,9 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
 }
 
 - (void)apollo_startChatStatusRefreshIfNeeded {
+    // A controller ejected for an account switch stays dead: a reveal/readiness
+    // async that lands after the eject must not re-arm the scrape timer.
+    if (self.sessionIdentityInvalidated) return;
     if (self.chatStatusRefreshTimer || self.mailboxKind != ApolloModernMailboxKindChat) return;
     __weak typeof(self) weakSelf = self;
     NSTimer *timer = [NSTimer timerWithTimeInterval:20.0 repeats:YES block:^(__unused NSTimer *timer) {
@@ -1858,11 +1999,18 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
         [self apollo_captureChatStatus];
     }];
     self.chatStatusRefreshTimer = timer;
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    // Default mode only: the scan walks every shadow-root element, and firing
+    // it from the tracking mode meant it could start mid-scroll on the very
+    // list the user is dragging. Deferring to the next idle moment costs
+    // nothing for a 20s cadence.
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
     ApolloLog(@"[DirectChatWeb] Started foreground Chat unread refresh (20s)");
 }
 
 - (void)apollo_captureChatStatus {
+    // Never scrape (and never publish status for) a controller ejected on an
+    // account switch — its webview holds the previous account's cookies.
+    if (self.sessionIdentityInvalidated) return;
     if (self.mailboxKind != ApolloModernMailboxKindChat || !self.webView.URL ||
         ![self apollo_urlMatchesMailboxRoute:self.webView.URL]) return;
     // This scan walks every element of every shadow root. Skip it while the
@@ -1880,10 +2028,16 @@ static NSTimeInterval ApolloChatStaleRefreshThreshold(void) {
          "const result={surface:requests?'requests':(threads?'threads':'messages'),hasUnread,unreadCount,preview:preview||null,checkedAt:Date.now()};"
          "if(requests)result.hasRequests=!body.includes('no requests yet')&&!/additional requests\\s*0(?:\\D|$)/.test(body);return result;})()";
     NSString *statusUsername = self.username.lowercaseString ?: @"";
+    // The status merge treats a scrape of the paused, hidden web client
+    // differently from one the user is actually looking at (it may only
+    // raise counts, never clear them past a newer Matrix poll).
+    BOOL visibleScrape = self.viewIfLoaded.window != nil &&
+        (!self.embeddedInInbox || self.embeddedInboxVisible);
     [self.webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
         if (error || ![result isKindOfClass:[NSDictionary class]]) return;
         NSMutableDictionary *status = [(NSDictionary *)result mutableCopy];
         status[@"username"] = statusUsername;
+        status[@"origin"] = visibleScrape ? @"dom-visible" : @"dom-hidden";
         ApolloModernChatPublishStatus(status);
     }];
 }
