@@ -283,6 +283,14 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 // which one is live.
 @interface ApolloInboxModeSwitcherView : UIControl
 @property (nonatomic, strong) UISegmentedControl *segmentedControl;   // Liquid Glass builds only
+// Last theme colors actually applied to the segmented control. Re-applying
+// selectedSegmentTintColor / title attributes rebuilds the segments, which
+// cancels an in-flight Liquid Glass thumb morph — so appearance writes only
+// happen when a color really changed (status refreshes arrive every few
+// seconds and would otherwise stomp every user tap's animation).
+@property (nonatomic, strong) UIColor *lastAppliedAccent;             // Liquid Glass builds only
+@property (nonatomic, strong) UIColor *lastAppliedText;               // Liquid Glass builds only
+@property (nonatomic, strong) UIColor *lastAppliedSelectedText;       // Liquid Glass builds only
 @property (nonatomic, strong) UIView *containerView;                  // custom (non-LG) drawing
 @property (nonatomic, strong) UIView *selectionView;
 @property (nonatomic, strong) UIButton *notificationsButton;
@@ -421,7 +429,10 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
 - (void)apollo_segmentChanged:(UISegmentedControl *)sender {
     _selectedMode = sender.selectedSegmentIndex == 1 ? ApolloInboxModeChat : ApolloInboxModeNotifications;
-    [self apollo_refreshForTraits:self.traitCollection];
+    // Deliberately no theme refresh here: nothing tap-dependent changes (the
+    // selected-state title attributes are state-based, so UIKit swaps them
+    // itself), and touching the control now would cancel the Liquid Glass
+    // thumb morph that this very tap just started.
     [self sendActionsForControlEvents:UIControlEventValueChanged];
 }
 
@@ -430,9 +441,15 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
     if (self.segmentedControl) {
         // Programmatic index changes never re-fire apollo_segmentChanged:
         // (UIKit only sends valueChanged for user interaction), so the two
-        // synced switcher instances cannot ping-pong.
-        self.segmentedControl.selectedSegmentIndex = mode == ApolloInboxModeChat ? 1 : 0;
-        [self apollo_refreshForTraits:self.traitCollection];
+        // synced switcher instances cannot ping-pong. When the control is
+        // already on the target segment — the common case of the tapped
+        // instance being synced back by ApolloSetInboxChatHubVisible /
+        // ApolloInstallInboxModeSwitcher — leave it completely untouched:
+        // any write here snaps the tap's in-flight Liquid Glass thumb morph.
+        NSInteger targetIndex = mode == ApolloInboxModeChat ? 1 : 0;
+        if (self.segmentedControl.selectedSegmentIndex != targetIndex) {
+            self.segmentedControl.selectedSegmentIndex = targetIndex;
+        }
         return;
     }
     void (^changes)(void) = ^{
@@ -467,12 +484,23 @@ typedef NS_ENUM(NSInteger, ApolloInboxMode) {
 
     if (self.segmentedControl) {
         // Native Liquid Glass chrome; only the tint comes from the theme.
-        self.segmentedControl.selectedSegmentTintColor = accent;
+        // Appearance writes rebuild the segments, so only perform them when a
+        // color genuinely changed (theme edit, light/dark flip) — never on the
+        // routine status refreshes that follow every tap and unread update.
         UIColor *text = ApolloModernChatThemeColor(traits, @"text");
-        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: text}
-                                             forState:UIControlStateNormal];
-        [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: selectedText}
-                                             forState:UIControlStateSelected];
+        BOOL colorsChanged = ![self.lastAppliedAccent isEqual:accent] ||
+            ![self.lastAppliedText isEqual:text] ||
+            ![self.lastAppliedSelectedText isEqual:selectedText];
+        if (colorsChanged) {
+            self.lastAppliedAccent = accent;
+            self.lastAppliedText = text;
+            self.lastAppliedSelectedText = selectedText;
+            self.segmentedControl.selectedSegmentTintColor = accent;
+            [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: text}
+                                                 forState:UIControlStateNormal];
+            [self.segmentedControl setTitleTextAttributes:@{NSForegroundColorAttributeName: selectedText}
+                                                 forState:UIControlStateSelected];
+        }
         self.segmentedControl.accessibilityValue = unreadValue;
         [self setNeedsLayout];
         return;
@@ -944,8 +972,17 @@ static void ApolloSetInboxChatHubVisible(UIViewController *host, BOOL visible, B
         if (!stillVisible) hub.view.hidden = YES;
     };
     if (animated && host.view.window) {
+        // The Liquid Glass segmented switcher's thumb morph (~0.25s) cannot
+        // be mirrored programmatically on the counterpart instance, so
+        // cross-fading immediately blends a mid-morph thumb with an
+        // already-arrived one — a visible double exposure over the control.
+        // Let the tapped, fully-opaque control finish its native morph first,
+        // then run the surface cross-fade between now state-matched rows.
+        // The custom (non-LG) switcher animates both instances in lockstep,
+        // so it keeps the immediate fade.
+        NSTimeInterval fadeDelay = IsLiquidGlass() ? 0.30 : 0.0;
         [UIView animateWithDuration:0.20
-                              delay:0.0
+                              delay:fadeDelay
                             options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
                          animations:changes
                          completion:completion];
