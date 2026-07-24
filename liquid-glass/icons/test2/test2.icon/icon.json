@@ -3,8 +3,8 @@
     {
       "value" : {
         "linear-gradient" : [
-          "extended-gray:0.75000,1.00000",
-          "display-p3:0.20483,0.20496,0.20483,1.00000"
+          "display-p3:0.89990,0.89990,0.89990,1.00000",
+          "display-p3:0.75000,0.75000,0.75000,1.00000"
         ],
         "orientation" : {
           "start" : {
@@ -33,7 +33,7 @@
             "scale" : 1.31,
             "translation-in-points" : [
               0.003170664460867556,
-              -24.69554443641482
+              15.9
             ]
           }
         },
@@ -162,6 +162,13 @@
           }
         }
       ],
+      "position" : {
+        "scale" : 1.1,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
       "shadow" : {
         "kind" : "neutral",
         "opacity" : 0.5
