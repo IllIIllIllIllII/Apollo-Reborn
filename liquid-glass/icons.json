@@ -86,6 +86,9 @@
     { "id": "paulo1manso-modern-alt",   "displayName": "Modern Alt",          "designer": "paulo1manso", "group": "concepts" },
     { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng", "group": "concepts" },
     { "id": "synthwave",                "displayName": "Synthwave",           "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "test1",                    "displayName": "Test 1", "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "test2", "displayName": "Test 2", "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "test3", "displayName": "Test 3", "designer": "IllIIllIllIllII", "group": "concepts" },
 
     
     { "id": "helios",                   "displayName": "Helios",              "designer": "IllIIllIllIllII", "group": "helios" },

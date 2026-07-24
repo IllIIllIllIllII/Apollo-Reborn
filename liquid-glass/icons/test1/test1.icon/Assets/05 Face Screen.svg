@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+  <title>05 Face Screen</title>
+  <defs>
+    <clipPath id="screenClip"><ellipse cx="360" cy="438" rx="194" ry="150"/></clipPath>
+    <radialGradient id="screen" cx=".5" cy=".36" r=".73">
+      <stop offset="0" stop-color="#0b5bb4"/>
+      <stop offset=".5" stop-color="#034083"/>
+      <stop offset=".84" stop-color="#001e4b"/>
+      <stop offset="1" stop-color="#001531"/>
+    </radialGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#09a8ff" stop-opacity=".78"/>
+      <stop offset=".38" stop-color="#087ee4" stop-opacity=".18"/>
+      <stop offset=".72" stop-color="#001f65" stop-opacity="0"/>
+      <stop offset="1" stop-color="#00aefa" stop-opacity=".7"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#screenClip)">
+    <rect x="164" y="286" width="392" height="304" fill="url(#screen)"/>
+    <ellipse cx="360" cy="438" rx="187" ry="142" fill="url(#glow)"/>
+    <ellipse cx="360" cy="302" rx="158" ry="21" fill="#36bbff" opacity=".15"/>
+    <path d="M205 548 C270 582 451 583 517 547" fill="none" stroke="#00adff" stroke-width="7" opacity=".48"/>
+  </g>
+</svg>

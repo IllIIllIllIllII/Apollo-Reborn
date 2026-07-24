@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+  <title>03 Antenna</title>
+  <defs>
+    <radialGradient id="metal" cx=".37" cy=".28" r=".72">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset=".38" stop-color="#f4f5f5"/>
+      <stop offset=".69" stop-color="#c9ccce"/>
+      <stop offset=".86" stop-color="#8c9194"/>
+      <stop offset="1" stop-color="#55595b"/>
+    </radialGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2=".3">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="220%">
+      <feDropShadow dx="0" dy="7" stdDeviation="6" flood-color="#000" flood-opacity=".62"/>
+    </filter>
+  </defs>
+  <circle cx="360" cy="89" r="54" fill="#3e4346" filter="url(#shadow)"/>
+  <circle cx="360" cy="87" r="49" fill="url(#metal)"/>
+  <ellipse cx="344" cy="64" rx="25" ry="15" fill="url(#shine)" transform="rotate(-20 344 64)" opacity=".65"/>
+</svg>

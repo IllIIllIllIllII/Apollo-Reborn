@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+  <title>06 Eyes</title>
+  <defs>
+    <linearGradient id="eye" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#99ffff"/>
+      <stop offset=".58" stop-color="#5cecff"/>
+      <stop offset="1" stop-color="#13bfff"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-40%" width="160%" height="180%">
+      <feGaussianBlur stdDeviation="3.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <path d="M210 466 C210 415 231 385 265 385 C300 385 320 416 320 466 C285 456 247 456 210 466Z"
+        fill="url(#eye)" filter="url(#glow)"/>
+  <path d="M400 466 C400 415 421 385 455 385 C490 385 510 416 510 466 C475 456 437 456 400 466Z"
+        fill="url(#eye)" filter="url(#glow)"/>
+</svg>

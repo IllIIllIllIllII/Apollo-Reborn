@@ -95,6 +95,9 @@ static const LGIconRowEntry kLGGroupEntries_concepts[] = {
     { "paulo1manso-modern-alt", "Modern Alt", "paulo1manso" },
     { "jryng-red", "Red", "jryng" },
     { "synthwave", "Synthwave", "IllIIllIllIllII" },
+    { "test1", "Test 1", "IllIIllIllIllII" },
+    { "test2", "Test 2", "IllIIllIllIllII" },
+    { "test3", "Test 3", "IllIIllIllIllII" },
 };
 
 static const char *const kLGGroupCover_original[] = {
@@ -125,7 +128,7 @@ static const LGIconGroupDef kLGIconGroups[] = {
     { "original", "Original", "The original Apollo icon in Liquid Glass, crafted by the community.", "", kLGGroupEntries_original, 5, kLGGroupCover_original, 3 },
     { "classics", "Classics", "Dozens of colorful variants and one-off designs from the original Apollo app, recreated in Liquid Glass.", "jryng, bajader, lilacvibes", kLGGroupEntries_classics, 44, kLGGroupCover_classics, 3 },
     { "helios", "Helios", "Icons inspired by the Hyper Suit 4000 icon from Apollo, and the Modern icons by paulo1manso.", "IllIIllIllIllII", kLGGroupEntries_helios, 10, kLGGroupCover_helios, 3 },
-    { "concepts", "Concepts", "A mix of standalone icon concepts, including small thematic sets too short for their own pack.", "", kLGGroupEntries_concepts, 7, kLGGroupCover_concepts, 3 },
+    { "concepts", "Concepts", "A mix of standalone icon concepts, including small thematic sets too short for their own pack.", "", kLGGroupEntries_concepts, 10, kLGGroupCover_concepts, 3 },
 };
 
 static const size_t kLGIconGroupCount = 4;

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+  <title>04 Robot Body</title>
+  <defs>
+    <radialGradient id="body" cx=".5" cy=".13" r=".83">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset=".13" stop-color="#f4f6f7"/>
+      <stop offset=".5" stop-color="#d7dadd"/>
+      <stop offset=".73" stop-color="#f9fafb"/>
+      <stop offset=".86" stop-color="#bbc1c6"/>
+      <stop offset="1" stop-color="#666d73"/>
+    </radialGradient>
+    <linearGradient id="edge" x1=".25" y1="0" x2=".78" y2="1">
+      <stop offset="0" stop-color="#fafafa"/>
+      <stop offset=".24" stop-color="#9ca3aa"/>
+      <stop offset=".54" stop-color="#f7f8f8"/>
+      <stop offset=".8" stop-color="#969da3"/>
+      <stop offset="1" stop-color="#444b51"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="14" stdDeviation="13" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <ellipse cx="360" cy="421" rx="250" ry="230" fill="url(#edge)"/>
+    <ellipse cx="360" cy="408" rx="245" ry="228" fill="url(#body)"/>
+    <ellipse cx="360" cy="439" rx="208" ry="164" fill="#718398"/>
+    <ellipse cx="360" cy="438" rx="197" ry="153" fill="#0a1a30"/>
+  </g>
+</svg>
