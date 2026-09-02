@@ -18,7 +18,7 @@
     },
     {
       "id": "concepts", "title": "Concepts",
-      "coverIconIDs": ["paulo1manso-modern", "synthwave", "bajader-rtr"],
+      "coverIconIDs": ["paulo1manso-modern", "midnight-sky", "bajader-rtr"],
       "description": "A mix of standalone icon concepts, including small thematic sets too short for their own pack."
     }
   ],
@@ -90,6 +90,7 @@
     { "id": "bajader-sunset",           "displayName": "Sunset",              "designer": "bajader",         "group": "concepts" },
     { "id": "paulo1manso-modern",       "displayName": "Modern",              "designer": "paulo1manso",     "group": "concepts" },
     { "id": "paulo1manso-modern-alt",   "displayName": "Modern Alt",          "designer": "paulo1manso",     "group": "concepts" },
+    { "id": "midnight-sky",             "displayName": "Midnight Sky",        "designer": "IllIIllIllIllII", "group": "concepts" },
     { "id": "synthwave",                "displayName": "Synthwave",           "designer": "IllIIllIllIllII", "group": "concepts" },
     { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng",           "group": "concepts" },
 
