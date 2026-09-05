@@ -4,6 +4,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloCompactTabBarView.h"
+#import "ApolloTopBarScrollPresentation.h"
 #import "ApolloListLayoutSupport.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -16,7 +18,8 @@
 // iOS 26+ (Liquid Glass):
 //   Left/Right use UIKit's native scroll-down collapse and a provider-driven
 //   reveal. A scoped guard prevents bottom rubber-banding from expanding them.
-//   Fade/Down animate the full bar while the nav bar stays visible.
+//   Fade hides the full bar. Down morphs into a compact, centered glass pill
+//   naming the current tab, like Safari's Bottom toolbar. Tap it to expand.
 //
 //   Two-Gesture preserves the established legacy semantics: a deliberate
 //   reverse scroll expands before the top, and the first following collapse
@@ -24,7 +27,8 @@
 //   one-gesture response: reverse motion expands and the very next downward
 //   gesture collapses. Both modes re-expand after 30 seconds idle. Left/Right
 //   reveal through UIKit's floating provider; Fade/Down use their custom
-//   presentation animations.
+//   presentation animations. Hide Top Bar Too optionally springs the navigation
+//   bar out and back with the same targets, leaving native layout intact.
 //
 // iOS <26 (legacy mirror):
 //   Apollo's hide-on-swipe hides the bottom UITabBar but never restores it.
@@ -34,6 +38,7 @@
 
 @interface UITabBarController (ApolloHideFix)
 - (void)setTabBarHidden:(BOOL)hidden animated:(BOOL)animated; // private
+- (void)_apolloExpandCompactTabBar:(id)sender;
 @end
 
 // iOS 26 SDK selector — declared via NSInteger to avoid a hard SDK dependency.
@@ -89,6 +94,7 @@ static ApolloTabBarMinimizeBehavior ApolloDesiredTabBarMinimizeBehavior(BOOL ena
 }
 
 @class ApolloTabBarRevealAnimator;
+@class ApolloDownTransitionAnimator;
 
 @interface UIScrollView (ApolloAutoHidePan)
 - (void)_apolloAutoHideTabBarPanChanged:(UIPanGestureRecognizer *)pan;
@@ -113,6 +119,10 @@ static ApolloTabBarMinimizeBehavior ApolloDesiredTabBarMinimizeBehavior(BOOL ena
 @property (nonatomic, assign) BOOL presentationAnimationActive;
 @property (nonatomic, assign) NSUInteger presentationGeneration;
 @property (nonatomic, assign) ApolloTabBarHideStyle presentationStyle;
+@property (nonatomic, strong) ApolloCompactTabBarView *compactPill;
+@property (nonatomic, strong) ApolloDownTransitionAnimator *downAnimator;
+@property (nonatomic, assign) CGRect downExpandedFrame;
+@property (nonatomic, assign) CGRect downCompactFrame;
 @end
 
 @implementation ApolloTabBarRuntimeState
@@ -314,21 +324,311 @@ static void ApolloCommitTabBarPresentation(UITabBar *tabBar,
     ApolloSetTabBarPresentationOwnership(tabBar, hidden);
 }
 
-static CATransform3D ApolloTabBarHiddenSublayerTransform(UITabBar *tabBar,
-                                                        ApolloTabBarHideStyle style) {
-    // Preserve UIKit-owned tab-bar geometry; move only its rendered sublayers.
-    switch (style) {
-        case ApolloTabBarHideStyleDown:
-            return CATransform3DMakeTranslation(0.0,
-                MAX(18.0, tabBar.bounds.size.height * 0.55), 0.0);
-        default:
-            return CATransform3DIdentity;
+// MARK: Safari-style Down presentation
+//
+// Measured from Safari's Bottom toolbar on iOS 26.5 (402x874 points): its
+// compact capsule is 96x32 at (153,828), with a 14-point bottom gap. Collapse
+// settles in ~0.367s. Reveal reaches 99% in ~0.345s after the press, then
+// has a slight settling tail. Keep UIKit's real tab-bar frame/insets
+// untouched and animate a sibling glass
+// capsule, so neither list layout nor native tab hit geometry can jump.
+static CGRect ApolloDownExpandedFrame(UITabBar *tabBar) {
+    for (UIView *child in tabBar.subviews) {
+        if ([NSStringFromClass(child.class) hasSuffix:@"._UITabBarPlatterView"] &&
+            child.bounds.size.width > tabBar.bounds.size.width * 0.5) {
+            // Read canonical native geometry; Down never transforms this view.
+            return [tabBar.superview convertRect:child.frame fromView:tabBar];
+        }
     }
+    return CGRectNull;
+}
+
+static CGRect ApolloDownCompactFrame(UITabBar *tabBar, ApolloCompactTabBarView *pill) {
+    CGRect barFrame = [tabBar.superview convertRect:tabBar.bounds fromView:tabBar];
+    CGSize size = [pill compactSize];
+    size.width = MIN(size.width, MAX(44.0, barFrame.size.width - 32.0));
+    CGFloat bottomGap = MAX(8.0, tabBar.window.safeAreaInsets.bottom - 20.0);
+    return CGRectMake(CGRectGetMidX(barFrame) - size.width * 0.5,
+        CGRectGetMaxY(barFrame) - bottomGap - size.height, size.width, size.height);
+}
+
+static BOOL ApolloDownCanPresent(UITabBarController *tbc, CGRect expanded) {
+    UITabBar *tabBar = tbc.tabBar;
+    if (CGRectIsNull(expanded) || CGRectIsEmpty(expanded) || !tabBar.window || tabBar.hidden) return NO;
+    if (@available(iOS 18.0, *)) {
+        if (tbc.isTabBarHidden) return NO;
+    }
+    CGRect frame = [tbc.view convertRect:tabBar.bounds fromView:tabBar];
+    return CGRectGetMidY(frame) >= CGRectGetMidY(tbc.view.bounds);
+}
+
+static NSString *ApolloDownTabTitle(UITabBar *tabBar) {
+    UITabBarItem *item = tabBar.selectedItem;
+    // Icon-Only clears title while preserving its real accessibility label.
+    NSString *title = item.title.length ? item.title : item.accessibilityLabel;
+    return title.length ? title : @"Tabs";
+}
+
+// Geometry samples from Safari Bottom on the same iOS 26.5 simulator. These
+// are elapsed seconds, not evenly spaced video frames: simctl recordings use
+// variable frame rate. Separate curves retain Safari's different collapse and
+// reveal cadence instead of approximating both with one UIKit ease/spring.
+typedef struct {
+    NSTimeInterval time;
+    CGFloat progress;
+} ApolloDownMotionSample;
+
+static const ApolloDownMotionSample ApolloDownCollapseMotion[] = {
+    {0.000000, -0.000000},
+    {0.015000, 0.175270},
+    {0.046667, 0.196879},
+    {0.058333, 0.237695},
+    {0.091667, 0.321729},
+    {0.103333, 0.396158},
+    {0.120000, 0.500600},
+    {0.135000, 0.597839},
+    {0.151667, 0.660264},
+    {0.168333, 0.727491},
+    {0.186667, 0.785114},
+    {0.201667, 0.828331},
+    {0.218333, 0.870348},
+    {0.235000, 0.903962},
+    {0.255000, 0.925570},
+    {0.268333, 0.948379},
+    {0.285000, 0.965186},
+    {0.303333, 0.977191},
+    {0.336667, 0.986795},
+    {0.366667, 1.000000},
+};
+static const ApolloDownMotionSample ApolloDownExpandMotion[] = {
+    {0.000000, 0.000000},
+    {0.013333, 0.035760},
+    {0.030000, 0.109834},
+    {0.048333, 0.212005},
+    {0.063333, 0.335888},
+    {0.081667, 0.499361},
+    {0.088333, 0.554278},
+    {0.111667, 0.633461},
+    {0.145000, 0.767561},
+    {0.178333, 0.803321},
+    {0.211667, 0.854406},
+    {0.246667, 0.896552},
+    {0.281667, 0.937420},
+    {0.311667, 0.970626},
+    {0.345000, 0.991060},
+    {0.376667, 1.000000},
+    {0.423333, 1.019157},
+    {0.505000, 1.011494},
+    {0.625000, 0.997446},
+    {0.905000, 1.000000},
+};
+
+@interface ApolloDownTransitionAnimator : NSObject
+@property (nonatomic, strong) CADisplayLink *displayLink;
+@property (nonatomic, assign) BOOL compact;
+@property (nonatomic, assign) CFTimeInterval startedAt;
+@property (nonatomic, assign) NSTimeInterval startOffset;
+@property (nonatomic, copy) void (^update)(CGFloat expansionProgress);
+@property (nonatomic, copy) void (^completion)(void);
+- (void)startFromExpansionProgress:(CGFloat)progress;
+- (void)invalidate;
+- (void)step:(CADisplayLink *)link;
+@end
+
+@interface ApolloDownDisplayLinkProxy : NSObject
+@property (nonatomic, weak) ApolloDownTransitionAnimator *animator;
+- (void)tick:(CADisplayLink *)link;
+@end
+@implementation ApolloDownDisplayLinkProxy
+- (void)tick:(CADisplayLink *)link {
+    ApolloDownTransitionAnimator *animator = self.animator;
+    if (animator) [animator step:link];
+    else [link invalidate];
+}
+@end
+
+@implementation ApolloDownTransitionAnimator
+- (void)startFromExpansionProgress:(CGFloat)progress {
+    const ApolloDownMotionSample *samples = self.compact ? ApolloDownCollapseMotion : ApolloDownExpandMotion;
+    NSUInteger count = self.compact ? sizeof(ApolloDownCollapseMotion) / sizeof(*samples)
+                                   : sizeof(ApolloDownExpandMotion) / sizeof(*samples);
+    CGFloat motionProgress = self.compact ? 1.0 - progress : progress;
+    // A reversal resumes at the recorded curve's matching size. It never
+    // jumps to an endpoint or reruns a full-duration animation for a sliver.
+    for (NSUInteger i = 1; i < count; i++) {
+        if (motionProgress > samples[i].progress) continue;
+        CGFloat span = samples[i].progress - samples[i - 1].progress;
+        CGFloat fraction = span > 0.0 ? (motionProgress - samples[i - 1].progress) / span : 0.0;
+        self.startOffset = samples[i - 1].time + fraction * (samples[i].time - samples[i - 1].time);
+        break;
+    }
+    // Begin the measured timeline on the first display callback. Preparing
+    // UIKit's new glass can defer that callback; charging setup time against
+    // the motion would skip its wide intermediate frames and look like a snap.
+    self.startedAt = 0.0;
+    ApolloDownDisplayLinkProxy *proxy = [ApolloDownDisplayLinkProxy new];
+    proxy.animator = self;
+    self.displayLink = [CADisplayLink displayLinkWithTarget:proxy selector:@selector(tick:)];
+    if (@available(iOS 15.0, *)) {
+        float maximum = (float)UIScreen.mainScreen.maximumFramesPerSecond;
+        self.displayLink.preferredFrameRateRange = CAFrameRateRangeMake(MIN(60.0f, maximum), maximum, maximum);
+    }
+    [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+- (void)step:(CADisplayLink *)link {
+    const ApolloDownMotionSample *samples = self.compact ? ApolloDownCollapseMotion : ApolloDownExpandMotion;
+    NSUInteger count = self.compact ? sizeof(ApolloDownCollapseMotion) / sizeof(*samples)
+                                   : sizeof(ApolloDownExpandMotion) / sizeof(*samples);
+    // timestamp is the PREVIOUS display frame, which can be 33 ms old on
+    // the first callback. Starting there would skip the reveal's gentle onset.
+    if (self.startedAt == 0.0) self.startedAt = link.targetTimestamp;
+    NSTimeInterval elapsed = MAX(0.0, link.targetTimestamp - self.startedAt) + self.startOffset;
+    BOOL finished = elapsed >= samples[count - 1].time ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    CGFloat progress = 1.0;
+    if (!finished) {
+        for (NSUInteger i = 1; i < count; i++) {
+            if (elapsed > samples[i].time) continue;
+            CGFloat fraction = (elapsed - samples[i - 1].time) / (samples[i].time - samples[i - 1].time);
+            progress = samples[i - 1].progress + fraction * (samples[i].progress - samples[i - 1].progress);
+            break;
+        }
+    }
+    if (self.update) {
+        [UIView performWithoutAnimation:^{ self.update(self.compact ? 1.0 - progress : progress); }];
+    }
+    if (finished) {
+        void (^completion)(void) = self.completion;
+        [self invalidate];
+        if (completion) completion();
+    }
+}
+- (void)invalidate {
+    [self.displayLink invalidate];
+    self.displayLink = nil;
+    self.update = nil;
+    self.completion = nil;
+}
+- (void)dealloc {
+    [_displayLink invalidate];
+}
+@end
+
+static CGRect ApolloDownInterpolatedFrame(CGRect expanded, CGRect compact, CGFloat progress) {
+    return CGRectMake(compact.origin.x + (expanded.origin.x - compact.origin.x) * progress,
+        compact.origin.y + (expanded.origin.y - compact.origin.y) * progress,
+        compact.size.width + (expanded.size.width - compact.size.width) * progress,
+        compact.size.height + (expanded.size.height - compact.size.height) * progress);
+}
+
+static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
+                                      BOOL animated, NSString *reason) {
+    UITabBar *tabBar = tbc.tabBar;
+    ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, YES);
+    CGRect expanded = ApolloDownExpandedFrame(tabBar);
+    if (!ApolloDownCanPresent(tbc, expanded)) compact = NO;
+    ApolloTopBarSetScrollHidden(tbc, compact, animated, reason);
+    BOOL sameTarget = state.hasPresentationTarget && state.presentationTargetHidden == compact &&
+        state.presentationStyle == sTabBarHideStyle;
+    if (sameTarget && state.presentationAnimationActive && animated) return;
+    if (sameTarget && compact && !state.presentationAnimationActive &&
+        state.compactPill.superview == tabBar.superview) {
+        state.compactPill.title = ApolloDownTabTitle(tabBar);
+        return;
+    }
+
+    if (sameTarget && !compact && !state.compactPill && tabBar.alpha == 1.0 &&
+        CATransform3DIsIdentity(tabBar.layer.sublayerTransform)) return;
+
+    BOOL interrupted = state.downAnimator != nil;
+    [state.downAnimator invalidate];
+    state.downAnimator = nil;
+    state.hasPresentationTarget = YES;
+    state.presentationTargetHidden = compact;
+    state.presentationStyle = sTabBarHideStyle;
+    NSUInteger generation = ++state.presentationGeneration;
+    ApolloCompactTabBarView *pill = state.compactPill;
+    if (compact && !pill) {
+        pill = [[ApolloCompactTabBarView alloc] initWithFrame:expanded];
+        [pill addTarget:tbc action:@selector(_apolloExpandCompactTabBar:)
+            forControlEvents:UIControlEventTouchUpInside];
+        pill.expansionProgress = 1.0;
+        state.compactPill = pill;
+    }
+    pill.title = ApolloDownTabTitle(tabBar);
+    pill.overrideUserInterfaceStyle = tabBar.traitCollection.userInterfaceStyle;
+    CGRect target = pill ? ApolloDownCompactFrame(tabBar, pill) : CGRectZero;
+    state.downExpandedFrame = expanded;
+    state.downCompactFrame = target;
+    BOOL canAnimate = animated && !UIAccessibilityIsReduceMotionEnabled() && pill && !CGRectIsNull(expanded);
+    if (pill && ((!compact && !interrupted) || pill.expandedContentSize.width == 0.0 ||
+        fabs(pill.expandedContentSize.width - expanded.size.width) > 0.5 ||
+        fabs(pill.expandedContentSize.height - expanded.size.height) > 0.5)) {
+        // Snapshot only foreground owners. UIKit's glass/lens/portal views
+        // remain at their canonical geometry, with no transformed live copy.
+        canAnimate = [pill captureExpandedContentFromTabBar:tabBar expandedFrame:expanded] && canAnimate;
+    }
+    if (compact && pill.superview != tabBar.superview) {
+        [pill removeFromSuperview];
+        [tabBar.superview insertSubview:pill aboveSubview:tabBar];
+        pill.frame = expanded;
+        pill.expansionProgress = 1.0;
+        [pill layoutIfNeeded];
+    }
+
+    tabBar.userInteractionEnabled = NO;
+    tabBar.accessibilityElementsHidden = YES;
+    pill.userInteractionEnabled = YES;
+    pill.accessibilityElementsHidden = NO;
+    ApolloSetTabBarPresentationOwnership(tabBar, YES);
+    [UIView performWithoutAnimation:^{
+        tabBar.alpha = 0.0;
+        tabBar.transform = CGAffineTransformIdentity;
+        tabBar.layer.sublayerTransform = CATransform3DIdentity;
+        pill.alpha = 1.0;
+    }];
+
+    state.presentationAnimationActive = canAnimate;
+    __weak UITabBarController *weakTBC = tbc;
+    void (^finish)(void) = ^{
+        UITabBarController *strongTBC = weakTBC;
+        ApolloTabBarRuntimeState *current = ApolloRuntimeState(strongTBC, NO);
+        if (!current || current.presentationGeneration != generation) return;
+        current.presentationAnimationActive = NO;
+        current.downAnimator = nil;
+        [UIView performWithoutAnimation:^{
+            ApolloCommitTabBarPresentation(strongTBC.tabBar, compact ? 0.0 : 1.0,
+                CATransform3DIdentity, compact);
+            if (compact) {
+                current.compactPill.frame = ApolloDownCompactFrame(strongTBC.tabBar, current.compactPill);
+                current.compactPill.expansionProgress = 0.0;
+                current.compactPill.alpha = 1.0;
+            } else {
+                [current.compactPill removeFromSuperview];
+                current.compactPill = nil;
+            }
+        }];
+    };
+    if (!canAnimate) {
+        finish();
+        return;
+    }
+
+    ApolloDownTransitionAnimator *animator = [ApolloDownTransitionAnimator new];
+    animator.compact = compact;
+    animator.update = ^(CGFloat expansionProgress) {
+        pill.frame = ApolloDownInterpolatedFrame(expanded, target, expansionProgress);
+        pill.expansionProgress = expansionProgress;
+    };
+    animator.completion = finish;
+    state.downAnimator = animator;
+    [animator startFromExpansionProgress:pill.expansionProgress];
+    ApolloLog(@"[AutoHideTabBarFix] Down %@ sampled Safari motion target=%@ reason=%@",
+        compact ? @"compact" : @"expanded", NSStringFromCGRect(target), reason);
 }
 
 static BOOL ApolloTabBarStyleFades(ApolloTabBarHideStyle style) {
-    return style == ApolloTabBarHideStyleFade ||
-           style == ApolloTabBarHideStyleDown;
+    return style == ApolloTabBarHideStyleFade;
 }
 
 static BOOL ApolloTabBarPresentationMatches(UITabBar *tabBar,
@@ -339,19 +639,6 @@ static BOOL ApolloTabBarPresentationMatches(UITabBar *tabBar,
            CGAffineTransformIsIdentity(tabBar.transform) &&
            fabs(current.m41 - sublayerTransform.m41) < 0.5 &&
            fabs(current.m42 - sublayerTransform.m42) < 0.5;
-}
-
-static void ApolloNormalizeDownTabBarGeometry(UITabBarController *tbc) {
-    if (!tbc) return;
-    UITabBar *tabBar = tbc.tabBar;
-    if (CGAffineTransformIsIdentity(tabBar.transform)) return;
-    // Down owns only the rendered sublayers. Normalize a stale outer transform
-    // before measuring its distance; normal gestures never enter this path.
-    [UIView performWithoutAnimation:^{
-        tabBar.transform = CGAffineTransformIdentity;
-        [tbc.view setNeedsLayout];
-        [tbc.view layoutIfNeeded];
-    }];
 }
 
 // Custom styles are presentation-only: keep UIKit's floating tab bar fully
@@ -367,13 +654,15 @@ static void ApolloSetTabBarPresentationHidden(UITabBarController *tbc,
 
     ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, YES);
     ApolloTabBarHideStyle style = sTabBarHideStyle;
-    if (style == ApolloTabBarHideStyleDown) {
-        ApolloNormalizeDownTabBarGeometry(tbc);
+    if (style == ApolloTabBarHideStyleDown || (!hidden && state.compactPill)) {
+        ApolloSetDownPresentation(tbc, hidden && style == ApolloTabBarHideStyleDown, animated, reason);
+        return;
+    }
+    if (style == ApolloTabBarHideStyleFade) {
+        ApolloTopBarSetScrollHidden(tbc, hidden, animated, reason);
     }
     CGFloat targetAlpha = (hidden && ApolloTabBarStyleFades(style)) ? 0.0 : 1.0;
-    CATransform3D targetSublayerTransform = hidden
-        ? ApolloTabBarHiddenSublayerTransform(tabBar, style)
-        : CATransform3DIdentity;
+    CATransform3D targetSublayerTransform = CATransform3DIdentity;
     BOOL sameTarget = state.hasPresentationTarget && state.presentationTargetHidden == hidden &&
         state.presentationStyle == style;
     if (sameTarget && state.presentationAnimationActive) return;
@@ -433,12 +722,7 @@ static void ApolloSetTabBarPresentationHidden(UITabBarController *tbc,
             strongState.presentationStyle != style) return;
 
         strongState.presentationAnimationActive = NO;
-        // Geometry may have changed while the animation was running (for
-        // example, during rotation). Recompute Down's final translation from
-        // the settled layout instead of restoring the animation's old target.
-        CATransform3D settledSublayerTransform = hidden
-            ? ApolloTabBarHiddenSublayerTransform(strongTabBar, style)
-            : CATransform3DIdentity;
+        CATransform3D settledSublayerTransform = CATransform3DIdentity;
         ApolloCommitTabBarPresentation(strongTabBar, targetAlpha,
                                        settledSublayerTransform, hidden);
     };
@@ -456,26 +740,56 @@ static void ApolloSetTabBarPresentationHidden(UITabBarController *tbc,
 
 void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
                                            NSString *reason) {
+    ApolloTopBarSetScrollHidden(tabBarController, NO, NO,
+                               reason ?: @"external tab-bar restore");
     ApolloSetTabBarPresentationHidden(tabBarController, NO, NO,
                                       reason ?: @"external tab-bar restore");
 }
 
-static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
+static void ApolloRevalidateDownPresentation(UITabBarController *tbc) {
     ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, NO);
-    if (!state.hasPresentationTarget || !state.presentationTargetHidden ||
-        state.presentationStyle != ApolloTabBarHideStyleDown ||
-        sTabBarHideStyle != ApolloTabBarHideStyleDown ||
-        state.presentationAnimationActive) return;
-
+    ApolloCompactTabBarView *pill = state.compactPill;
+    if (!pill) return;
     UITabBar *tabBar = tbc.tabBar;
-    CATransform3D target = ApolloTabBarHiddenSublayerTransform(
-        tabBar, ApolloTabBarHideStyleDown);
-    if (ApolloTabBarPresentationMatches(tabBar, 0.0, target)) return;
-
-    [UIView performWithoutAnimation:^{
-        ApolloCommitTabBarPresentation(tabBar, 0.0, target, YES);
-    }];
-    ApolloLog(@"[AutoHideTabBarFix] Revalidated hidden Down presentation after layout");
+    CGRect expanded = ApolloDownExpandedFrame(tabBar);
+    if (!ApolloDownCanPresent(tbc, expanded) || sTabBarHideStyle != ApolloTabBarHideStyleDown ||
+        pill.superview != tabBar.superview) {
+        ApolloSetDownPresentation(tbc, NO, NO, @"native bar unavailable");
+        return;
+    }
+    CGRect target = ApolloDownCompactFrame(tabBar, pill);
+    if (state.presentationAnimationActive) {
+        // A window can move the bar without changing its size. The animator
+        // captures both endpoint frames, so reconcile their origins as well.
+        if (!CGRectEqualToRect(expanded, state.downExpandedFrame) ||
+            !CGRectEqualToRect(target, state.downCompactFrame)) {
+            ApolloSetDownPresentation(tbc, state.presentationTargetHidden, NO, @"geometry changed");
+        }
+        return;
+    }
+    if (!state.presentationTargetHidden) return;
+    pill.title = ApolloDownTabTitle(tabBar);
+    pill.overrideUserInterfaceStyle = tabBar.traitCollection.userInterfaceStyle;
+    target = ApolloDownCompactFrame(tabBar, pill);
+    state.downExpandedFrame = expanded;
+    state.downCompactFrame = target;
+    if (!CGRectEqualToRect(pill.frame, target)) {
+        [UIView performWithoutAnimation:^{
+            pill.frame = target;
+            pill.expansionProgress = 0.0;
+        }];
+    }
+    // UIKit can restore visibility during its own layout reconciliation.
+    // Reassert only the presentation properties we own, never native frames.
+    if (tabBar.alpha != 0.0 || tabBar.userInteractionEnabled ||
+        !tabBar.accessibilityElementsHidden || !ApolloTabBarIsHideOnScrollPresentationOwned(tabBar)) {
+        [UIView performWithoutAnimation:^{
+            tabBar.alpha = 0.0;
+            tabBar.userInteractionEnabled = NO;
+            tabBar.accessibilityElementsHidden = YES;
+            ApolloSetTabBarPresentationOwnership(tabBar, YES);
+        }];
+    }
 }
 
 // MARK: - Native floating-provider reveal
@@ -705,6 +1019,113 @@ static BOOL ApolloResolveRevealProviderBridge(id provider, SEL callback) {
     return sApolloRevealProviderChecked && sApolloRevealProviderSupported;
 }
 
+// Left/Right collapse is driven by UIKit, including paths which never cross
+// our custom-style scroll threshold. Observe its existing progress callback
+// so the optional top bar follows the real bottom-bar direction. The weak
+// owner avoids adding a provider -> controller retain cycle.
+@interface ApolloNativeTopBarObserverState : NSObject
+@property (nonatomic, weak) UITabBarController *controller;
+@property (nonatomic, assign) BOOL hasProgress;
+@property (nonatomic, assign) CGFloat intentProgress;
+@property (nonatomic, assign) BOOL hasTarget;
+@property (nonatomic, assign) BOOL targetHidden;
+@end
+@implementation ApolloNativeTopBarObserverState
+@end
+
+static char kApolloNativeTopBarObserverStateKey;
+typedef void (*ApolloNativeProviderProgressIMP)(id, SEL, id, double, BOOL);
+static NSMutableSet<NSString *> *sApolloNativeProviderProgressClasses;
+
+static void ApolloObserveNativeProviderProgress(id provider, double rawProgress) {
+    ApolloNativeTopBarObserverState *observer =
+        objc_getAssociatedObject(provider, &kApolloNativeTopBarObserverStateKey);
+    UITabBarController *tbc = observer.controller;
+    if (!tbc || !ApolloTabBarManualNativeMorphEnabled() || !isfinite(rawProgress)) return;
+
+    CGFloat progress = MIN(1.0, MAX(0.0, rawProgress));
+    ApolloTabBarRevealAnimator *animator = ApolloRuntimeState(tbc, NO).revealAnimator;
+    if (animator && animator.provider == provider) {
+        // Explicit reveal/retarget already set the top-bar target. Its first
+        // provider sample still describes the old endpoint (e.g. 1 while
+        // revealing), which must not reverse that spring. Keep observing the
+        // position and authoritative target so native gestures resume from
+        // the final sample after the driver relinquishes ownership.
+        // Both normal completion and finishProviderTracking send their last
+        // callback before invalidate clears state.revealAnimator.
+        observer.hasProgress = YES;
+        observer.intentProgress = progress;
+        observer.hasTarget = YES;
+        observer.targetHidden = animator.targetProgress > 0.5;
+        return;
+    }
+    BOOL endpoint = progress <= 0.001 || progress >= 0.999;
+    if (!observer.hasProgress) {
+        observer.hasProgress = YES;
+        observer.intentProgress = progress;
+        if (!endpoint) return;
+    }
+    CGFloat delta = progress - observer.intentProgress;
+    // Ignore tiny settling fluctuations; real reversal accumulates from the
+    // last accepted direction sample instead of restarting the spring per tick.
+    if (!endpoint && fabs(delta) < 0.015) return;
+    BOOL hidden = endpoint ? progress >= 0.999 : delta > 0.0;
+    observer.intentProgress = progress;
+    if (observer.hasTarget && observer.targetHidden == hidden) return;
+    observer.hasTarget = YES;
+    observer.targetHidden = hidden;
+    ApolloTopBarSetScrollHidden(tbc, hidden, YES, @"native bottom-bar progress");
+}
+
+static void ApolloPrepareNativeTopBarObserver(UITabBarController *tbc, id provider, SEL callback) {
+    if (!tbc || !provider || !ApolloRevealCallbackHasExpectedABI(provider, callback)) return;
+    Class cls = object_getClass(provider);
+    @synchronized ([UITabBar class]) {
+        if (!sApolloNativeProviderProgressClasses) {
+            sApolloNativeProviderProgressClasses = [NSMutableSet set];
+        }
+        NSString *key = NSStringFromClass(cls);
+        if (![sApolloNativeProviderProgressClasses containsObject:key]) {
+            Method method = class_getInstanceMethod(cls, callback);
+            ApolloNativeProviderProgressIMP original =
+                (ApolloNativeProviderProgressIMP)method_getImplementation(method);
+            if (!original) return;
+            // Capture this exact original instead of resolving it from self's
+            // runtime class: a subclass's super call must not recurse back
+            // into the subclass override. Every callback forwards unchanged.
+            IMP replacement = imp_implementationWithBlock(^(id owner, id interaction,
+                                                            double progress, BOOL tracking) {
+                original(owner, callback, interaction, progress, tracking);
+                ApolloObserveNativeProviderProgress(owner, progress);
+            });
+            if (!replacement) return;
+            // Add an override when the method is inherited; never replace an
+            // unrelated provider superclass's implementation globally.
+            class_replaceMethod(cls, callback, replacement,
+                                method_getTypeEncoding(method));
+            [sApolloNativeProviderProgressClasses addObject:key];
+            ApolloLog(@"[AutoHideTabBarFix] Observing native bottom-bar progress on %@", key);
+        }
+    }
+    ApolloNativeTopBarObserverState *observer =
+        objc_getAssociatedObject(provider, &kApolloNativeTopBarObserverStateKey);
+    if (!observer) {
+        observer = [ApolloNativeTopBarObserverState new];
+        objc_setAssociatedObject(provider, &kApolloNativeTopBarObserverStateKey, observer,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    BOOL known = NO;
+    NSInteger morph = ApolloTabBarVisualMorphTarget(tbc.tabBar, &known);
+    BOOL endpoint = known && (morph == 0 || morph == 2);
+    if (observer.controller != tbc || endpoint) {
+        observer.controller = tbc;
+        observer.hasProgress = endpoint;
+        observer.intentProgress = morph == 2 ? 1.0 : 0.0;
+        observer.hasTarget = observer.hasProgress;
+        observer.targetHidden = morph == 2;
+    }
+}
+
 typedef void (*ApolloScrollAwayDidScrollIMP)(id, SEL, id);
 typedef void (*ApolloScrollAwayDidEndDraggingIMP)(id, SEL, id, BOOL);
 static ApolloScrollAwayDidScrollIMP sApolloScrollAwayDidScrollOriginal = NULL;
@@ -829,6 +1250,7 @@ static void ApolloPrepareNativeScrollAwayBottomGuard(UITabBarController *tbc) {
     id provider = ApolloTabBarVisualProvider(tbc.tabBar);
     SEL callback = NSSelectorFromString(@"scrollAwayInteraction:progressDidChange:tracking:");
     if (!ApolloResolveRevealProviderBridge(provider, callback)) return;
+    ApolloPrepareNativeTopBarObserver(tbc, provider, callback);
     id interaction = sApolloRevealInteractionIvar
         ? object_getIvar(provider, sApolloRevealInteractionIvar) : nil;
     if (interaction) ApolloInstallScrollAwayBottomGuard(interaction);
@@ -851,9 +1273,11 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
     if (!tbc || !ApolloSupportsNativeTabBarScrollBehavior()) {
         return ApolloTabBarRevealResultUnsupported;
     }
+    BOOL followsNativeTarget = ApolloTabBarManualNativeMorphEnabled();
     ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, YES);
     ApolloTabBarRevealAnimator *active = state.revealAnimator;
     if (active) {
+        if (followsNativeTarget) ApolloTopBarSetScrollHidden(tbc, hidden, animated, reason);
         [active retargetToProgress:hidden ? 1.0 : 0.0];
         return ApolloTabBarRevealResultActive;
     }
@@ -862,9 +1286,11 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
     NSInteger morphTarget = ApolloTabBarVisualMorphTarget(tbc.tabBar, &morphKnown);
     if (!morphKnown) return ApolloTabBarRevealResultUnsupported;
     if (!hidden && morphTarget == 0) {
+        if (followsNativeTarget) ApolloTopBarSetScrollHidden(tbc, NO, animated, reason);
         return ApolloTabBarRevealResultAlreadyExpanded;
     }
     if (hidden && morphTarget == 2) {
+        if (followsNativeTarget) ApolloTopBarSetScrollHidden(tbc, YES, animated, reason);
         return ApolloTabBarRevealResultStarted;
     }
     // Never restart an animation from a guessed endpoint while UIKit reports
@@ -885,6 +1311,7 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
     id interaction = sApolloRevealInteractionIvar
         ? object_getIvar(provider, sApolloRevealInteractionIvar) : nil;
     if (!interaction) return ApolloTabBarRevealResultTransient;
+    ApolloPrepareNativeTopBarObserver(tbc, provider, callback);
 
     CGFloat startProgress = morphTarget == 2 ? 1.0 : 0.0;
     CGFloat targetProgress = hidden ? 1.0 : 0.0;
@@ -892,6 +1319,7 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
         @try {
             ((void (*)(id, SEL, id, double, BOOL))objc_msgSend)(
                 provider, callback, interaction, (double)targetProgress, NO);
+            if (followsNativeTarget) ApolloTopBarSetScrollHidden(tbc, hidden, NO, reason);
             return ApolloTabBarRevealResultStarted;
         } @catch (NSException *exception) {
             ApolloLog(@"[AutoHideTabBarFix] Manual native morph failed: %@", exception.name);
@@ -906,6 +1334,7 @@ static ApolloTabBarRevealResult ApolloSetNativeTabBarManuallyHidden(
                                                  startProgress:startProgress
                                                 targetProgress:targetProgress];
     state.revealAnimator = animator;
+    if (followsNativeTarget) ApolloTopBarSetScrollHidden(tbc, hidden, YES, reason);
     [animator start];
     ApolloLog(@"[AutoHideTabBarFix] Started manual native %@ reason=%@ morph=%ld",
               hidden ? @"collapse" : @"reveal", reason ?: @"unknown",
@@ -933,6 +1362,31 @@ static void ApolloClearTwoGestureRevealState(UITabBarController *tbc) {
     state.twoGestureRevealActive = NO;
     state.twoGestureRearmAfterGesture = NO;
     state.twoGestureRevealGestureToken = 0;
+}
+
+static void ApolloSynchronizeTopBarWithBottom(UITabBarController *tbc, NSString *reason) {
+    ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, NO);
+    BOOL hidden = NO;
+    if (ApolloTabBarCustomPresentationEnabled()) {
+        hidden = state.hasPresentationTarget && state.presentationTargetHidden;
+    } else if (ApolloTabBarManualNativeMorphEnabled()) {
+        if (state.revealAnimator) {
+            hidden = state.revealAnimator.targetProgress > 0.5;
+        } else {
+            BOOL known = NO;
+            NSInteger morph = ApolloTabBarVisualMorphTarget(tbc.tabBar, &known);
+            if (known && (morph == 0 || morph == 2)) {
+                hidden = morph == 2;
+            } else {
+                ApolloNativeTopBarObserverState *observer = objc_getAssociatedObject(
+                    ApolloTabBarVisualProvider(tbc.tabBar), &kApolloNativeTopBarObserverStateKey);
+                hidden = observer.hasTarget && observer.targetHidden;
+            }
+        }
+    }
+    // The top-bar module also checks the master preference and its own toggle,
+    // so the same synchronization immediately restores a disabled feature.
+    ApolloTopBarSetScrollHidden(tbc, hidden, NO, reason);
 }
 
 static ApolloTabBarRevealResult ApolloStartTwoGestureReveal(UITabBarController *tbc,
@@ -1013,6 +1467,7 @@ static void ApolloReapplyNativeMinimizeBehavior(UITabBarController *tbc, NSStrin
     if (!anyWantsMinimize) {
         ApolloSetNativeTabBarManuallyHidden(tbc, NO, NO, @"hide on scroll disabled");
     }
+    ApolloSynchronizeTopBarWithBottom(tbc, reason);
     ApolloLog(@"[AutoHideTabBarFix] Reapplied native minimize desired=%d customMode=%d classicMode=%d reason=%@",
               anyWantsMinimize, customPresentationMode, sClassicTabBarScrollBehavior,
               reason ?: @"unknown");
@@ -1041,6 +1496,7 @@ static void ApolloReconcileNativeMinimizeBehaviorAfterActivation(UITabBarControl
     if (anyWantsMinimize && ApolloTabBarManualNativeMorphEnabled()) {
         ApolloSetNativeTabBarManuallyHidden(tbc, NO, NO, @"foreground reconciliation");
     }
+    ApolloTopBarSetScrollHidden(tbc, NO, NO, @"foreground reconciliation");
     ApolloLog(@"[AutoHideTabBarFix] Reconciled native minimize desired=%d customMode=%d reason=%@",
               anyWantsMinimize, customPresentationMode, reason ?: @"unknown");
 }
@@ -1537,6 +1993,7 @@ static BOOL ApolloBarSwipeGestureActive(UINavigationController *nav) {
 %hook UINavigationController
 
 - (void)setNavigationBarHidden:(BOOL)hidden {
+    if (hidden) ApolloTopBarRestoreNavigationController(self);
     %orig;
     if (ApolloSupportsNativeTabBarScrollBehavior()) return;
     if (ApolloBarSwipeGestureActive(self)) return;
@@ -1544,6 +2001,7 @@ static BOOL ApolloBarSwipeGestureActive(UINavigationController *nav) {
 }
 
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
+    if (hidden) ApolloTopBarRestoreNavigationController(self);
     %orig;
     if (ApolloSupportsNativeTabBarScrollBehavior()) return;
     if (ApolloBarSwipeGestureActive(self)) return;
@@ -1597,15 +2055,15 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
 
 
 // hidesBarsOnSwipe entry point. Two modes:
-//   iOS 26+: hijack the toggle — instead of letting the nav bar hide on
-//            swipe, set the enclosing tab bar controller's native
-//            tabBarMinimizeBehavior so only the tab bar collapses (true
-//            Liquid Glass feel, mirroring Music/Photos).
+//   iOS 26+: suppress the native nav-bar swipe driver and configure the
+//            chosen bottom presentation. The optional top-bar spring follows
+//            that presentation's targets without changing navigation layout.
 //   iOS <26: leave Apollo's behavior intact and observe the gesture so we
 //            can mirror nav-bar visibility onto the tab bar.
 %hook UINavigationController
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    ApolloTopBarRestoreNavigationController(self);
     if (ApolloSupportsNativeTabBarScrollBehavior()) {
         UITabBarController *tbc = ApolloLocateTabBarController(self);
         if (tbc && ApolloTabBarIsHideOnScrollPresentationOwned(tbc.tabBar)) {
@@ -1613,6 +2071,41 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
         }
     }
     %orig(viewController, animated);
+}
+
+- (UIViewController *)popViewControllerAnimated:(BOOL)animated {
+    ApolloTopBarRestoreNavigationController(self);
+    return %orig(animated);
+}
+
+- (NSArray<UIViewController *> *)popToViewController:(UIViewController *)viewController animated:(BOOL)animated {
+    ApolloTopBarRestoreNavigationController(self);
+    return %orig(viewController, animated);
+}
+
+- (NSArray<UIViewController *> *)popToRootViewControllerAnimated:(BOOL)animated {
+    ApolloTopBarRestoreNavigationController(self);
+    return %orig(animated);
+}
+
+- (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
+    ApolloTopBarRestoreNavigationController(self);
+    %orig(viewControllers, animated);
+}
+
+- (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers {
+    ApolloTopBarRestoreNavigationController(self);
+    %orig(viewControllers);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloTopBarRevalidateNavigationController(self);
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig(animated);
+    if (!self.viewIfLoaded.window) ApolloTopBarRestoreNavigationController(self);
 }
 
 - (void)setHidesBarsOnSwipe:(BOOL)value {
@@ -1631,8 +2124,8 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
                       value, effectiveValue,
                       NSStringFromClass([self class]));
         }
-        // Suppress Apollo's nav-bar hide-on-swipe; the native API only
-        // collapses the tab bar so we want the nav bar to stay visible.
+        // Suppress Apollo's nav-bar hide-on-swipe so it cannot compete
+        // with the optional top-bar spring that follows our bottom target.
         ApolloStoreRequestedHidesBarsOnSwipe(self, effectiveValue);
         %orig(NO);
         UITabBarController *tbc = ApolloLocateTabBarController(self);
@@ -1652,6 +2145,7 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
                 ApolloSetNativeTabBarManuallyHidden(tbc, NO, NO,
                                                      @"hide on scroll disabled");
                 ApolloSetTabBarPresentationHidden(tbc, NO, NO, @"hide on scroll disabled");
+                ApolloTopBarSetScrollHidden(tbc, NO, NO, @"hide on scroll disabled");
             } else if (customPresentationMode) {
                 // Custom styles do not use the private provider driver. Keep
                 // Two-Gesture's consumed-gesture state across repeat setup.
@@ -1851,9 +2345,44 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
 // intentionally forwards NO to keep the nav bar visible.
 %hook UITabBarController
 
+%new
+- (void)_apolloExpandCompactTabBar:(id)sender {
+    ApolloTabBarRuntimeState *state = ApolloRuntimeState(self, NO);
+    if (!state.presentationTargetHidden) {
+        if (state.presentationAnimationActive && state.compactPill) {
+            ApolloSetDownPresentation(self, NO, NO, @"tap during expansion settling");
+        }
+        return;
+    }
+    ApolloCancelIdleRevealTimer(self);
+    if (sClassicTabBarScrollBehavior) {
+        ApolloSetTabBarPresentationHidden(self, NO, YES, @"compact pill tapped");
+    } else {
+        ApolloStartTwoGestureReveal(self, @"compact pill tapped", 0);
+    }
+}
+
+- (void)setSelectedIndex:(NSUInteger)index {
+    BOOL changed = self.selectedIndex != index;
+    if (changed) ApolloTopBarSetScrollHidden(self, NO, NO, @"selected tab changing");
+    %orig(index);
+    if (changed && ApolloRuntimeState(self, NO).compactPill) {
+        ApolloRestoreHideOnScrollPresentation(self, @"selected tab changed");
+    }
+}
+
+- (void)setSelectedViewController:(UIViewController *)controller {
+    BOOL changed = self.selectedViewController != controller;
+    if (changed) ApolloTopBarSetScrollHidden(self, NO, NO, @"selected controller changing");
+    %orig(controller);
+    if (changed && ApolloRuntimeState(self, NO).compactPill) {
+        ApolloRestoreHideOnScrollPresentation(self, @"selected controller changed");
+    }
+}
+
 - (void)viewDidLayoutSubviews {
     %orig;
-    ApolloRevalidateHiddenDownPresentation(self);
+    ApolloRevalidateDownPresentation(self);
 }
 
 - (void)viewWillAppear:(BOOL)animated {

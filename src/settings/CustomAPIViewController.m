@@ -836,9 +836,11 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"linkPreviews.settings"];
     [self reloadRowWithID:@"polls.settings"];
     [self reloadRowWithID:@"sub.feedShortcuts"];
-    // Refresh the tab-bar presentation and its dependent gesture row after
+    // Refresh the tab-bar presentation and its dependent rows after
     // returning to Interface or after preferences are restored elsewhere.
+    [self visibilityDidChange];
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
+    [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
@@ -1776,6 +1778,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                     ApolloTabBarHideStyleCurrentOptionIndex(),
                     ^(NSInteger pickedIndex) {
                         ApolloTabBarHideStyleApplyOptionIndex(pickedIndex);
+                        [weakSelf visibilityDidChange];
                         [weakSelf reloadRowWithID:@"interface.hideBarsOnScroll"];
                         [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
                     });
@@ -1792,9 +1795,26 @@ typedef NS_ENUM(NSInteger, Tag) {
                                           isOn:^BOOL { return ApolloTabBarHideBarsEnabled(); }
                                       onToggle:^(UISwitch *sender) {
                 ApolloTabBarHideBarsSetEnabled(sender.isOn);
+                [weakSelf visibilityDidChange];
                 [weakSelf reloadRowWithID:@"interface.tabBarScrollBehavior"];
             }];
     }
+
+    // Keep the remembered choice while Hide Bars is off; only its row hides.
+    ApolloSettingsRow *hideTopBarToo =
+        [ApolloSettingsRow switchRowWithID:@"interface.hideTopBarToo"
+                                     title:@"Hide Top Bar Too"
+                                      isOn:^BOOL { return sHideTopBarOnScroll; }
+                                  onToggle:^(UISwitch *sender) {
+            if (sHideTopBarOnScroll == sender.isOn) return;
+            sHideTopBarOnScroll = sender.isOn;
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyHideTopBarOnScroll];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
+        }];
+    hideTopBarToo.visible = ^BOOL {
+        return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
+    };
 
     // Both behavior choices include idle re-expansion. A single picker keeps
     // the gesture models mutually exclusive and explicit.
@@ -1838,7 +1858,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
-                                                      hideBarsOnScroll, tabBarScrollBehavior,
+                                                      hideBarsOnScroll, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom ]];
 }
 
