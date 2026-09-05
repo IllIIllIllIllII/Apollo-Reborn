@@ -365,11 +365,15 @@ static void FICRunSelection(dispatch_block_t orig) {
 %hook _TtC6Apollo22CommentsViewController
 
 - (void)nextResultButtonTappedWithSender:(id)sender {
-    FICRunSelection(^{ %orig; });
+    FICRunSelection(^{
+        %orig;
+    });
 }
 
 - (void)previousResultButtonTappedWithSender:(id)sender {
-    FICRunSelection(^{ %orig; });
+    FICRunSelection(^{
+        %orig;
+    });
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -397,7 +401,9 @@ static void FICRunSelection(dispatch_block_t orig) {
         sFICMultiActive = YES;
         ApolloLog(@"[FindInComments] multi-term search: %lu terms", (unsigned long)terms.count);
     }
-    FICRunSelection(^{ %orig; });
+    FICRunSelection(^{
+        %orig;
+    });
     sFICMultiActive = NO;
     sFICMultiTerms = nil;
     sFICMultiQuery = nil;

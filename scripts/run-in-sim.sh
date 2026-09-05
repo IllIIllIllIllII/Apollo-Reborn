@@ -27,8 +27,8 @@
 #   scripts/run-in-sim.sh --backup my.zip # preload an Apollo settings backup (API keys + account)
 #
 # Xcode 27 / Device Hub:
-#   - The simulator GUI is now Device Hub (com.apple.dt.Devices), not Simulator.app;
-#     this script opens whichever is present.
+#   - Device Hub (com.apple.dt.Devices) is the only simulator GUI this script opens.
+#     If it cannot open, the remaining simulator work continues through simctl.
 #   - `--drive`'s screenshot is taken via `simctl io screenshot`, not idb — idb's
 #     screenshot RPC doesn't work against Xcode 27's iOS-27 sims. `idb ui describe-all`
 #     (the accessibility tree) is unaffected.
@@ -286,9 +286,9 @@ if ! xcrun simctl list devices booted | grep -q "$DEV"; then
     log "Booting simulator $DEV"
     xcrun simctl boot "$DEV" 2>/dev/null || true
 fi
-# Xcode 27 replaced Simulator.app with Device Hub (bundle id com.apple.dt.Devices);
-# fall back to the old name for Xcode <= 26.
-open -a "Device Hub" >/dev/null 2>&1 || open -a Simulator >/dev/null 2>&1 || true
+# Keep the normal simulator workflow in Device Hub; never open Simulator.app
+# as an automatic fallback when Device Hub is unavailable.
+open -b com.apple.dt.Devices >/dev/null 2>&1 || log "Device Hub could not be opened; continuing with simctl."
 echo "$DEV" > "$WORK_DIR/device.txt"
 
 if [[ -n "$APPEARANCE" ]]; then
@@ -359,7 +359,7 @@ if [[ "$DO_LOGS" == 1 ]]; then
 fi
 
 log "Launching $BUNDLE_ID with ApolloReborn.dylib injected"
-DYLIB_INJECT="/tmp/ApolloRebornSim-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
+DYLIB_INJECT="/tmp/ApolloRebornSim-${DEV}-${BUNDLE_ID//[^A-Za-z0-9_.-]/_}.dylib"
 cp "$DYLIB_DST" "$DYLIB_INJECT"
 codesign -f -s - "$DYLIB_INJECT" >/dev/null 2>&1
 SIMCTL_CHILD_DYLD_INSERT_LIBRARIES="$DYLIB_INJECT" \

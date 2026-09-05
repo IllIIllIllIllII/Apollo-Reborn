@@ -269,7 +269,10 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 - (void)animateTransition:(id<UIViewControllerContextTransitioning>)ctx {
     UIViewPropertyAnimator *animator = (UIViewPropertyAnimator *)
         [(id<UIViewControllerAnimatedTransitioning>)self interruptibleAnimatorForTransition:ctx];
-    if (!animator) { %orig; return; }
+    if (!animator) {
+        %orig;
+        return;
+    }
     [animator startAnimation];
 }
 
