@@ -1315,6 +1315,12 @@ static NSString *ApolloHLCommentCountText(long long count) {
     }
     self.commentsLabel.attributedText = comments;
     self.commentsIcon.tintColor = hasImage ? UIColor.whiteColor : UIColor.secondaryLabelColor;
+    // Keep the footer bright while either the post or newer comments are
+    // unread. The title tracks only the post; New has its independent clock.
+    CGFloat footerAlpha = (read && delta == 0) ? 0.72 : 1.0;
+    self.commentsLabel.alpha = footerAlpha;
+    self.commentsIcon.alpha = footerAlpha;
+    self.flairLabel.alpha = footerAlpha;
     BOOL unread = known && !read;
 
     NSTimeInterval age = self.firstSeen ? [now timeIntervalSinceDate:self.firstSeen] : kApolloHLNewLifetime;
