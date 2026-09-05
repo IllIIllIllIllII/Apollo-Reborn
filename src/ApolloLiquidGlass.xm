@@ -2166,7 +2166,8 @@ static CGSize ApolloDualTitleNavigationSize(UIButton *button, CGSize size) {
 %group ApolloLGDualTitleSizing
 %hook ApolloDualLabelNavigationTitleButton
 - (CGSize)intrinsicContentSize {
-    return ApolloDualTitleNavigationSize((UIButton *)self, %orig);
+    CGSize nativeSize = %orig;
+    return ApolloDualTitleNavigationSize((UIButton *)self, nativeSize);
 }
 - (CGSize)sizeThatFits:(CGSize)size {
     return ApolloDualTitleNavigationSize((UIButton *)self, %orig(size));
