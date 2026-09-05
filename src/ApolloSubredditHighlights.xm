@@ -37,6 +37,9 @@
 #import "ApolloDevvitPosts.h"
 #import "ApolloPostReadState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloAccountCredentials.h"
+#import "ApolloWebJSON.h"
+#import "ApolloWebSessionStore.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -295,6 +298,7 @@ static void ApolloHLReloadFeed(UIViewController *vc) {
 @property (nonatomic, copy) NSString *fullName;    // "t3_xxxx"
 @property (nonatomic, copy) NSString *flairText;
 @property (nonatomic) long long numComments;
+@property (nonatomic) BOOL hasCommentCount; // missing metadata is not a real zero
 @property (nonatomic, strong) NSDate *createdAt; // Reddit's created_utc, never local discovery time
 @property (nonatomic, strong) NSURL *thumbnailURL;
 @property (nonatomic) BOOL isSpoiler;
@@ -486,6 +490,14 @@ static NSDate *ApolloHLPostCreationDate(id value) {
     return isfinite(seconds) && seconds > 0 ? [NSDate dateWithTimeIntervalSince1970:seconds] : nil;
 }
 
+static BOOL ApolloHLReadCommentCount(id value, long long *count) {
+    if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return NO;
+    double number = [value doubleValue];
+    if (!isfinite(number) || number < 0 || number >= 0x1p63 || floor(number) != number) return NO;
+    if (count) *count = [value longLongValue];
+    return YES;
+}
+
 // Feed-ownership helpers, defined with the parse helpers below (the disk seed has
 // to apply the same split the fetch does).
 static NSArray<ApolloHLItem *> *ApolloHLCarouselItems(NSArray<ApolloHLItem *> *items);
@@ -498,7 +510,7 @@ static NSDictionary *ApolloHLItemToPlist(ApolloHLItem *it) {
     if (it.permalink) d[@"p"] = it.permalink;
     if (it.fullName) d[@"f"] = it.fullName;
     if (it.flairText) d[@"fl"] = it.flairText;
-    if (it.numComments) d[@"c"] = @(it.numComments);
+    if (it.hasCommentCount) d[@"c"] = @(it.numComments);
     if (it.createdAt) d[@"createdUTC"] = @(it.createdAt.timeIntervalSince1970);
     if (it.thumbnailURL.absoluteString) d[@"u"] = it.thumbnailURL.absoluteString;
     if (it.isSpoiler) d[@"s"] = @YES;
@@ -527,7 +539,9 @@ static NSArray<ApolloHLItem *> *ApolloHLItemsFromPlist(id plist) {
         it.permalink = permalink;
         it.fullName = ApolloHLStringValue(d[@"f"]);
         it.flairText = ApolloHLStringValue(d[@"fl"]);
-        if ([d[@"c"] isKindOfClass:[NSNumber class]]) it.numComments = [d[@"c"] longLongValue];
+        long long count = 0;
+        it.hasCommentCount = ApolloHLReadCommentCount(d[@"c"], &count);
+        it.numComments = count;
         it.createdAt = ApolloHLPostCreationDate(d[@"createdUTC"]);
         NSString *thumb = ApolloHLStringValue(d[@"u"]);
         if (thumb.length) it.thumbnailURL = [NSURL URLWithString:thumb];
@@ -754,8 +768,9 @@ static ApolloHLItem *ApolloHLItemFromPostData(NSDictionary *d) {
     item.permalink = permalink;
     item.fullName = ApolloHLStringValue(d[@"name"]);
     item.flairText = ApolloHLStringValue(d[@"link_flair_text"]);
-    NSNumber *nc = d[@"num_comments"];
-    item.numComments = [nc isKindOfClass:[NSNumber class]] ? nc.longLongValue : 0;
+    long long count = 0;
+    item.hasCommentCount = ApolloHLReadCommentCount(d[@"num_comments"], &count);
+    item.numComments = count;
     item.createdAt = ApolloHLPostCreationDate(d[@"created_utc"]);
     item.thumbnailURL = ApolloHLThumbnailFromPostData(d);
     item.isSpoiler = [d[@"spoiler"] respondsToSelector:@selector(boolValue)] && [d[@"spoiler"] boolValue];
@@ -764,9 +779,15 @@ static ApolloHLItem *ApolloHLItemFromPostData(NSDictionary *d) {
     return item;
 }
 
+// An empty children array is a real answer; a 200 HTML/error response is not.
+static NSArray *ApolloHLListingChildren(id root) {
+    if (![root isKindOfClass:NSDictionary.class]) return nil;
+    NSDictionary *data = [root[@"data"] isKindOfClass:NSDictionary.class] ? root[@"data"] : nil;
+    return [data[@"children"] isKindOfClass:NSArray.class] ? data[@"children"] : nil;
+}
+
 static NSArray<ApolloHLItem *> *ApolloHLParseListing(NSDictionary *root) {
-    NSDictionary *data = [root[@"data"] isKindOfClass:[NSDictionary class]] ? root[@"data"] : nil;
-    NSArray *children = [data[@"children"] isKindOfClass:[NSArray class]] ? data[@"children"] : nil;
+    NSArray *children = ApolloHLListingChildren(root);
     NSMutableArray<ApolloHLItem *> *items = [NSMutableArray array];
     for (NSDictionary *child in children) {
         if (![child isKindOfClass:[NSDictionary class]]) continue;
@@ -782,8 +803,7 @@ static NSArray<ApolloHLItem *> *ApolloHLParseListing(NSDictionary *root) {
 
 // Maps t3 fullname -> item for an /api/info Listing response (no stickied filter).
 static NSDictionary<NSString *, ApolloHLItem *> *ApolloHLParseInfoListing(NSDictionary *root) {
-    NSDictionary *data = [root[@"data"] isKindOfClass:[NSDictionary class]] ? root[@"data"] : nil;
-    NSArray *children = [data[@"children"] isKindOfClass:[NSArray class]] ? data[@"children"] : nil;
+    NSArray *children = ApolloHLListingChildren(root);
     NSMutableDictionary<NSString *, ApolloHLItem *> *map = [NSMutableDictionary dictionary];
     for (NSDictionary *child in children) {
         if (![child isKindOfClass:[NSDictionary class]]) continue;
@@ -1066,6 +1086,32 @@ static NSArray<ApolloHLItem *> *ApolloHLDropFeedOwned(NSString *sub, NSArray<Apo
 
 static NSString *ApolloHLItemsContentSig(NSArray<ApolloHLItem *> *items); // defined with ApolloHLSignature
 
+// Main queue, like the fetch entry points. Background traffic from another
+// account can leave the global bearer stale or owned by an OAuth account while
+// the foreground account is keyless. Match the gallery's account-scoped read
+// path: synthetic bearers select the active web session in the shared transport,
+// otherwise read the active client's current credential afresh for this request.
+static NSString *ApolloHLRequestBearerToken(void) {
+    if (ApolloWebJSONHasUsableSession()) {
+        return ApolloWebJSONSyntheticBearerTokenForUsername(ApolloActiveWebSessionUsername());
+    }
+    id client = ApolloActiveAccountClient();
+    if (client) {
+        SEL credentialSelector = NSSelectorFromString(@"authorizationCredential");
+        SEL tokenSelector = NSSelectorFromString(@"accessToken");
+        id credential = [client respondsToSelector:credentialSelector]
+            ? ((id (*)(id, SEL))objc_msgSend)(client, credentialSelector) : nil;
+        id accessToken = [credential respondsToSelector:tokenSelector]
+            ? ((id (*)(id, SEL))objc_msgSend)(credential, tokenSelector) : nil;
+        id token = [accessToken respondsToSelector:tokenSelector]
+            ? ((id (*)(id, SEL))objc_msgSend)(accessToken, tokenSelector) : nil;
+        return [token isKindOfClass:NSString.class] && [token length] > 0 ? [token copy] : nil;
+    }
+    // Before Apollo creates its client, retain the anonymous/read bearer its
+    // own request pipeline may already have captured.
+    return [sLatestRedditBearerToken copy];
+}
+
 // Fetches the subreddit's stickied posts and calls completion on the main queue
 // with the (possibly empty) item array. Caches the result. completion may be nil
 // (warm the cache only).
@@ -1085,7 +1131,7 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
     NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
     [allowed addCharactersInString:@"_-"];
     NSString *escaped = [subredditName stringByAddingPercentEncodingWithAllowedCharacters:allowed] ?: subredditName;
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloHLRequestBearerToken();
     NSString *urlString = token.length > 0
         ? [NSString stringWithFormat:@"https://oauth.reddit.com/r/%@/hot?limit=%ld&raw_json=1", escaped, (long)kApolloHLFetchLimit]
         : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/hot.json?limit=%ld&raw_json=1", escaped, (long)kApolloHLFetchLimit];
@@ -1098,11 +1144,12 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : -1;
         id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        BOOL validListing = status == 200 && !error && ApolloHLListingChildren(json) != nil;
         // The stickies in listing order = the feed's leading rows. Split them here,
         // before anything downstream sees them: the row COUNT and the feed-owned
         // MASK describe those rows (the breaker rule needs both), while `items` —
         // what the carousel shows and every cache holds — is the rest.
-        NSArray<ApolloHLItem *> *stickies = [json isKindOfClass:[NSDictionary class]] ? ApolloHLParseListing(json) : @[];
+        NSArray<ApolloHLItem *> *stickies = validListing ? ApolloHLParseListing(json) : @[];
         NSUInteger stickyRows = stickies.count;
         NSUInteger feedOwnedMask = ApolloHLFeedOwnedStickyMask(stickies);
         NSSet<NSString *> *feedOwnedIDs = ApolloHLFeedOwnedIDsFromItems(stickies);
@@ -1119,7 +1166,7 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
             // set on display; the refresh caller rebuilds via ApplyItems only on a real
             // change, so a failed web re-run can't silently downgrade the carousel.
             NSArray<ApolloHLItem *> *completionItems = items;
-            if (!force && (status == 200 || items.count > 0)) {
+            if (!force && validListing) {
                 // The web page can now finish very quickly on a warm WebKit process.
                 // If it wins the race and has already installed the full set, do not
                 // let this slower REST response downgrade the cache/carousel to two.
@@ -1129,7 +1176,7 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
             }
             // Record the inline-sticky count (REST only) for the breaker rule + the
             // freshness timestamp/signature for the stale-while-revalidate re-poll.
-            if (status == 200) {
+            if (validListing) {
                 ApolloHLRestCache()[key] = items;
                 // N counts sticky ROWS (feed-owned ones included — they still occupy
                 // a row and a trailing separator), the mask says which of those rows
@@ -1149,7 +1196,7 @@ static void ApolloHLFetchHighlights(NSString *subredditName, BOOL force, void (^
             // it). Seen live: a stale OAuth token 401s on the first launch after a
             // couple of days away and the sub's carousel vanished until the next
             // successful refetch. Only a 200 may report an empty listing.
-            if (status != 200 && completionItems.count == 0) completionItems = nil;
+            if (!validListing && completionItems.count == 0) completionItems = nil;
             if (completion) completion(completionItems);
         });
     }] resume];
@@ -1258,23 +1305,28 @@ static NSString *ApolloHLCommentCountText(long long count) {
     self.titleLabel.attributedText = title;
 
     long long total = MAX(0LL, self.item.numComments);
-    long long delta = baseline ? MAX(0LL, total - baseline.longLongValue) : 0;
+    BOOL hasCommentCount = self.item.hasCommentCount;
+    long long delta = hasCommentCount && baseline ? MAX(0LL, total - baseline.longLongValue) : 0;
+    // Opacity alone cannot brighten a plain card's secondary-colored text. Use
+    // the same bright/dim colors as the title, with comment activity keeping the
+    // footer bright independently of whether the post has been read.
+    BOOL dimFooter = read && delta == 0;
+    UIColor *footerColor = hasImage ? [UIColor colorWithWhite:(dimFooter ? 0.72 : 1.0) alpha:1.0]
+                                   : (dimFooter ? UIColor.secondaryLabelColor : UIColor.labelColor);
     NSMutableDictionary *attributes = [@{ NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
-        NSForegroundColorAttributeName: hasImage ? UIColor.whiteColor : UIColor.secondaryLabelColor } mutableCopy];
+        NSForegroundColorAttributeName: footerColor } mutableCopy];
     if (hasImage) attributes[NSShadowAttributeName] = ApolloHLTextShadow();
-    NSMutableAttributedString *comments = [[NSMutableAttributedString alloc] initWithString:ApolloHLCommentCountText(total) attributes:attributes];
+    NSString *commentText = hasCommentCount ? ApolloHLCommentCountText(total) : @"—";
+    NSMutableAttributedString *comments = [[NSMutableAttributedString alloc] initWithString:commentText attributes:attributes];
     if (delta > 0) {
         attributes[NSForegroundColorAttributeName] = accent;
         [comments appendAttributedString:[[NSAttributedString alloc] initWithString:[@" +" stringByAppendingString:ApolloHLCommentCountText(delta)] attributes:attributes]];
     }
     self.commentsLabel.attributedText = comments;
-    self.commentsIcon.tintColor = hasImage ? UIColor.whiteColor : UIColor.secondaryLabelColor;
-    // Keep the footer bright while either the post or newer comments are
-    // unread. The title tracks only the post; New has its independent clock.
-    CGFloat footerAlpha = (read && delta == 0) ? 0.72 : 1.0;
-    self.commentsLabel.alpha = footerAlpha;
-    self.commentsIcon.alpha = footerAlpha;
-    self.flairLabel.alpha = footerAlpha;
+    self.commentsIcon.tintColor = footerColor;
+    NSMutableAttributedString *flair = [self.flairLabel.attributedText mutableCopy];
+    [flair addAttribute:NSForegroundColorAttributeName value:footerColor range:NSMakeRange(0, flair.length)];
+    self.flairLabel.attributedText = flair;
     BOOL unread = known && !read;
 
     NSTimeInterval age = self.item.createdAt ? [now timeIntervalSinceDate:self.item.createdAt] : kApolloHLNewLifetime;
@@ -1330,7 +1382,7 @@ static NSString *ApolloHLCommentCountText(long long count) {
     if (known) [details addObject:read ? @"Read" : @"Unread"];
     if (isNew) [details addObject:@"New post, created less than 24 hours ago"];
     if (self.flairLabel.text.length) [details addObject:self.flairLabel.text];
-    [details addObject:[NSString stringWithFormat:@"%lld comments", total]];
+    [details addObject:hasCommentCount ? [NSString stringWithFormat:@"%lld comments", total] : @"Comment count unavailable"];
     if (delta > 0) [details addObject:[NSString stringWithFormat:@"%lld new since last read", delta]];
     self.accessibilityValue = [details componentsJoinedByString:@", "];
 }
@@ -1490,7 +1542,7 @@ static ApolloHLCardView *ApolloHLBuildCard(ApolloHLItem *item) {
         metaLabel.userInteractionEnabled = NO;
         NSMutableDictionary *mattrs = [@{
             NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
-            NSForegroundColorAttributeName: hasImage ? [UIColor colorWithWhite:1.0 alpha:0.95] : UIColor.secondaryLabelColor,
+            NSForegroundColorAttributeName: hasImage ? UIColor.whiteColor : UIColor.labelColor,
         } mutableCopy];
         if (hasImage) mattrs[NSShadowAttributeName] = ApolloHLTextShadow();
         metaLabel.attributedText = [[NSAttributedString alloc] initWithString:flair attributes:mattrs];
@@ -1707,12 +1759,13 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
 static NSString *ApolloHLItemsPresentationSig(NSArray<ApolloHLItem *> *items) {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     for (ApolloHLItem *it in items) {
-        [parts addObject:[NSString stringWithFormat:@"%@\x1F%@\x1F%@\x1F%@\x1F%lld\x1F%d\x1F%.3f",
+        [parts addObject:[NSString stringWithFormat:@"%@\x1F%@\x1F%@\x1F%@\x1F%lld\x1F%d\x1F%d\x1F%.3f",
                           it.fullName ?: it.permalink ?: @"?",
                           it.title ?: @"",
                           it.thumbnailURL.absoluteString ?: @"",
                           it.flairText ?: @"",
                           it.numComments,
+                          it.hasCommentCount,
                           it.isSpoiler,
                           it.createdAt.timeIntervalSince1970]];
     }
@@ -2502,6 +2555,31 @@ static void ApolloHLToggleCollapsed(NSString *sub) {
 // reliable source that gives the first 2 their crisp thumbnails. Thumbnail/flair/
 // comment-count are filled from /api/info, then the API stickied cache, then the
 // web DOM as a last resort. Web order is preserved. `completion` runs on main.
+static void ApolloHLRestoreCachedMetadata(NSArray<ApolloHLItem *> *webItems,
+                                          NSArray<ApolloHLItem *> *cachedItems) {
+    NSMutableDictionary<NSString *, ApolloHLItem *> *cachedByID = [NSMutableDictionary dictionary];
+    for (ApolloHLItem *cached in cachedItems) {
+        NSString *pid = ApolloHLItemPostID(cached);
+        if (pid.length) cachedByID[pid] = cached;
+    }
+    for (ApolloHLItem *item in webItems) {
+        ApolloHLItem *cached = cachedByID[ApolloHLItemPostID(item) ?: @""];
+        if (!cached) continue;
+        if (!item.fullName.length) item.fullName = cached.fullName;
+        if (!item.thumbnailURL) item.thumbnailURL = cached.thumbnailURL;
+        if (!item.flairText.length) item.flairText = cached.flairText;
+        if (!item.hasCommentCount && cached.hasCommentCount) {
+            item.numComments = cached.numComments;
+            item.hasCommentCount = YES;
+        }
+        item.createdAt = item.createdAt ?: cached.createdAt;
+        // Retaining a spoiler mask is safe while metadata is unavailable. Pin
+        // and interactive flags deliberately come only from the fresh API set:
+        // stale feed-ownership flags could incorrectly remove a visible card.
+        item.isSpoiler |= cached.isSpoiler;
+    }
+}
+
 static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
                                   NSArray<ApolloHLItem *> *apiItems,
                                   NSDictionary<NSString *, ApolloHLItem *> *infoMap) {
@@ -2515,11 +2593,15 @@ static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
         ApolloHLItem *info = pid.length ? infoMap[[@"t3_" stringByAppendingString:pid]] : nil;
         ApolloHLItem *api = pid.length ? apiByID[pid] : nil;
         if (!w.fullName.length) w.fullName = info.fullName ?: api.fullName;
-        if (!w.thumbnailURL) w.thumbnailURL = info.thumbnailURL ?: api.thumbnailURL;
-        if (!w.flairText.length) w.flairText = info.flairText ?: api.flairText;
+        w.thumbnailURL = info.thumbnailURL ?: api.thumbnailURL ?: w.thumbnailURL;
+        w.flairText = info.flairText ?: api.flairText ?: w.flairText;
         // Comment totals are live metadata, not a fill-once field. A stable pin
         // can gain comments for weeks without its identity/title ever changing.
-        if (info || api) w.numComments = info ? info.numComments : api.numComments;
+        ApolloHLItem *countSource = info.hasCommentCount ? info : (api.hasCommentCount ? api : nil);
+        if (countSource) {
+            w.numComments = countSource.numComments;
+            w.hasCommentCount = YES;
+        }
         // DOM-only cards wait for a real creation timestamp. Failed/partial
         // enrichment must not erase a creation date we already know.
         w.createdAt = info.createdAt ?: api.createdAt ?: w.createdAt;
@@ -2565,9 +2647,9 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
 
     if (fullnames.count == 0) { finish(@{}); return; }
     NSString *idParam = [fullnames componentsJoinedByString:@","];
-    NSString *token = [sLatestRedditBearerToken copy];
+    NSString *token = ApolloHLRequestBearerToken();
     NSString *urlString = token.length > 0
-        ? [NSString stringWithFormat:@"https://oauth.reddit.com/api/info?id=%@&raw_json=1", idParam]
+        ? [NSString stringWithFormat:@"https://oauth.reddit.com/api/info.json?id=%@&raw_json=1", idParam]
         : [NSString stringWithFormat:@"https://www.reddit.com/api/info.json?id=%@&raw_json=1", idParam];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
     request.timeoutInterval = 15.0;
@@ -2576,8 +2658,11 @@ static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? ((NSHTTPURLResponse *)response).statusCode : -1;
         id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-        NSDictionary<NSString *, ApolloHLItem *> *infoMap = [json isKindOfClass:[NSDictionary class]] ? ApolloHLParseInfoListing(json) : @{};
-        ApolloLog(@"[Highlights] info enrich status=%ld ids=%lu resolved=%lu", (long)status, (unsigned long)fullnames.count, (unsigned long)infoMap.count);
+        BOOL validListing = status == 200 && !error && ApolloHLListingChildren(json) != nil;
+        NSDictionary<NSString *, ApolloHLItem *> *infoMap = validListing ? ApolloHLParseInfoListing(json) : @{};
+        ApolloLog(@"[Highlights] info enrich status=%ld ids=%lu resolved=%lu listing=%d type=%@ err=%@",
+                  (long)status, (unsigned long)fullnames.count, (unsigned long)infoMap.count,
+                  validListing, response.MIMEType ?: @"unknown", error.localizedDescription ?: @"nil");
         finish(infoMap);
     }] resume];
 }
@@ -2649,15 +2734,11 @@ static void ApolloHLMaybeWebUpgrade(NSString *subreddit) {
         // whatever metadata the fast REST result already knows, then show the full
         // list immediately instead of blocking all extra cards on another network
         // round trip. Missing off-screen thumbnails/details arrive just below.
-        // Creation dates never change. Carry known dates into these new DOM
-        // objects so an unavailable /api/info cannot erase a web-only card's New
-        // window. Leave changing metadata, including pin state, to fresh replies.
-        NSMutableDictionary<NSString *, NSDate *> *knownCreationDates = [NSMutableDictionary dictionary];
-        for (ApolloHLItem *cached in ApolloHLCache()[sub]) {
-            NSString *pid = ApolloHLItemPostID(cached);
-            if (pid.length && cached.createdAt) knownCreationDates[pid] = cached.createdAt;
-        }
-        for (ApolloHLItem *item in items) item.createdAt = knownCreationDates[ApolloHLItemPostID(item) ?: @""];
+        // Re-harvesting creates bare DOM items. Keep already-known presentation
+        // metadata until a real response replaces it, including the later cards
+        // absent from /hot. A failed /api/info must not turn them into false zero
+        // counts or remove their flair/images/New timestamps on every refresh.
+        ApolloHLRestoreCachedMetadata(items, ApolloHLCache()[sub]);
         ApolloHLMergeMetadata(items, apiItems, @{});
         // A pinned interactive post the feed is rendering live must not come back
         // as a card via the web set. The DOM scrape carries no selftext, so match
