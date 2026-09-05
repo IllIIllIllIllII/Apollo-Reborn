@@ -1304,23 +1304,20 @@ static NSString *ApolloHLCommentCountText(long long count) {
 - (void)applyRead:(BOOL)read known:(BOOL)known commentBaseline:(NSNumber *)baseline now:(NSDate *)now {
     BOOL hasImage = self.item.thumbnailURL != nil;
     UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
-    UIColor *titleColor = hasImage ? [UIColor colorWithWhite:(read ? 0.72 : 1.0) alpha:1.0]
-                                  : (read ? UIColor.secondaryLabelColor : UIColor.labelColor);
-    NSMutableAttributedString *title = [self.titleLabel.attributedText mutableCopy];
-    [title addAttribute:NSForegroundColorAttributeName value:titleColor range:NSMakeRange(0, title.length)];
-    self.titleLabel.attributedText = title;
-
     long long total = MAX(0LL, self.item.numComments);
     BOOL hasCommentCount = self.item.hasCommentCount;
     long long delta = hasCommentCount && baseline ? MAX(0LL, total - baseline.longLongValue) : 0;
-    // Opacity alone cannot brighten a plain card's secondary-colored text. Use
-    // the same bright/dim colors as the title, with comment activity keeping the
-    // footer bright independently of whether the post has been read.
-    BOOL dimFooter = read && delta == 0;
-    UIColor *footerColor = hasImage ? [UIColor colorWithWhite:(dimFooter ? 0.72 : 1.0) alpha:1.0]
-                                   : (dimFooter ? UIColor.secondaryLabelColor : UIColor.labelColor);
+    // Keep the entire card bright while either the post or its comments have
+    // unread activity. The post's unread dot still follows post read state only.
+    BOOL dimCard = read && delta == 0;
+    UIColor *contentColor = hasImage ? [UIColor colorWithWhite:(dimCard ? 0.72 : 1.0) alpha:1.0]
+                                    : (dimCard ? UIColor.secondaryLabelColor : UIColor.labelColor);
+    NSMutableAttributedString *title = [self.titleLabel.attributedText mutableCopy];
+    [title addAttribute:NSForegroundColorAttributeName value:contentColor range:NSMakeRange(0, title.length)];
+    self.titleLabel.attributedText = title;
+
     NSMutableDictionary *attributes = [@{ NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
-        NSForegroundColorAttributeName: footerColor } mutableCopy];
+        NSForegroundColorAttributeName: contentColor } mutableCopy];
     if (hasImage) attributes[NSShadowAttributeName] = ApolloHLTextShadow();
     NSString *commentText = hasCommentCount ? ApolloHLCommentCountText(total) : @"—";
     NSMutableAttributedString *comments = [[NSMutableAttributedString alloc] initWithString:commentText attributes:attributes];
@@ -1329,9 +1326,9 @@ static NSString *ApolloHLCommentCountText(long long count) {
         [comments appendAttributedString:[[NSAttributedString alloc] initWithString:[@" +" stringByAppendingString:ApolloHLCommentCountText(delta)] attributes:attributes]];
     }
     self.commentsLabel.attributedText = comments;
-    self.commentsIcon.tintColor = footerColor;
+    self.commentsIcon.tintColor = contentColor;
     NSMutableAttributedString *flair = [self.flairLabel.attributedText mutableCopy];
-    [flair addAttribute:NSForegroundColorAttributeName value:footerColor range:NSMakeRange(0, flair.length)];
+    [flair addAttribute:NSForegroundColorAttributeName value:contentColor range:NSMakeRange(0, flair.length)];
     self.flairLabel.attributedText = flair;
     BOOL unread = known && !read;
 
