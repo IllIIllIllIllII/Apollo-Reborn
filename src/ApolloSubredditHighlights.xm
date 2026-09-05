@@ -29,6 +29,7 @@
 #import <CoreImage/CoreImage.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <math.h>
 #import "ApolloState.h"
 #import "ApolloCommon.h"
 #import "ApolloScrapeWebView.h"
@@ -294,6 +295,7 @@ static void ApolloHLReloadFeed(UIViewController *vc) {
 @property (nonatomic, copy) NSString *fullName;    // "t3_xxxx"
 @property (nonatomic, copy) NSString *flairText;
 @property (nonatomic) long long numComments;
+@property (nonatomic, strong) NSDate *createdAt; // Reddit's created_utc, never local discovery time
 @property (nonatomic, strong) NSURL *thumbnailURL;
 @property (nonatomic) BOOL isSpoiler;
 // A live Devvit custom post (match thread, game). When the feed renders those
@@ -475,6 +477,15 @@ static NSString *const kApolloHLDiskCacheDefaultsKey = @"CommunityHighlightsDisk
 static NSUInteger const kApolloHLDiskCacheMaxSubs = 40;
 
 static NSString *ApolloHLStringValue(id v); // defined with the parse helpers below
+
+// Both Reddit JSON and our cache store UTC epoch seconds. An unknown date must
+// stay unknown: assigning the fetch time would make an old highlight look new.
+static NSDate *ApolloHLPostCreationDate(id value) {
+    if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) return nil;
+    NSTimeInterval seconds = [value doubleValue];
+    return isfinite(seconds) && seconds > 0 ? [NSDate dateWithTimeIntervalSince1970:seconds] : nil;
+}
+
 // Feed-ownership helpers, defined with the parse helpers below (the disk seed has
 // to apply the same split the fetch does).
 static NSArray<ApolloHLItem *> *ApolloHLCarouselItems(NSArray<ApolloHLItem *> *items);
@@ -488,6 +499,7 @@ static NSDictionary *ApolloHLItemToPlist(ApolloHLItem *it) {
     if (it.fullName) d[@"f"] = it.fullName;
     if (it.flairText) d[@"fl"] = it.flairText;
     if (it.numComments) d[@"c"] = @(it.numComments);
+    if (it.createdAt) d[@"createdUTC"] = @(it.createdAt.timeIntervalSince1970);
     if (it.thumbnailURL.absoluteString) d[@"u"] = it.thumbnailURL.absoluteString;
     if (it.isSpoiler) d[@"s"] = @YES;
     if (it.isInteractive) d[@"i"] = @YES;
@@ -516,6 +528,7 @@ static NSArray<ApolloHLItem *> *ApolloHLItemsFromPlist(id plist) {
         it.fullName = ApolloHLStringValue(d[@"f"]);
         it.flairText = ApolloHLStringValue(d[@"fl"]);
         if ([d[@"c"] isKindOfClass:[NSNumber class]]) it.numComments = [d[@"c"] longLongValue];
+        it.createdAt = ApolloHLPostCreationDate(d[@"createdUTC"]);
         NSString *thumb = ApolloHLStringValue(d[@"u"]);
         if (thumb.length) it.thumbnailURL = [NSURL URLWithString:thumb];
         it.isSpoiler = [d[@"s"] isKindOfClass:[NSNumber class]] && [d[@"s"] boolValue];
@@ -743,6 +756,7 @@ static ApolloHLItem *ApolloHLItemFromPostData(NSDictionary *d) {
     item.flairText = ApolloHLStringValue(d[@"link_flair_text"]);
     NSNumber *nc = d[@"num_comments"];
     item.numComments = [nc isKindOfClass:[NSNumber class]] ? nc.longLongValue : 0;
+    item.createdAt = ApolloHLPostCreationDate(d[@"created_utc"]);
     item.thumbnailURL = ApolloHLThumbnailFromPostData(d);
     item.isSpoiler = [d[@"spoiler"] respondsToSelector:@selector(boolValue)] && [d[@"spoiler"] boolValue];
     item.isInteractive = ApolloDevvitPostDataIsInteractive(d);
@@ -1189,73 +1203,14 @@ static UIImage *ApolloHLSpoilerBlur(UIImage *image) {
 
 #pragma mark - Card view
 
-// Keep the badge's clock separate from Apollo's read/comment history. The first
-// observation of a post in this community starts its day; opening it, refreshing
-// metadata, reordering pins, and relaunching must never restart that clock.
-// Main queue only, like the highlights cache. Bound retained identities without
-// dropping expired entries on every launch (that would make old pins New again).
-static NSString *const kApolloHLFirstSeenKey = @"CommunityHighlightsFirstSeenV1";
+// New describes the first day of the post itself, even if highlighted later.
+// Reading, refreshing metadata, reordering pins and relaunching never restart it.
 static NSTimeInterval const kApolloHLNewLifetime = 24.0 * 60.0 * 60.0;
 
 static NSString *ApolloHLItemPostID(ApolloHLItem *item) {
     NSString *identifier = item.fullName;
     if ([identifier hasPrefix:@"t3_"]) identifier = [identifier substringFromIndex:3];
     return identifier.length ? identifier : ApolloHLPostIDFromPermalink(item.permalink);
-}
-
-static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSDate *> *> *ApolloHLFirstSeen(void) {
-    static NSMutableDictionary *store; static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        store = [NSMutableDictionary dictionary];
-        NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kApolloHLFirstSeenKey];
-        for (NSString *sub in saved) {
-            if (![sub isKindOfClass:NSString.class] || ![saved[sub] isKindOfClass:NSDictionary.class]) continue;
-            NSMutableDictionary *dates = [NSMutableDictionary dictionary];
-            for (NSString *pid in saved[sub]) {
-                id date = saved[sub][pid];
-                if ([pid isKindOfClass:NSString.class] && [date isKindOfClass:NSDate.class]) dates[pid] = date;
-            }
-            store[sub] = dates;
-        }
-    });
-    return store;
-}
-
-static void ApolloHLRecordFirstSeen(NSString *sub, NSArray<ApolloHLItem *> *items) {
-    if (sub.length == 0) return;
-    NSMutableDictionary *store = ApolloHLFirstSeen();
-    NSMutableDictionary *dates = store[sub];
-    if (!dates) { dates = [NSMutableDictionary dictionary]; store[sub] = dates; }
-    BOOL changed = NO;
-    NSDate *now = [NSDate date];
-    NSMutableSet *activeIDs = [NSMutableSet set];
-    for (ApolloHLItem *item in items) {
-        NSString *pid = ApolloHLItemPostID(item);
-        if (pid.length) [activeIDs addObject:pid];
-        if (pid.length && !dates[pid]) { dates[pid] = now; changed = YES; }
-    }
-    if (!changed) return;
-    if (dates.count > 64) {
-        // Never evict a still-pinned announcement: observing it again would
-        // otherwise grant that old highlight another day with a New badge.
-        NSArray *oldest = [dates keysSortedByValueUsingSelector:@selector(compare:)];
-        for (NSString *pid in oldest) {
-            if (dates.count <= 64) break;
-            if (![activeIDs containsObject:pid]) [dates removeObjectForKey:pid];
-        }
-    }
-    if (store.count > 128) {
-        NSMutableArray *candidates = [store.allKeys mutableCopy];
-        [candidates removeObject:sub]; // retain the community being displayed
-        NSArray *oldest = [candidates sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-            NSDate *aDate = [[store[a] allValues] valueForKeyPath:@"@max.self"] ?: NSDate.distantPast;
-            NSDate *bDate = [[store[b] allValues] valueForKeyPath:@"@max.self"] ?: NSDate.distantPast;
-            return [aDate compare:bDate];
-        }];
-        [store removeObjectsForKeys:[oldest subarrayWithRange:NSMakeRange(0, store.count - 128)]];
-    }
-    [[NSUserDefaults standardUserDefaults] setObject:store forKey:kApolloHLFirstSeenKey];
-    ApolloLog(@"[Highlights] recorded first-seen identities r/%@; New lasts 24h", sub);
 }
 
 static NSShadow *ApolloHLTextShadow(void);
@@ -1276,7 +1231,6 @@ static NSString *ApolloHLCommentCountText(long long count) {
 @property (nonatomic, strong) UIImageView *thumbView;
 @property (nonatomic, copy) NSString *thumbToken; // guards async image reuse
 @property (nonatomic, strong) ApolloHLItem *item;
-@property (nonatomic, strong) NSDate *firstSeen;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *flairLabel;
 @property (nonatomic, strong) UILabel *commentsLabel;
@@ -1323,7 +1277,7 @@ static NSString *ApolloHLCommentCountText(long long count) {
     self.flairLabel.alpha = footerAlpha;
     BOOL unread = known && !read;
 
-    NSTimeInterval age = self.firstSeen ? [now timeIntervalSinceDate:self.firstSeen] : kApolloHLNewLifetime;
+    NSTimeInterval age = self.item.createdAt ? [now timeIntervalSinceDate:self.item.createdAt] : kApolloHLNewLifetime;
     BOOL isNew = age >= 0 && age < kApolloHLNewLifetime;
     BOOL badgeWasVisible = !self.freshnessBadge.hidden;
     self.freshnessBadge.hidden = !isNew;
@@ -1374,7 +1328,7 @@ static NSString *ApolloHLCommentCountText(long long count) {
     self.accessibilityLabel = self.item.title;
     NSMutableArray *details = [NSMutableArray array];
     if (known) [details addObject:read ? @"Read" : @"Unread"];
-    if (isNew) [details addObject:@"New highlight, shown for 24 hours"];
+    if (isNew) [details addObject:@"New post, created less than 24 hours ago"];
     if (self.flairLabel.text.length) [details addObject:self.flairLabel.text];
     [details addObject:[NSString stringWithFormat:@"%lld comments", total]];
     if (delta > 0) [details addObject:[NSString stringWithFormat:@"%lld new since last read", delta]];
@@ -1687,7 +1641,7 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
         BOOL read = pid.length && [readSet containsObject:pid];
         NSNumber *baseline = pid.length ? commentTotals[pid] : nil;
         [card applyRead:read known:(readIDs != nil) commentBaseline:baseline now:now];
-        NSTimeInterval remaining = card.firstSeen ? kApolloHLNewLifetime - [now timeIntervalSinceDate:card.firstSeen] : 0;
+        NSTimeInterval remaining = card.item.createdAt ? kApolloHLNewLifetime - [now timeIntervalSinceDate:card.item.createdAt] : 0;
         if (remaining > 0 && remaining <= kApolloHLNewLifetime) nextExpiry = MIN(nextExpiry, remaining);
     }
     if (self.window && nextExpiry <= kApolloHLNewLifetime) {
@@ -1746,18 +1700,19 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
 
 // Presentation signature includes metadata as well as post identity. The fast web
 // path intentionally paints titles/links before /api/info enrichment returns; once
-// thumbnails/flair/comment counts arrive, this signature makes the second ApplyItems
-// call rebuild those same cards with their richer presentation.
+// thumbnails, flair, counts and creation dates arrive, this signature makes the
+// second ApplyItems call rebuild those same cards with their richer presentation.
 static NSString *ApolloHLItemsPresentationSig(NSArray<ApolloHLItem *> *items) {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     for (ApolloHLItem *it in items) {
-        [parts addObject:[NSString stringWithFormat:@"%@\x1F%@\x1F%@\x1F%@\x1F%lld\x1F%d",
+        [parts addObject:[NSString stringWithFormat:@"%@\x1F%@\x1F%@\x1F%@\x1F%lld\x1F%d\x1F%.3f",
                           it.fullName ?: it.permalink ?: @"?",
                           it.title ?: @"",
                           it.thumbnailURL.absoluteString ?: @"",
                           it.flairText ?: @"",
                           it.numComments,
-                          it.isSpoiler]];
+                          it.isSpoiler,
+                          it.createdAt.timeIntervalSince1970]];
     }
     return [parts componentsJoinedByString:@"\x1E"];
 }
@@ -1800,7 +1755,6 @@ static void ApolloHLApplyHeaderSurface(UIView *container, UIView *carousel) {
 
 static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<ApolloHLItem *> *items, CGFloat width) {
     if (items.count == 0) return nil;
-    ApolloHLRecordFirstSeen(sub.lowercaseString, items);
     BOOL collapsed = ApolloHLIsCollapsed(sub);
     // Collapsed = just the 26pt title row. The row's glyphs (pin y6-20, label text
     // ~y6-22, chevron y7-18) already sit centered within those 26pt, so any extra
@@ -1859,8 +1813,6 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
     CGFloat x = kApolloHLSidePadding;
     for (ApolloHLItem *item in items) {
         ApolloHLCardView *card = ApolloHLBuildCard(item);
-        NSString *pid = ApolloHLItemPostID(item);
-        card.firstSeen = pid.length ? ApolloHLFirstSeen()[view.subreddit][pid] : nil;
         card.frame = CGRectMake(x, 0, kApolloHLCardWidth, kApolloHLCardHeight);
         [scroll addSubview:card];
         x += kApolloHLCardWidth + kApolloHLCardSpacing;
@@ -2566,6 +2518,9 @@ static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
         // Comment totals are live metadata, not a fill-once field. A stable pin
         // can gain comments for weeks without its identity/title ever changing.
         if (info || api) w.numComments = info ? info.numComments : api.numComments;
+        // DOM-only cards wait for a real creation timestamp. Failed/partial
+        // enrichment must not erase a creation date we already know.
+        w.createdAt = info.createdAt ?: api.createdAt ?: w.createdAt;
         if (!w.isSpoiler) w.isSpoiler = info ? info.isSpoiler : (api ? api.isSpoiler : NO);
         // The DOM gives neither selftext nor pin state, so a web item only learns
         // it is a live interactive post — and whether it is one of the classic
@@ -2692,6 +2647,15 @@ static void ApolloHLMaybeWebUpgrade(NSString *subreddit) {
         // whatever metadata the fast REST result already knows, then show the full
         // list immediately instead of blocking all extra cards on another network
         // round trip. Missing off-screen thumbnails/details arrive just below.
+        // Creation dates never change. Carry known dates into these new DOM
+        // objects so an unavailable /api/info cannot erase a web-only card's New
+        // window. Leave changing metadata, including pin state, to fresh replies.
+        NSMutableDictionary<NSString *, NSDate *> *knownCreationDates = [NSMutableDictionary dictionary];
+        for (ApolloHLItem *cached in ApolloHLCache()[sub]) {
+            NSString *pid = ApolloHLItemPostID(cached);
+            if (pid.length && cached.createdAt) knownCreationDates[pid] = cached.createdAt;
+        }
+        for (ApolloHLItem *item in items) item.createdAt = knownCreationDates[ApolloHLItemPostID(item) ?: @""];
         ApolloHLMergeMetadata(items, apiItems, @{});
         // A pinned interactive post the feed is rendering live must not come back
         // as a card via the web set. The DOM scrape carries no selftext, so match
