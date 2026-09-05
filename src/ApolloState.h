@@ -174,6 +174,9 @@ extern ApolloTabBarHideStyle sTabBarHideStyle;
 #ifdef __cplusplus
 extern "C" {
 #endif
+// Opt-in top navigation bar movement, following the bottom tab bar's scroll
+// behavior while Hide Bars on Scroll is enabled. Default NO.
+extern BOOL sHideTopBarOnScroll;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
