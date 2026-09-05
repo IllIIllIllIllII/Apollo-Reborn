@@ -297,6 +297,7 @@ static void ApolloHLReloadFeed(UIViewController *vc) {
 @property (nonatomic, copy) NSString *permalink;   // "/r/sub/comments/..."
 @property (nonatomic, copy) NSString *fullName;    // "t3_xxxx"
 @property (nonatomic, copy) NSString *flairText;
+@property (nonatomic) BOOL hasFlairMetadata; // a known nil means the flair was removed
 @property (nonatomic) long long numComments;
 @property (nonatomic) BOOL hasCommentCount; // missing metadata is not a real zero
 @property (nonatomic, strong) NSDate *createdAt; // Reddit's created_utc, never local discovery time
@@ -510,6 +511,7 @@ static NSDictionary *ApolloHLItemToPlist(ApolloHLItem *it) {
     if (it.permalink) d[@"p"] = it.permalink;
     if (it.fullName) d[@"f"] = it.fullName;
     if (it.flairText) d[@"fl"] = it.flairText;
+    if (it.hasFlairMetadata) d[@"flKnown"] = @YES;
     if (it.hasCommentCount) d[@"c"] = @(it.numComments);
     if (it.createdAt) d[@"createdUTC"] = @(it.createdAt.timeIntervalSince1970);
     if (it.thumbnailURL.absoluteString) d[@"u"] = it.thumbnailURL.absoluteString;
@@ -539,6 +541,8 @@ static NSArray<ApolloHLItem *> *ApolloHLItemsFromPlist(id plist) {
         it.permalink = permalink;
         it.fullName = ApolloHLStringValue(d[@"f"]);
         it.flairText = ApolloHLStringValue(d[@"fl"]);
+        it.hasFlairMetadata = it.flairText != nil ||
+            ([d[@"flKnown"] isKindOfClass:NSNumber.class] && [d[@"flKnown"] boolValue]);
         long long count = 0;
         it.hasCommentCount = ApolloHLReadCommentCount(d[@"c"], &count);
         it.numComments = count;
@@ -767,7 +771,9 @@ static ApolloHLItem *ApolloHLItemFromPostData(NSDictionary *d) {
     item.title = title;
     item.permalink = permalink;
     item.fullName = ApolloHLStringValue(d[@"name"]);
-    item.flairText = ApolloHLStringValue(d[@"link_flair_text"]);
+    id flair = d[@"link_flair_text"];
+    item.flairText = ApolloHLStringValue(flair);
+    item.hasFlairMetadata = item.flairText != nil || flair == NSNull.null;
     long long count = 0;
     item.hasCommentCount = ApolloHLReadCommentCount(d[@"num_comments"], &count);
     item.numComments = count;
@@ -2575,7 +2581,10 @@ static void ApolloHLRestoreCachedMetadata(NSArray<ApolloHLItem *> *webItems,
         if (!cached) continue;
         if (!item.fullName.length) item.fullName = cached.fullName;
         if (!item.thumbnailURL) item.thumbnailURL = cached.thumbnailURL;
-        if (!item.flairText.length) item.flairText = cached.flairText;
+        if (!item.hasFlairMetadata && !item.flairText.length) {
+            item.flairText = cached.flairText;
+            item.hasFlairMetadata = cached.hasFlairMetadata || cached.flairText != nil;
+        }
         if (!item.hasCommentCount && cached.hasCommentCount) {
             item.numComments = cached.numComments;
             item.hasCommentCount = YES;
@@ -2602,7 +2611,13 @@ static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
         ApolloHLItem *api = pid.length ? apiByID[pid] : nil;
         if (!w.fullName.length) w.fullName = info.fullName ?: api.fullName;
         w.thumbnailURL = info.thumbnailURL ?: api.thumbnailURL ?: w.thumbnailURL;
-        w.flairText = info.flairText ?: api.flairText ?: w.flairText;
+        // An explicit null from Reddit removes a flair. A missing field or a
+        // failed request leaves cached metadata intact until a real answer.
+        ApolloHLItem *flairSource = info.hasFlairMetadata ? info : (api.hasFlairMetadata ? api : nil);
+        if (flairSource) {
+            w.flairText = flairSource.flairText;
+            w.hasFlairMetadata = YES;
+        }
         // Comment totals are live metadata, not a fill-once field. A stable pin
         // can gain comments for weeks without its identity/title ever changing.
         ApolloHLItem *countSource = info.hasCommentCount ? info : (api.hasCommentCount ? api : nil);
