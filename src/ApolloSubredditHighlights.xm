@@ -1640,7 +1640,9 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
         NSString *pid = ApolloHLItemPostID(card.item);
         BOOL read = pid.length && [readSet containsObject:pid];
         NSNumber *baseline = pid.length ? commentTotals[pid] : nil;
-        [card applyRead:read known:(readIDs != nil) commentBaseline:baseline now:now];
+        // Settings samples have no Reddit identity and cannot have a known read
+        // state. Keep their preview independent of the user's read history.
+        [card applyRead:read known:(pid.length > 0 && readIDs != nil) commentBaseline:baseline now:now];
         NSTimeInterval remaining = card.item.createdAt ? kApolloHLNewLifetime - [now timeIntervalSinceDate:card.item.createdAt] : 0;
         if (remaining > 0 && remaining <= kApolloHLNewLifetime) nextExpiry = MIN(nextExpiry, remaining);
     }
