@@ -11,8 +11,6 @@
 #import <errno.h>
 #import <fcntl.h>
 #import <unistd.h>
-#import <sys/stat.h>
-#import "minizip/compat/unzip.h"
 
 static NSString *const kMainPlistFilename = @"preferences.plist";
 static NSString *const kGroupPlistFilename = @"group.plist";
@@ -20,25 +18,10 @@ static NSString *const kAccountsFilename = @"accounts.txt";
 static NSString *const kKeychainPlistFilename = @"keychain.plist";
 static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
-// Export and restore use the same exact Apollo-owned namespaces. Never accept
-// an unrelated service merely because its name contains Apollo's bundle ID.
-static BOOL ApolloBackupOwnsKeychainIdentity(id service, id account) {
-    if (![service isKindOfClass:NSString.class] || ![account isKindOfClass:NSString.class] ||
-        ![account length] || [account rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
-        [service rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) return NO;
-    if ([service isEqualToString:@"com.christianselig.Apollo.webjson"]) {
-        if ([@[@"sessionCookieHeader", @"sessionModhash", @"sessionUsername"] containsObject:account]) return YES;
-        return [account rangeOfString:@"^websession:[^:\\s\\p{Cc}]+:(cookie|modhash)$"
-                              options:NSRegularExpressionSearch].location != NSNotFound;
-    }
-    // The shared-group form is confirmed by ApolloWebJSONIdentity's live-device
-    // service. Both initializer forms and the two ordinary Valet classes exist
-    // in Apollo's bundled Valet framework; older accessibility names stay valid.
-    NSString *pattern = @"^VAL_VAL(?:Synchronizable)?Valet_initWith(?:SharedAccessGroupIdentifier|Identifier):accessibility:_com\\.christianselig\\.Apollo_Accessible(?:AfterFirstUnlock|WhenUnlocked|Always)(?:ThisDeviceOnly)?$";
-    return [service rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound ||
-        [service isEqualToString:@"VAL_VALValet_initWithIdentifier:accessibility:_com.christianselig.Apollo_AccessibleWhenPasscodeSetThisDeviceOnly"] ||
-        [service isEqualToString:@"VAL_VALValet_initWithSharedAccessGroupIdentifier:accessibility:_com.christianselig.Apollo_AccessibleWhenPasscodeSetThisDeviceOnly"];
-}
+// Apollo stores logged-in account credentials in the keychain via Valet, whose internal
+// service name embeds the app's bundle id. Match on that substring to capture only Apollo's
+// own keychain items (account blobs, the application-only account, Ultra/Pro flags, etc.).
+static CFStringRef const kValetServiceSubstring = CFSTR("com.christianselig.Apollo");
 
 // Capture Apollo's Valet keychain items so a backup can fully restore a signed-in session —
 // not just the NSUserDefaults mirror. Returns an array of { service, account, data } dicts.
@@ -82,13 +65,13 @@ static NSArray<NSDictionary *> *ApolloCaptureValetKeychainItems(OSStatus *outSta
             CFDictionaryRef item = (CFDictionaryRef)rawItem;
             CFStringRef service = CFDictionaryGetValue(item, kSecAttrService);
             CFDataRef data = CFDictionaryGetValue(item, kSecValueData);
-            if (!service || CFGetTypeID(service) != CFStringGetTypeID()) continue;
+            if (!service || CFGetTypeID(service) != CFStringGetTypeID() ||
+                CFStringFind(service, kValetServiceSubstring, 0).location == kCFNotFound) continue;
             if (!data || CFGetTypeID(data) != CFDataGetTypeID()) continue;
             CFStringRef account = CFDictionaryGetValue(item, kSecAttrAccount);
             NSString *serviceObject = (__bridge NSString *)service;
             NSString *accountObject = account && CFGetTypeID(account) == CFStringGetTypeID()
                 ? (__bridge NSString *)account : @"";
-            if (!ApolloBackupOwnsKeychainIdentity(serviceObject, accountObject)) continue;
             // The protection class isn't stored: it's recovered from the service name on replay
             // (see ApolloAccessibleFromValetService), which is poison-proof — an item captured on
             // an affected device carries the wrong class, but its service name still names the
@@ -106,16 +89,16 @@ static NSArray<NSDictionary *> *ApolloCaptureValetKeychainItems(OSStatus *outSta
     // the mirror (the real keychain enumeration above missed it), and where both exist the
     // mirror value is the authoritative one (the real copy is the stale row that failed to
     // update), so mirror entries win.
-    for (id item in ApolloKeychainMirrorItemsForBackup()) {
-        if (![item isKindOfClass:NSDictionary.class]) continue;
+    for (NSDictionary *item in ApolloKeychainMirrorItemsForBackup()) {
         NSString *service = item[@"service"];
         NSData *data = item[@"data"];
+        if (![service isKindOfClass:[NSString class]] ||
+            ![service containsString:(__bridge NSString *)kValetServiceSubstring]) continue;
         if (![data isKindOfClass:[NSData class]]) continue;
         // Mirror entries carry no protection class (the container mirror only stores
         // service/account/data), so a mirror-only item restores as AfterFirstUnlock — correct for
         // the keychain-broken devices the mirror exists for.
         NSString *acct = [item[@"account"] isKindOfClass:[NSString class]] ? item[@"account"] : @"";
-        if (!ApolloBackupOwnsKeychainIdentity(service, acct)) continue;
         byKey[[NSString stringWithFormat:@"%@\n%@", service, acct]] = @{
             @"service": service, @"account": acct, @"data": data,
         };
@@ -144,167 +127,31 @@ static CFStringRef ApolloAccessibleFromValetService(id service) {
     return NULL;
 }
 
-static NSArray<NSDictionary *> *ApolloBackupValidatedKeychainItems(id rawItems) {
-    if (![rawItems isKindOfClass:NSArray.class]) return nil;
-    NSMutableSet<NSString *> *identities = [NSMutableSet set];
-    for (id item in rawItems) {
-        if (![item isKindOfClass:NSDictionary.class] ||
-            !ApolloBackupOwnsKeychainIdentity(item[@"service"], item[@"account"]) ||
-            ![item[@"data"] isKindOfClass:NSData.class]) return nil;
-        NSString *identity = [NSString stringWithFormat:@"%@\n%@", item[@"service"], item[@"account"]];
-        if ([identities containsObject:identity]) return nil;
-        [identities addObject:identity];
-    }
-    return rawItems;
-}
-
-// Exporters before 3.8.0 captured every generic password whose service merely
-// contained "com.christianselig.Apollo" (recording a missing account as ""). Besides
-// the Valet and web-session rows restore replays, that swept in the usage-heartbeat
-// seed (com.christianselig.Apollo.heartbeat, written on every default install since
-// 3.4.1), so rejecting the archive over unowned rows made nearly every pre-3.8
-// backup unrestorable (#1209, #1214). Drop them instead: restore never writes them,
-// just as the current exporter never captures them. A corrupt file still rejects: a
-// non-dictionary entry, or an Apollo-owned record whose contents are not data or
-// whose identity appears twice.
-static NSArray<NSDictionary *> *ApolloBackupRestorableKeychainItems(id rawItems) {
-    if (![rawItems isKindOfClass:NSArray.class]) return nil;
-    NSMutableArray<NSDictionary *> *owned = [NSMutableArray array];
-    NSMutableOrderedSet<NSString *> *skippedServices = [NSMutableOrderedSet orderedSet];
-    NSUInteger skipped = 0;
-    for (id item in rawItems) {
-        if (![item isKindOfClass:NSDictionary.class]) {
-            ApolloLog(@"[BackupRestore] keychain.plist has a non-dictionary entry");
-            return nil;
-        }
-        if (ApolloBackupOwnsKeychainIdentity(item[@"service"], item[@"account"])) {
-            [owned addObject:item];
-            continue;
-        }
-        skipped++;
-        // Name a few distinct services for triage. The archive is untrusted, so
-        // the log line stays short and single-line whatever the rows hold.
-        if (skippedServices.count >= 4) continue;
-        id service = item[@"service"];
-        NSString *name = [service isKindOfClass:NSString.class] ? service : @"(no service)";
-        if (name.length > 96) {
-            name = [[name substringWithRange:[name rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 96)]]
-                    stringByAppendingString:@"…"];
-        }
-        [skippedServices addObject:[[name componentsSeparatedByCharactersInSet:NSCharacterSet.controlCharacterSet]
-                                    componentsJoinedByString:@"?"]];
-    }
-    if (skipped > 0) {
-        ApolloLog(@"[BackupRestore] Skipping %lu keychain record(s) this version does not restore: %@",
-                  (unsigned long)skipped, [skippedServices.array componentsJoinedByString:@", "]);
-    }
-    NSArray<NSDictionary *> *validated = ApolloBackupValidatedKeychainItems(owned);
-    if (!validated) ApolloLog(@"[BackupRestore] keychain.plist has an Apollo record with non-data contents or a duplicate identity");
-    return validated;
-}
-
-// Read every original before changing any item. An unreadable old credential is
-// not absence: abort rather than risking an update we cannot safely roll back.
-static NSArray<NSDictionary *> *ApolloBackupCaptureReplayOriginals(NSArray<NSDictionary *> *items, OSStatus *outStatus) {
-    NSMutableArray *originals = [NSMutableArray arrayWithCapacity:items.count];
+// Replay captured Valet keychain items back into the keychain. On a device this writes the
+// real keychain (our SecItem hooks strip the access group so the unsigned/sideloaded app can
+// store them); in the simulator the tweak's keychain shim intercepts these adds.
+static void ApolloReplayValetKeychainItems(NSArray<NSDictionary *> *items) {
     for (NSDictionary *item in items) {
-        CFDictionaryRef query = ApolloCreateGenericPasswordDataQuery((__bridge CFStringRef)item[@"service"],
-                                                                      (__bridge CFStringRef)item[@"account"]);
-        NSMutableDictionary *read = [(__bridge NSDictionary *)query mutableCopy];
-        CFRelease(query);
-        read[(__bridge id)kSecReturnAttributes] = @YES;
-        read[(__bridge id)kSecUseAuthenticationUI] = (__bridge id)kSecUseAuthenticationUIFail;
-        CFTypeRef result = NULL;
-        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)read, &result);
-        id found = CFBridgingRelease(result);
-        if (status == -34018) {
-            // This installed signing identity cannot update the real keychain;
-            // its successful writes use Apollo's durable container mirror.
-            // Preserve first restore on that cohort, including a fresh mirror.
-            // Other read errors (locked/protected items) remain hard failures.
-            NSDictionary *mirrored = nil;
-            for (id candidate in ApolloKeychainMirrorItemsForBackup()) {
-                if ([candidate isKindOfClass:NSDictionary.class] &&
-                    [candidate[@"service"] isEqual:item[@"service"]] &&
-                    [candidate[@"account"] isEqual:item[@"account"]]) { mirrored = candidate; break; }
-            }
-            if (mirrored) {
-                if (![mirrored[@"data"] isKindOfClass:NSData.class]) {
-                    if (outStatus) *outStatus = errSecDecode;
-                    return nil;
-                }
-                [originals addObject:@{@"service": item[@"service"], @"account": item[@"account"], @"data": mirrored[@"data"]}];
-                continue;
-            }
-        }
-        if (status == errSecItemNotFound || status == -34018) {
-            [originals addObject:@{@"service": item[@"service"], @"account": item[@"account"], @"absent": @YES}];
-            continue;
-        }
-        NSData *data = [found isKindOfClass:NSDictionary.class] ? found[(__bridge id)kSecValueData] : found;
-        if (status != errSecSuccess || ![data isKindOfClass:NSData.class]) {
-            if (outStatus) *outStatus = status == errSecSuccess ? errSecDecode : status;
-            return nil;
-        }
-        id accessible = [found isKindOfClass:NSDictionary.class] ? found[(__bridge id)kSecAttrAccessible] : nil;
-        NSMutableDictionary *original = [@{@"service": item[@"service"], @"account": item[@"account"], @"data": data} mutableCopy];
-        if ([accessible isKindOfClass:NSString.class]) original[@"accessible"] = accessible;
-        [originals addObject:original];
-    }
-    return originals;
-}
-
-static OSStatus ApolloBackupReplayItem(NSDictionary *item) {
-    CFStringRef accessible = ApolloAccessibleFromValetService(item[@"service"]);
-    return ApolloUpsertGenericPasswordData((__bridge CFStringRef)item[@"service"],
-                                          (__bridge CFStringRef)item[@"account"], item[@"data"],
-                                          accessible ?: kSecAttrAccessibleAfterFirstUnlock);
-}
-
-static BOOL ApolloBackupRollbackKeychainItems(NSArray<NSDictionary *> *originals) {
-    BOOL restored = YES;
-    for (NSDictionary *item in originals.reverseObjectEnumerator) {
-        OSStatus status;
-        if ([item[@"absent"] boolValue]) {
-            CFDictionaryRef identity = ApolloCreateGenericPasswordIdentity((__bridge CFStringRef)item[@"service"],
-                                                                            (__bridge CFStringRef)item[@"account"]);
-            status = SecItemDelete(identity);
-            CFRelease(identity);
-            if (status == errSecItemNotFound) status = errSecSuccess;
-        } else {
-            CFStringRef accessible = item[@"accessible"] ? (__bridge CFStringRef)item[@"accessible"]
-                : ApolloAccessibleFromValetService(item[@"service"]);
-            status = ApolloUpsertGenericPasswordData((__bridge CFStringRef)item[@"service"],
-                                                    (__bridge CFStringRef)item[@"account"], item[@"data"],
-                                                    accessible ?: kSecAttrAccessibleAfterFirstUnlock);
-        }
-        if (status != errSecSuccess) restored = NO;
-    }
-    return restored;
-}
-
-// Validation runs again at the write boundary, so a malformed caller can never
-// reach a keychain API. Roll back the successful prefix: a failed native update
-// does not change its item, and ApolloMirrorPut restores its old entry on failure.
-static BOOL ApolloReplayValetKeychainItems(NSArray<NSDictionary *> *items,
-                                         NSArray<NSDictionary *> *originals,
-                                         BOOL *rollbackSucceeded, OSStatus *outStatus) {
-    if (rollbackSucceeded) *rollbackSucceeded = YES;
-    if (!ApolloBackupValidatedKeychainItems(items) || originals.count != items.count) {
-        if (outStatus) *outStatus = errSecParam;
-        return NO;
-    }
-    for (NSUInteger index = 0; index < items.count; index++) {
-        OSStatus status = ApolloBackupReplayItem(items[index]);
-        if (status != errSecSuccess) {
-            if (outStatus) *outStatus = status;
-            BOOL rolledBack = ApolloBackupRollbackKeychainItems([originals subarrayWithRange:NSMakeRange(0, index)]);
-            if (rollbackSucceeded) *rollbackSucceeded = rolledBack;
-            ApolloLog(@"[BackupRestore] Valet replay failed (OSStatus %d), rollback %@", (int)status, rolledBack ? @"succeeded" : @"failed");
-            return NO;
+        NSData *data = item[@"data"];
+        if (![data isKindOfClass:[NSData class]]) continue;
+        NSString *service = [item[@"service"] isKindOfClass:[NSString class]] ? item[@"service"] : @"";
+        NSString *account = [item[@"account"] isKindOfClass:[NSString class]] ? item[@"account"] : @"";
+        // MANDATORY — see ApolloWebJSONWriteValetItem for why. Without a protection class,
+        // SecItemAdd defaults the item to kSecAttrAccessibleWhenUnlocked while Valet reads with
+        // AfterFirstUnlock, so the read misses an item that provably exists and AccountManager
+        // wipes the account. Take the class from the service name (the reader's own source of
+        // truth), falling back to AfterFirstUnlock — Apollo's account valet, and the safe floor
+        // for a credential that must be readable during background token refresh.
+        CFStringRef accessible = ApolloAccessibleFromValetService(service);
+        OSStatus st =
+            ApolloUpsertGenericPasswordData((__bridge CFStringRef)service,
+                                           (__bridge CFStringRef)account,
+                                           data,
+                                           accessible ?: kSecAttrAccessibleAfterFirstUnlock);
+        if (st != errSecSuccess) {
+            ApolloLog(@"[BackupRestore] Valet item replay failed (OSStatus %d)", (int)st);
         }
     }
-    return YES;
 }
 
 // Default: Library/Preferences/com.christianselig.Apollo.plist, depending on bundle ID.
@@ -361,7 +208,7 @@ static NSString *ApolloBackupReserveZipPath(NSFileManager *fileManager, NSError 
     NSString *timestamp = [dateFormatter stringFromDate:[NSDate date]];
     for (NSUInteger attempt = 0; attempt < 3; attempt++) {
         NSString *suffix = attempt == 0 ? @"" : [@"_" stringByAppendingString:NSUUID.UUID.UUIDString];
-        NSString *filename = [NSString stringWithFormat:@"Apollo_Backup_%@%@.apollobackup", timestamp, suffix];
+        NSString *filename = [NSString stringWithFormat:@"Apollo_Backup_%@%@.zip", timestamp, suffix];
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:filename];
         int descriptor = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL, 0600);
         if (descriptor < 0) {
@@ -524,145 +371,6 @@ NSURL *ApolloBackupRestoreCreateBackupZip(NSError **error) {
     return [NSURL fileURLWithPath:zipPath isDirectory:NO];
 }
 
-// Current and legacy exporters contain only these flat files. Reject duplicate
-// names, links, directories and unexpected paths before the ZIP can extract them.
-static BOOL ApolloBackupArchiveHasSafeEntries(NSURL *url) {
-    unzFile archive = unzOpen(url.fileSystemRepresentation);
-    if (!archive) return NO;
-    BOOL valid = NO;
-    @try {
-        unz_global_info64 info = {0};
-        if (unzGetGlobalInfo64(archive, &info) != UNZ_OK || info.number_entry < 1 || info.number_entry > 4) return NO;
-        NSSet *allowed = [NSSet setWithArray:@[kMainPlistFilename, kGroupPlistFilename, kKeychainPlistFilename, kAccountsFilename]];
-        NSMutableSet *seen = [NSMutableSet set];
-        // Settings backups contain plists and a username list, never media.
-        // This generous ceiling prevents a tiny ZIP exhausting the device.
-        uint64_t const maximumBytes = 128ULL * 1024 * 1024;
-        uint64_t totalBytes = 0;
-        uint64_t inflatedBytes = 0;
-        uint8_t buffer[64 * 1024];
-        int status = unzGoToFirstFile(archive);
-        for (uint64_t index = 0; index < info.number_entry; index++) {
-            unz_file_info64 entry = {0};
-            char filename[128] = {0};
-            if (status != UNZ_OK || unzGetCurrentFileInfo64(archive, &entry, filename, sizeof(filename), NULL, 0, NULL, 0) != UNZ_OK ||
-                entry.size_filename == 0 || entry.size_filename >= sizeof(filename)) return NO;
-            if (entry.uncompressed_size > maximumBytes - totalBytes) return NO;
-            totalBytes += entry.uncompressed_size;
-            NSString *name = [[NSString alloc] initWithBytes:filename length:entry.size_filename encoding:NSUTF8StringEncoding];
-            mode_t kind = (mode_t)(entry.external_fa >> 16) & S_IFMT;
-            if (!name || ![allowed containsObject:name] || [seen containsObject:name] ||
-                (kind && kind != S_IFREG) || (entry.external_fa & 0x10)) return NO;
-            // Do not trust advertised sizes alone: minizip can inflate an
-            // entry whose header says zero bytes. Bound the actual stream and
-            // require its byte count and CRC to agree before any extraction.
-            if (unzOpenCurrentFile(archive) != UNZ_OK) return NO;
-            uint64_t entryBytes = 0;
-            BOOL contentValid = YES;
-            int bytesRead = 0;
-            while ((bytesRead = unzReadCurrentFile(archive, buffer, sizeof(buffer))) > 0) {
-                uint64_t amount = (uint64_t)bytesRead;
-                if (amount > maximumBytes - inflatedBytes || amount > entry.uncompressed_size - entryBytes) {
-                    contentValid = NO;
-                    break;
-                }
-                entryBytes += amount;
-                inflatedBytes += amount;
-            }
-            if (bytesRead < 0 || entryBytes != entry.uncompressed_size) contentValid = NO;
-            int closeStatus = unzCloseCurrentFile(archive);
-            if (!contentValid || closeStatus != UNZ_OK) return NO;
-            [seen addObject:name];
-            status = unzGoToNextFile(archive);
-        }
-        valid = status == UNZ_END_OF_LIST_OF_FILE && [seen containsObject:kMainPlistFilename];
-    } @finally {
-        unzClose(archive);
-    }
-    return valid;
-}
-
-// Missing optional files are valid old backups; a present unreadable, malformed
-// or wrongly typed file rejects the whole backup before defaults/keychain change.
-// Each rejection names the file (never its contents) so a report's debug log
-// says which check refused the archive.
-static id ApolloBackupReadRestorePlist(NSString *path, Class expectedClass, BOOL required, BOOL *valid) {
-    NSError *error = nil;
-    NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&error];
-    if (!attributes) {
-        if (required || ![error.domain isEqualToString:NSCocoaErrorDomain] || error.code != NSFileReadNoSuchFileError) {
-            ApolloLog(@"[BackupRestore] %@ is missing or unreadable", path.lastPathComponent);
-            *valid = NO;
-        }
-        return nil;
-    }
-    if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) {
-        ApolloLog(@"[BackupRestore] %@ is not a regular file", path.lastPathComponent);
-        *valid = NO;
-        return nil;
-    }
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    id contents = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:nil error:nil] : nil;
-    if (![contents isKindOfClass:expectedClass]) {
-        ApolloLog(@"[BackupRestore] %@ is not a readable %@ property list", path.lastPathComponent, NSStringFromClass(expectedClass));
-        *valid = NO;
-        return nil;
-    }
-    return contents;
-}
-
-// Schema keys are fixed setting names (registered defaults or Apollo's account
-// keys), so naming the mismatched key logs no account data.
-static BOOL ApolloBackupPreferencesMatchSchema(NSDictionary *preferences, NSDictionary *schema, NSString *filename) {
-    NSArray<Class> *types = @[NSString.class, NSNumber.class, NSArray.class, NSDictionary.class, NSData.class, NSDate.class];
-    for (id key in preferences) {
-        if (![key isKindOfClass:NSString.class]) {
-            ApolloLog(@"[BackupRestore] %@ has a non-string key", filename);
-            return NO;
-        }
-        id expected = schema[key];
-        if (!expected) continue;
-        for (Class type in types) {
-            if ([expected isKindOfClass:type] && ![preferences[key] isKindOfClass:type]) {
-                ApolloLog(@"[BackupRestore] %@ value for %@ is %@, expected %@", filename, key,
-                          NSStringFromClass([preferences[key] class]), NSStringFromClass(type));
-                return NO;
-            }
-        }
-    }
-    return YES;
-}
-
-static BOOL ApolloBackupValidMainPreferences(NSDictionary *preferences) {
-    NSDictionary *registered = [NSUserDefaults.standardUserDefaults volatileDomainForName:NSRegistrationDomain];
-    if (!ApolloBackupPreferencesMatchSchema(preferences, registered, kMainPlistFilename)) return NO;
-    // Some settings have no registered default but are read as strings during
-    // restore's immediate in-memory synchronization. Validate those too.
-    NSArray *stringKeys = @[
-        UDKeyAISummaryProvider, UDKeyCustomAIAPIKey, UDKeyCustomAIBaseURL,
-        UDKeyCustomAIModel, UDKeyGeminiAIModel, UDKeyGeminiAPIKey,
-        UDKeyImageChestAPIToken, UDKeyImgurClientId, UDKeyLibreTranslateAPIKey,
-        UDKeyLibreTranslateURL, UDKeyLinkPreviewCardColorHex, UDKeyOpenRouterAIModel,
-        UDKeyOpenRouterAPIKey, UDKeyRandNsfwSubredditsSource, UDKeyRandomSubredditsSource,
-        UDKeyRedditClientId, UDKeyRedditClientSecret, UDKeyRedirectURI,
-        UDKeyTranslationProvider, UDKeyTranslationTargetLanguage, UDKeyTrendingSubredditsLimit,
-        UDKeyTrendingSubredditsSource, UDKeyUserAgent,
-    ];
-    for (NSString *key in stringKeys) {
-        if (preferences[key] && ![preferences[key] isKindOfClass:NSString.class]) {
-            ApolloLog(@"[BackupRestore] %@ value for %@ is not a string", kMainPlistFilename, key);
-            return NO;
-        }
-    }
-    return YES;
-}
-
-static BOOL ApolloBackupValidGroupPreferences(NSDictionary *preferences) {
-    NSDictionary *schema = @{@"LoggedInAccountDetails": @{}, @"CurrentRedditAccountIndex": @0,
-        @"RedditAccounts2": [NSData data], @"RedditApplicationOnlyAccount2": [NSData data]};
-    return ApolloBackupPreferencesMatchSchema(preferences, schema, kGroupPlistFilename);
-}
-
 BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitle, NSString **outErrorMessage) {
     NSString *tempDir = NSTemporaryDirectory();
     NSString *extractDir = [tempDir stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
@@ -678,58 +386,42 @@ BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitl
         return NO;
     }
 
-    BOOL scoped = [zipURL startAccessingSecurityScopedResource];
+    [zipURL startAccessingSecurityScopedResource];
     NSError *error = nil;
-    BOOL safeArchive = ApolloBackupArchiveHasSafeEntries(zipURL);
-    BOOL success = safeArchive && [SSZipArchive unzipFileAtPath:zipURL.path toDestination:extractDir overwrite:NO password:nil error:&error];
-    if (scoped) [zipURL stopAccessingSecurityScopedResource];
+    BOOL success = [SSZipArchive unzipFileAtPath:zipURL.path toDestination:extractDir overwrite:YES password:nil error:&error];
+    [zipURL stopAccessingSecurityScopedResource];
 
     if (!success) {
         [fileManager removeItemAtPath:extractDir error:nil];
-        if (outErrorTitle) *outErrorTitle = safeArchive ? @"Restore Failed" : @"Invalid Backup";
-        if (outErrorMessage) *outErrorMessage = safeArchive ? @"Could not extract backup archive." : @"The archive contains unexpected, duplicate, or unsafe backup files.";
+        if (outErrorTitle) *outErrorTitle = @"Restore Failed";
+        if (outErrorMessage) *outErrorMessage = @"Could not extract backup archive.";
         return NO;
     }
 
-    BOOL valid = YES;
-    NSDictionary *mainPrefs = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kMainPlistFilename], NSDictionary.class, YES, &valid);
-    NSDictionary *groupPrefs = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kGroupPlistFilename], NSDictionary.class, NO, &valid);
-    NSArray *rawKeychain = ApolloBackupReadRestorePlist([extractDir stringByAppendingPathComponent:kKeychainPlistFilename], NSArray.class, NO, &valid);
-    NSArray *keychainItems = rawKeychain ? ApolloBackupRestorableKeychainItems(rawKeychain) : @[];
-    if (!valid || !mainPrefs || !ApolloBackupValidMainPreferences(mainPrefs) ||
-        (groupPrefs && !ApolloBackupValidGroupPreferences(groupPrefs)) || !keychainItems) {
+    NSString *mainPlistBackupPath = [extractDir stringByAppendingPathComponent:kMainPlistFilename];
+
+    if (![fileManager fileExistsAtPath:mainPlistBackupPath]) {
         [fileManager removeItemAtPath:extractDir error:nil];
         if (outErrorTitle) *outErrorTitle = @"Invalid Backup";
-        if (outErrorMessage) *outErrorMessage = @"A settings or credentials file in the backup is malformed. Nothing was restored.";
-        return NO;
-    }
-    ApolloLog(@"[BackupRestore] Backup validated: %lu settings, %lu shared settings, %lu keychain record(s) to restore",
-              (unsigned long)mainPrefs.count, (unsigned long)groupPrefs.count, (unsigned long)keychainItems.count);
-
-    OSStatus replayStatus = errSecSuccess;
-    NSArray *originalItems = ApolloBackupCaptureReplayOriginals(keychainItems, &replayStatus);
-    if (!originalItems) {
-        [fileManager removeItemAtPath:extractDir error:nil];
-        if (outErrorTitle) *outErrorTitle = @"Restore Failed";
-        if (outErrorMessage) *outErrorMessage = @"Could not read the existing account credentials safely. Unlock the device and try again. Nothing was restored.";
+        if (outErrorMessage) *outErrorMessage = @"The selected file is not a valid Apollo backup archive.";
         return NO;
     }
 
-    // Stop archive publication before credential mutation, without waiting for
-    // worker capture that may need main. Favorites are not suspended until the
-    // checked keychain transaction succeeds, so a rejected restore stays usable.
-    ApolloAutomaticBackup *backupManager = ApolloAutomaticBackup.sharedManager;
-    [backupManager suspendForSettingsRestore];
-    BOOL rollbackSucceeded = YES;
-    if (!ApolloReplayValetKeychainItems(keychainItems, originalItems, &rollbackSucceeded, &replayStatus)) {
+    NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPlistBackupPath];
+    if (!mainPrefs) {
         [fileManager removeItemAtPath:extractDir error:nil];
-        if (rollbackSucceeded) [backupManager resumeAfterFailedSettingsRestore];
-        if (outErrorTitle) *outErrorTitle = rollbackSucceeded ? @"Restore Failed" : @"Restore Incomplete";
-        if (outErrorMessage) *outErrorMessage = rollbackSucceeded
-            ? @"Could not restore the account credentials. The previous credentials and settings were preserved. Unlock the device and try again."
-            : @"Some account credentials could not be restored or recovered. Settings were not changed. Close and reopen Apollo, then verify your accounts before trying again.";
+        if (outErrorTitle) *outErrorTitle = @"Invalid Backup";
+        if (outErrorMessage) *outErrorMessage = @"The preferences file in the backup is corrupted or invalid.";
         return NO;
     }
+
+    // Restore is intentionally a one-way transaction: the success UI force-exits
+    // and launch reloads every setting. Suspend live favorites callbacks before
+    // unordered key replay so FavoriteSubreddits cannot be snapshotted into the
+    // old session's materialized account while its restored envelope/account
+    // state is only partially installed. Cancel automatic backup publication
+    // before replay as well, without waiting for its background archive work.
+    [[ApolloAutomaticBackup sharedManager] suspendForSettingsRestore];
     ApolloPerAccountFavoritesSuspendForPreferencesRestore();
 
     // Restore main preferences, skipping analytics/tracking keys
@@ -860,15 +552,31 @@ BOOL ApolloBackupRestoreRestoreFromZipURL(NSURL *zipURL, NSString **outErrorTitl
     // (LoggedInAccountDetails, CurrentRedditAccountIndex, and the RedditAccounts2 /
     // RedditApplicationOnlyAccount2 mirrors). Apollo's AccountManager actually loads accounts
     // from the *keychain* via Valet on launch — gated behind Valet.canAccessKeychain() — so
-    // these defaults alone don't sign the user in; the checked keychain replay above does.
+    // these defaults alone don't sign the user in; the keychain replay below is what does.
     //
     // Non-destructive by design: only keys present in the backup are written. A backup made
     // while logged out has no account keys, so the current install's accounts are left
     // intact rather than wiped.
-    if (groupPrefs) {
-        NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:kGroupSuiteName];
-        for (NSString *key in groupPrefs) [groupDefaults setObject:groupPrefs[key] forKey:key];
-        [groupDefaults synchronize];
+    NSString *groupPlistBackupPath = [extractDir stringByAppendingPathComponent:kGroupPlistFilename];
+    if ([fileManager fileExistsAtPath:groupPlistBackupPath]) {
+        NSDictionary *groupPrefs = [NSDictionary dictionaryWithContentsOfFile:groupPlistBackupPath];
+        if (groupPrefs) {
+            NSUserDefaults *groupDefaults = [[NSUserDefaults alloc] initWithSuiteName:kGroupSuiteName];
+
+            for (NSString *key in groupPrefs) {
+                [groupDefaults setObject:groupPrefs[key] forKey:key];
+            }
+            [groupDefaults synchronize];
+        }
+    }
+
+    // Replay the captured keychain account credentials. This is the part that signs the user
+    // back in: AccountManager reads these on the next launch (after the caller's exit(0)).
+    // Backups made before this feature shipped have no keychain.plist and simply skip it.
+    NSString *keychainBackupPath = [extractDir stringByAppendingPathComponent:kKeychainPlistFilename];
+    NSArray *keychainItems = [NSArray arrayWithContentsOfFile:keychainBackupPath];
+    if (keychainItems.count > 0) {
+        ApolloReplayValetKeychainItems(keychainItems);
     }
 
     [fileManager removeItemAtPath:extractDir error:nil];

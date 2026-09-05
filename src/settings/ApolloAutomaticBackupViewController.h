@@ -1,5 +1,5 @@
 #import "ApolloSettingsForm.h"
 
-// Automatic-backup scheduling and entry points for local backup management.
+// Interval, destination, and locally retained settings archives.
 @interface ApolloAutomaticBackupViewController : ApolloSettingsFormViewController
 @end
