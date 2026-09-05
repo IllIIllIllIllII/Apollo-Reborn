@@ -1888,41 +1888,49 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
 + (UIView *)previewCarouselForMode:(ApolloCommunityHighlightsMode)mode width:(CGFloat)width {
     if (mode == ApolloCommunityHighlightsModeOff || width <= 0.0) return nil;
 
-    // Render static title/flair samples through the production card builder.
+    // Render static title/flair/comment samples through the production card builder.
     // The Settings preview never fetches Reddit or opens posts.
-    NSArray<NSDictionary<NSString *, NSString *> *> *samples = @[
+    NSArray<NSDictionary<NSString *, id> *> *samples = @[
         @{
             @"title": @"Welcome to Apollo Reborn!",
             @"flair": @"Discussion",
+            @"comments": @128,
         },
         @{
             @"title": @"v3.0.0 - A new chapter: Apollo Reborn",
             @"flair": @"Release",
+            @"comments": @69,
         },
         @{
             @"title": @"Help wanted: Apollo Reborn is looking for artists!",
             @"flair": @"Discussion",
+            @"comments": @50,
         },
         @{
             @"title": @"We have flairs! Let us know if you have contributed to Apollo for a special flair!",
             @"flair": @"Guide",
+            @"comments": @24,
         },
         @{
             @"title": @"Thank you to all the developers that keep this going!",
             @"flair": @"Discussion",
+            @"comments": @37,
         },
         @{
             @"title": @"FULL DISPLAY SHOWS UP TO 6 COMMUNITY HIGHLIGHTS",
             @"flair": @"Sneek Peak",
+            @"comments": @6,
         },
     ];
     NSInteger count = mode == ApolloCommunityHighlightsModePartial ? 2 : (NSInteger)samples.count;
     NSMutableArray<ApolloHLItem *> *items = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
     for (NSInteger i = 0; i < count; i++) {
-        NSDictionary<NSString *, NSString *> *sample = samples[(NSUInteger)i];
+        NSDictionary<NSString *, id> *sample = samples[(NSUInteger)i];
         ApolloHLItem *item = [[ApolloHLItem alloc] init];
         item.title = sample[@"title"];
         item.flairText = sample[@"flair"];
+        item.numComments = [sample[@"comments"] longLongValue];
+        item.hasCommentCount = YES;
         [items addObject:item];
     }
 
