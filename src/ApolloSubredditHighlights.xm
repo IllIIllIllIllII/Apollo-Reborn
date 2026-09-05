@@ -2029,7 +2029,7 @@ static void ApolloHLClearDeDup(NSString *subreddit) {
 @end
 
 static void ApolloHLApplyStickyCountToTable(UIViewController *vc, NSString *subreddit); // defined near ApolloHLInstall
-static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
+static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)); // defined with InstallCarousel
 static void ApolloHLInstall(UIViewController *vc); // defined with the PostsViewController hooks
 
 UIView *ApolloHLUnwrapManagedHeader(UIView *headerView, UIViewController *hostVC) {
@@ -2132,7 +2132,7 @@ UIView *ApolloHLHeaderOriginalSubstitute(NSString *subreddit, UIViewController *
                 UITableView *tv = ApolloHLFindTableView(postsVC);
                 // Grow the header through the snap-free applier so a late arrival
                 // (posts already visible) slides in instead of shoving the feed (#909).
-                ApolloHLApplyHeaderChange(tv, newCarousel, ^{
+                ApolloHLApplyHeaderChange(tv, nil, newCarousel, ^{
                     [c installCarousel:newCarousel];
                     if (wrapper && tv && tv.tableHeaderView == wrapper) {
                         CGRect wf = wrapper.frame;
@@ -2266,11 +2266,26 @@ static void ApolloHLPinCarouselToTop(UITableView *tv, int attempt) {
 //    this table until the deferred apply lands.
 
 // The settled-table application: called only when no scroll is in flight.
-static void ApolloHLApplyHeaderChangeNow(UITableView *tableView, UIView *appearingView, void (^apply)(void)) {
+static void ApolloHLApplyHeaderChangeNow(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)) {
     CGFloat oldHeight = tableView.tableHeaderView.frame.size.height;
     CGFloat topY = -tableView.adjustedContentInset.top;
     BOOL atTop = (tableView.contentOffset.y - topY) <= 0.5;
     if (atTop) {
+        // REST, the fuller web list, and /api/info can each arrive separately.
+        // Once the carousel is visible, replacing its cards at the same height
+        // must not replay the entrance fade and briefly blank loaded content.
+        // Keep the slide/fade below for first insertion and collapse/expand.
+        BOOL sameHeight = previousCarousel &&
+            fabs(previousCarousel.frame.size.height - appearingView.frame.size.height) <= 0.5;
+        if (sameHeight) {
+            [UIView performWithoutAnimation:^{
+                appearingView.alpha = 1.0;
+                apply();
+                [tableView layoutIfNeeded];
+            }];
+            ApolloLog(@"[Highlights] updated existing carousel without fade (height %.0f)", appearingView.frame.size.height);
+            return;
+        }
         appearingView.alpha = 0.0;
         [UIView animateWithDuration:0.3 delay:0
                             options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction
@@ -2298,7 +2313,7 @@ static void ApolloHLApplyHeaderChangeNow(UITableView *tableView, UIView *appeari
     }
 }
 
-static void ApolloHLApplyHeaderChangeAttempt(UITableView *tableView, UIView *appearingView, void (^apply)(void), NSNumber *gen, int attempt) {
+static void ApolloHLApplyHeaderChangeAttempt(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void), NSNumber *gen, int attempt) {
     if (!tableView) return; // table died while deferred → the change is moot
     NSNumber *current = objc_getAssociatedObject(tableView, kApolloHLHeaderChangeGenKey);
     if (gen && current && ![gen isEqualToNumber:current]) return; // superseded by a newer change
@@ -2307,7 +2322,7 @@ static void ApolloHLApplyHeaderChangeAttempt(UITableView *tableView, UIView *app
         objc_setAssociatedObject(tableView, kApolloHLHeaderChangePendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         __weak UITableView *weakTable = tableView;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            ApolloHLApplyHeaderChangeAttempt(weakTable, appearingView, apply, gen, attempt + 1);
+            ApolloHLApplyHeaderChangeAttempt(weakTable, previousCarousel, appearingView, apply, gen, attempt + 1);
         });
         return;
     }
@@ -2318,10 +2333,10 @@ static void ApolloHLApplyHeaderChangeAttempt(UITableView *tableView, UIView *app
         apply(); // nothing visible can shift
         return;
     }
-    ApolloHLApplyHeaderChangeNow(tableView, appearingView, apply);
+    ApolloHLApplyHeaderChangeNow(tableView, previousCarousel, appearingView, apply);
 }
 
-static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *appearingView, void (^apply)(void)) {
+static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *previousCarousel, UIView *appearingView, void (^apply)(void)) {
     if (!apply) return;
     if (!tableView || !tableView.window || tableView.indexPathsForVisibleRows.count == 0) {
         apply();
@@ -2330,7 +2345,16 @@ static void ApolloHLApplyHeaderChange(UITableView *tableView, UIView *appearingV
     // New generation: any change still waiting on a scroll to settle is now stale.
     NSUInteger gen = [objc_getAssociatedObject(tableView, kApolloHLHeaderChangeGenKey) unsignedIntegerValue] + 1;
     objc_setAssociatedObject(tableView, kApolloHLHeaderChangeGenKey, @(gen), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    ApolloHLApplyHeaderChangeAttempt(tableView, appearingView, apply, @(gen), 0);
+    ApolloHLApplyHeaderChangeAttempt(tableView, previousCarousel, appearingView, apply, @(gen), 0);
+}
+
+static ApolloHLCarouselView *ApolloHLInstalledCarousel(UITableView *tableView) {
+    UIView *header = tableView.tableHeaderView;
+    if (!header || !objc_getAssociatedObject(header, kApolloHLWrapperMarkerKey)) return nil;
+    for (UIView *child in header.subviews) {
+        if ([child isKindOfClass:ApolloHLCarouselView.class]) return (ApolloHLCarouselView *)child;
+    }
+    return nil;
 }
 
 static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView, NSArray<ApolloHLItem *> *items, NSString *subreddit) {
@@ -2396,6 +2420,11 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
         return;
     }
 
+    // Read the live header rather than the newest associated view: successive
+    // metadata responses can replace a pending build during an active scroll.
+    // A genuinely pending first insertion still has no installed carousel.
+    UIView *previousCarousel = ApolloHLInstalledCarousel(tableView);
+
     // Build fresh.
     ApolloHLCarouselView *carousel = ApolloHLBuildCarousel(subreddit, items, width);
     if (!carousel) return;
@@ -2422,9 +2451,9 @@ static void ApolloHLInstallCarousel(UIViewController *vc, UITableView *tableView
     objc_setAssociatedObject(tableView, kApolloHLCarouselKey, carousel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     // Route through the snap-free applier: a cold late install (posts already on
-    // screen) slides in smoothly, and this also animates collapse/expand toggles
-    // (which rebuild through here via their signature change).
-    ApolloHLApplyHeaderChange(tableView, carousel, ^{
+    // screen) slides in smoothly, as do collapse/expand toggles. Same-height
+    // replacements keep their full opacity while the richer card data lands.
+    ApolloHLApplyHeaderChange(tableView, previousCarousel, carousel, ^{
         objc_setAssociatedObject(tableView, kApolloHLRewrapInProgressKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tableView.tableHeaderView = newWrapper;
         objc_setAssociatedObject(tableView, kApolloHLRewrapInProgressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -2531,9 +2560,9 @@ static void ApolloHLApplyItems(NSString *sub, NSArray<ApolloHLItem *> *items) {
             UIView *newCarousel = ApolloHLBuildCarousel(sub, items, w);
             UIView *wrapper = c.superview;
             UITableView *tv = ApolloHLFindTableView(postsVC);
-            // Same snap-free growth as the cold-fetch path: rebuilds that change
-            // height (collapse toggle, first web upgrade) slide instead of snap.
-            ApolloHLApplyHeaderChange(tv, newCarousel, ^{
+            // Animate real height changes, while replacing already-visible cards
+            // without fading them again for each web/metadata response.
+            ApolloHLApplyHeaderChange(tv, c.hlCarouselView, newCarousel, ^{
                 [c installCarousel:newCarousel];
                 if (wrapper && tv && tv.tableHeaderView == wrapper) {
                     CGRect wf = wrapper.frame; wf.size.height = CGRectGetMaxY(c.frame); wrapper.frame = wf;
