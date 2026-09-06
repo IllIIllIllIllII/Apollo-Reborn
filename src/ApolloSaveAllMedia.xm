@@ -6,6 +6,68 @@
 #import <ImageIO/ImageIO.h>
 #import <Photos/Photos.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
+
+// Apollo's media-save completion presents its own Holla success banner. The
+// image argument is unused by the success path; this callback only reports a
+// completed save and does not write anything to Photos. A fresh manager leaves
+// its wallpaper-saving controller unset, selecting the ordinary "Saved!"
+// banner rather than the separate wallpaper instructions.
+//
+// Holla enqueues presentation on the main queue even when invoked on main.
+// Queue the one-shot title immediately before that block, then clear it
+// immediately after. Existing queued banners run before the title is armed;
+// later normal saves cannot inherit a stale batch title. The hook updates only
+// a newly attached HollaStatusView that already has the native success label.
+// Apollo still owns the icon, styling, sizing, placement, haptics and animation.
+static NSString *sApolloSaveAllPendingBannerTitle;
+static NSObject *sApolloSaveAllPendingBannerToken;
+
+static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
+    Class managerClass = NSClassFromString(@"Apollo.ShareMediaManager");
+    SEL completion = @selector(image:didFinishSavingWithError:contextInfo:);
+    id manager = [[managerClass alloc] init];
+    if (![manager respondsToSelector:completion]) {
+        ApolloLog(@"[SaveAllMedia] native save completion unavailable");
+        return NO;
+    }
+
+    NSString *title = [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)count];
+    NSObject *token = [NSObject new];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        sApolloSaveAllPendingBannerTitle = title;
+        sApolloSaveAllPendingBannerToken = token;
+    });
+    ((void (*)(id, SEL, id, id, void *))objc_msgSend)(manager, completion, nil, nil, NULL);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (sApolloSaveAllPendingBannerToken != token) return;
+        sApolloSaveAllPendingBannerTitle = nil;
+        sApolloSaveAllPendingBannerToken = nil;
+        ApolloLog(@"[SaveAllMedia] native success banner was not presented");
+    });
+    return YES;
+}
+
+%hook _TtC6Apollo15HollaStatusView
+- (void)didMoveToSuperview {
+    %orig;
+    if (!sApolloSaveAllPendingBannerToken || !((UIView *)self).superview) return;
+    Ivar labelIvar = class_getInstanceVariable(object_getClass(self), "textLabel");
+    id value = labelIvar ? object_getIvar(self, labelIvar) : nil;
+    if (![value isKindOfClass:UILabel.class]) return;
+    UILabel *label = value;
+    if (![label.text isEqualToString:@"Saved!"]) return;
+
+    NSString *title = sApolloSaveAllPendingBannerTitle;
+    sApolloSaveAllPendingBannerTitle = nil;
+    sApolloSaveAllPendingBannerToken = nil;
+    // Holla attaches the fully initialized view before measuring/animating it,
+    // so its normal layout measures this text and keeps the native checkmark.
+    label.text = title;
+    ApolloLog(@"[SaveAllMedia] native success banner title=%@", title);
+}
+%end
 
 // All job state is confined to the main queue. Download completion handlers do
 // only file inspection/moves before handing ownership of that file back to the
@@ -264,7 +326,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     NSUInteger skipped = total - self.savedCount - self.failedCount;
     BOOL allSaved = self.savedCount == total;
     NSString *title = allSaved
-        ? [NSString stringWithFormat:@"Saved All %lu Items", (unsigned long)total]
+        ? [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)total]
         : [NSString stringWithFormat:@"Saved %lu of %lu Items", (unsigned long)self.savedCount, (unsigned long)total];
     NSString *detail = nil;
     if (self.cancelled && skipped > 0) {
@@ -276,7 +338,10 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     }
     ApolloToastStyle style = allSaved ? ApolloToastStyleSuccess
         : (self.failedCount > 0 ? ApolloToastStyleError : ApolloToastStyleInfo);
-    void (^showResult)(void) = ^{ ApolloShowToastWithStyle(title, detail, style, nil); };
+    void (^showResult)(void) = ^{
+        if (allSaved && ApolloSaveAllShowNativeSuccess(total)) return;
+        ApolloShowToastWithStyle(title, detail, style, nil);
+    };
     UIAlertController *progress = self.progressAlert;
     self.progressAlert = nil;
     if (progress.presentingViewController && !progress.isBeingDismissed) {

@@ -5,6 +5,9 @@ extern CFArrayRef ApolloTestNilMediaURLs(void);
 extern CFArrayRef ApolloTestEmptyMediaURLs(void);
 extern CFArrayRef ApolloTestOrderedMediaURLs(void);
 extern NSInteger ApolloTestOptionalURLArraySize(void);
+extern CFURLRef ApolloLinkedAlbumCopyURL(const void *storage, size_t size);
+extern CFURLRef ApolloTestLinkedAlbumURL(void);
+extern CFURLRef ApolloTestLinkedAlbumInvalidSize(NSInteger adjustment);
 
 static void Check(BOOL condition, NSString *message) {
     if (!condition) {
@@ -28,7 +31,18 @@ int main(void) {
             Check([copy[0].absoluteString isEqualToString:@"https://i.redd.it/first.jpg"] && [copy[1].absoluteString isEqualToString:@"https://i.imgur.com/second.mp4"] && [copy[2] isEqual:copy[0]], @"C bridge preserves URL ordering and duplicates");
         }
         Check(weakCopy == nil, @"CFBridgingRelease balances the Swift passRetained ownership");
+        Check(ApolloLinkedAlbumCopyURL(NULL, sizeof(void *)) == NULL, @"nil linked-album URL storage is rejected");
+        Check(ApolloTestLinkedAlbumInvalidSize(-1) == NULL, @"short URL ivar storage is rejected before reading");
+        Check(ApolloTestLinkedAlbumInvalidSize(1) == NULL, @"oversized URL ivar storage is rejected before reading");
+        __weak NSURL *weakURL = nil;
+        @autoreleasepool {
+            NSURL *url = CFBridgingRelease(ApolloTestLinkedAlbumURL());
+            weakURL = url;
+            Check([url isKindOfClass:NSURL.class], @"retained NSURL survives the source Swift URL's lifetime");
+            Check([url.absoluteString isEqualToString:@"https://imgur.com/a/L9afIk4?source=post#2"], @"URL bridge preserves album identity, query and fragment without mutation");
+        }
+        Check(weakURL == nil, @"linked-album NSURL retained ownership balances on release");
     }
-    puts("save_all_media_bridge_tests: all 7 checks passed");
+    puts("save_all_media_bridge_tests: all 13 checks passed");
     return 0;
 }

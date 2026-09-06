@@ -28,7 +28,7 @@ static const CFTimeInterval kApolloSaveAllInlineShareGrace = 5.0;
 @property (nonatomic, weak) UIViewController *presenter;
 @property (nonatomic, copy) dispatch_block_t afterDismissal;
 @property (nonatomic) BOOL menuEnded;
-@property (nonatomic) BOOL shareSelected;
+@property (nonatomic) BOOL shareCompleted;
 @end
 @implementation ApolloSaveAllMenuContext
 @end
@@ -118,7 +118,11 @@ static void ApolloSaveAllArmInlineShare(id node, UIGestureRecognizer *recognizer
 
 static void ApolloSaveAllBegin(ApolloSaveAllMenuContext *context) {
     UIViewController *presenter = context.presenter;
-    if (!presenter || !presenter.viewIfLoaded.window) return;
+    if (!presenter || !presenter.viewIfLoaded.window) {
+        ApolloLog(@"[SaveAllMedia] source viewer unavailable after dismissal");
+        ApolloShowToastWithStyle(@"Couldn't Start Saving", @"Open the post and try again.", ApolloToastStyleError, nil);
+        return;
+    }
     if (context.error) {
         ApolloShowToastWithStyle(@"Unable to Save All Media", context.error.localizedDescription,
                                 ApolloToastStyleError, nil);
@@ -135,6 +139,32 @@ static void ApolloSaveAllBegin(ApolloSaveAllMenuContext *context) {
                                     ApolloToastStyleError, nil);
         } else if (presenter.viewIfLoaded.window) {
             ApolloSaveAllMedia(items, presenter);
+        }
+    });
+}
+
+// UIActivityViewController's completion is the selection contract. Its view
+// disappearance is not: UIKit can remove the sheet before performActivity (or
+// through a private child controller), so waiting for a later disappearance
+// can leave a selected Save All action permanently queued.
+static void ApolloSaveAllCompleteShare(UIActivityViewController *sheet, ApolloSaveAllMenuContext *context) {
+    if (context.shareCompleted) return;
+    context.shareCompleted = YES;
+    ApolloLog(@"[SaveAllMedia] share activity completed; waiting for dismissal");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_block_t begin = ^{ ApolloSaveAllBegin(context); };
+        // The native completion handler has already run. Wait on its real
+        // transition if it dismissed the sheet, otherwise dismiss the sheet
+        // explicitly. A completed transition needs no additional callback.
+        id<UIViewControllerTransitionCoordinator> transition = sheet.transitionCoordinator;
+        if (sheet.isBeingDismissed && transition &&
+            [transition animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> coordinator) {
+                dispatch_async(dispatch_get_main_queue(), begin);
+            }]) return;
+        if (sheet.presentingViewController) {
+            [sheet dismissViewControllerAnimated:YES completion:begin];
+        } else {
+            begin();
         }
     });
 }
@@ -270,7 +300,7 @@ static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
 - (BOOL)canPerformWithActivityItems:(NSArray *)items { return self.context != nil; }
 - (void)prepareWithActivityItems:(NSArray *)items {}
 - (void)performActivity {
-    self.context.shareSelected = YES;
+    ApolloLog(@"[SaveAllMedia] share activity selected");
     [self activityDidFinish:YES];
 }
 @end
@@ -302,16 +332,32 @@ static ApolloSaveAllMenuContext *sApolloSaveAllConfigContext;
     [activities addObject:activity];
     id controller = %orig(activityItems, activities);
     objc_setAssociatedObject(controller, &kApolloSaveAllShareContextKey, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Ensure a callback exists even if Apollo doesn't install one. The setter
+    // hook below also wraps any handler Apollo supplies after initialization.
+    UIActivityViewController *sheet = controller;
+    UIActivityViewControllerCompletionWithItemsHandler completion = sheet.completionWithItemsHandler;
+    sheet.completionWithItemsHandler = completion ?: ^(__unused UIActivityType type, __unused BOOL completed,
+                                                       __unused NSArray *items, __unused NSError *error) {};
     return controller;
 }
-- (void)viewDidDisappear:(BOOL)animated {
-    %orig;
+- (void)setCompletionWithItemsHandler:(UIActivityViewControllerCompletionWithItemsHandler)completion {
     ApolloSaveAllMenuContext *context = objc_getAssociatedObject(self, &kApolloSaveAllShareContextKey);
-    if (!context.shareSelected) return;
-    context.shareSelected = NO;
-    // UIKit owns dismissal; starting on the next turn avoids presenting from
-    // a share controller that is still unwinding its transition callbacks.
-    dispatch_async(dispatch_get_main_queue(), ^{ ApolloSaveAllBegin(context); });
+    // UIKit clears this property as part of completion. Passing nil through
+    // avoids reinstalling a handler while the system is tearing the sheet down.
+    if (!context || !completion) {
+        %orig;
+        return;
+    }
+    UIActivityViewControllerCompletionWithItemsHandler nativeCompletion = [completion copy];
+    __weak UIActivityViewController *weakSheet = (UIActivityViewController *)self;
+    UIActivityViewControllerCompletionWithItemsHandler wrapped = ^(UIActivityType type, BOOL completed,
+                                                                   NSArray *items, NSError *error) {
+        nativeCompletion(type, completed, items, error);
+        if (completed && !error && [type isEqualToString:kApolloSaveAllIdentifier]) {
+            ApolloSaveAllCompleteShare(weakSheet, context);
+        }
+    };
+    %orig(wrapped);
 }
 %end
 

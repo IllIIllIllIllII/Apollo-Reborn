@@ -29,3 +29,19 @@ func ApolloTestOrderedMediaURLs() -> UnsafeMutableRawPointer? {
 func ApolloTestOptionalURLArraySize() -> Int {
     MemoryLayout<[URL]?>.size
 }
+
+@_cdecl("ApolloTestLinkedAlbumURL")
+func ApolloTestLinkedAlbumURL() -> UnsafeMutableRawPointer? {
+    var url = URL(string: "https://imgur.com/a/L9afIk4?source=post#2")!
+    return withUnsafePointer(to: &url) {
+        ApolloLinkedAlbumCopyURL($0, MemoryLayout<URL>.size)
+    }
+}
+
+@_cdecl("ApolloTestLinkedAlbumInvalidSize")
+func ApolloTestLinkedAlbumInvalidSize(_ adjustment: Int) -> UnsafeMutableRawPointer? {
+    var url = URL(string: "https://imgur.com/a/L9afIk4")!
+    return withUnsafePointer(to: &url) {
+        ApolloLinkedAlbumCopyURL($0, MemoryLayout<URL>.size + adjustment)
+    }
+}
