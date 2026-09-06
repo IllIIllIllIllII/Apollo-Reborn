@@ -2461,6 +2461,52 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
 %end
 %end
 
+%group ApolloDownItemGeometry
+%hook ApolloNativeTabBarButton
+- (void)setBounds:(CGRect)bounds {
+    %orig(ApolloCompactNativeItemBounds((UIView *)self, bounds));
+}
+- (void)setCenter:(CGPoint)center {
+    %orig(ApolloCompactNativeItemCenter((UIView *)self, center));
+}
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloCompactNativeItemFrame((UIView *)self, frame));
+}
+%end
+%hook ApolloNativeTabBarLens
+- (void)setBounds:(CGRect)bounds {
+    %orig(ApolloCompactNativeItemBounds((UIView *)self, bounds));
+}
+- (void)setCenter:(CGPoint)center {
+    %orig(ApolloCompactNativeItemCenter((UIView *)self, center));
+}
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloCompactNativeItemFrame((UIView *)self, frame));
+}
+%end
+%hook ApolloNativeTabBarMask
+- (void)setBounds:(CGRect)bounds {
+    %orig(ApolloCompactNativeItemBounds((UIView *)self, bounds));
+}
+- (void)setCenter:(CGPoint)center {
+    %orig(ApolloCompactNativeItemCenter((UIView *)self, center));
+}
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloCompactNativeItemFrame((UIView *)self, frame));
+}
+%end
+%end
+
+void ApolloInstallDownItemGeometryHooks(Class buttonClass, Class lensClass, Class maskClass) {
+    // Resolve from the live native hierarchy, then guard only associated
+    // views while Down owns them. Other tab bars retain UIKit's geometry.
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        %init(ApolloDownItemGeometry, ApolloNativeTabBarButton = buttonClass,
+            ApolloNativeTabBarLens = lensClass, ApolloNativeTabBarMask = maskClass);
+    });
+}
+
 %ctor {
     %init;
     Class platterClass = NSClassFromString(@"UIKit._UITabBarPlatterView");

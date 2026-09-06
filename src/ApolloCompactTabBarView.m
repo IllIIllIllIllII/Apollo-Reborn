@@ -29,8 +29,9 @@ static void ApolloCollectNativeForeground(UIView *view, NSMutableArray<UIView *>
     for (UIView *child in view.subviews) ApolloCollectNativeForeground(child, views, alphas);
 }
 
-// Track only native foreground visibility. The actual platter, selected
-// lens, icons and labels stay in UIKit's hierarchy for the entire transition.
+// The actual platter, selected lens, icons and labels stay in UIKit's
+// hierarchy. Only their presentation geometry and visibility are owned here.
+@class ApolloCompactItemGeometry;
 @interface ApolloCompactTabBarView ()
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, weak) UITabBar *nativeTabBar;
@@ -45,8 +46,11 @@ static void ApolloCollectNativeForeground(UIView *view, NSMutableArray<UIView *>
 @property (nonatomic, assign) CGRect nativeExpandedFrame;
 @property (nonatomic, assign) CGRect nativeBarBounds;
 @property (nonatomic, assign) BOOL applyingNativeFrame;
+@property (nonatomic, copy) NSArray<ApolloCompactItemGeometry *> *itemGeometry;
+@property (nonatomic, assign) CGSize itemLayoutSize;
 - (CGRect)nativeBoundsForProposedBounds:(CGRect)bounds;
 - (CGPoint)nativeCenterForProposedCenter:(CGPoint)center;
+- (CGRect)foregroundFrameInTabBar;
 @end
 
 @interface ApolloCompactPlatterOwner : NSObject
@@ -55,6 +59,70 @@ static void ApolloCollectNativeForeground(UIView *view, NSMutableArray<UIView *>
 @implementation ApolloCompactPlatterOwner
 @end
 static char ApolloCompactPlatterOwnerKey;
+
+// Keep the real buttons at their expanded layout size. Resizing them makes
+// UIKit change its spacing recipe near full width and re-round glyphs by a
+// physical pixel throughout the glass spring's sub-point settling tail.
+@interface ApolloCompactItemGeometry : NSObject
+@property (nonatomic, weak) ApolloCompactTabBarView *owner;
+@property (nonatomic, weak) UIView *view;
+@property (nonatomic) CGRect expandedBounds;
+@property (nonatomic) BOOL selection;
+@property (nonatomic) BOOL lens;
+@property (nonatomic) CGPoint expandedCenter;
+- (CGRect)presentationBounds;
+- (CGPoint)center;
+@end
+@implementation ApolloCompactItemGeometry
+- (CGRect)presentationBounds {
+    CGRect bounds = self.expandedBounds;
+    if (self.selection) {
+        // The highlight must fit inside the still-growing glass. Its capture
+        // source keeps fixed glyph geometry; only this material's box grows.
+        CGFloat height = MAX(1.0, self.owner.nativePlatter.bounds.size.height - 8.0);
+        CGFloat scale = MIN(1.0, height / bounds.size.height);
+        bounds.size.width *= scale;
+        bounds.size.height *= scale;
+    }
+    return bounds;
+}
+- (CGPoint)center {
+    ApolloCompactTabBarView *owner = self.owner;
+    CGRect expanded = owner.nativeExpandedFrame;
+    CGRect foreground = [owner foregroundFrameInTabBar];
+    CGFloat spacingScale = foreground.size.width / expanded.size.width;
+    CGPoint center = CGPointMake(CGRectGetMidX(foreground) +
+        (self.expandedCenter.x - CGRectGetMidX(expanded)) * spacingScale,
+        CGRectGetMidY(foreground) + self.expandedCenter.y - CGRectGetMidY(expanded));
+    if (self.lens) {
+        CGRect glass = owner.nativePlatter.frame;
+        CGSize size = self.presentationBounds.size;
+        center.x = MIN(CGRectGetMaxX(glass) - 4.0 - size.width * 0.5,
+            MAX(CGRectGetMinX(glass) + 4.0 + size.width * 0.5, center.x));
+        center.y = MIN(CGRectGetMaxY(glass) - 4.0 - size.height * 0.5,
+            MAX(CGRectGetMinY(glass) + 4.0 + size.height * 0.5, center.y));
+    }
+    return [self.view.superview convertPoint:center fromView:owner.nativeTabBar];
+}
+@end
+static char ApolloCompactItemGeometryKey;
+
+CGRect ApolloCompactNativeItemBounds(UIView *view, CGRect proposedBounds) {
+    ApolloCompactItemGeometry *geometry = objc_getAssociatedObject(view, &ApolloCompactItemGeometryKey);
+    return geometry.owner ? geometry.presentationBounds : proposedBounds;
+}
+CGPoint ApolloCompactNativeItemCenter(UIView *view, CGPoint proposedCenter) {
+    ApolloCompactItemGeometry *geometry = objc_getAssociatedObject(view, &ApolloCompactItemGeometryKey);
+    return geometry.owner ? geometry.center : proposedCenter;
+}
+CGRect ApolloCompactNativeItemFrame(UIView *view, CGRect proposedFrame) {
+    ApolloCompactItemGeometry *geometry = objc_getAssociatedObject(view, &ApolloCompactItemGeometryKey);
+    if (!geometry.owner) return proposedFrame;
+    CGPoint center = geometry.center;
+    CGSize size = geometry.presentationBounds.size;
+    return CGRectMake(center.x - size.width * 0.5, center.y - size.height * 0.5, size.width, size.height);
+}
+
 
 CGRect ApolloCompactNativePlatterBounds(UIView *platter, CGRect proposedBounds) {
     ApolloCompactPlatterOwner *owner = objc_getAssociatedObject(platter, &ApolloCompactPlatterOwnerKey);
@@ -122,6 +190,8 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     NSMutableArray<UIView *> *contentOwners = [NSMutableArray array];
     NSMutableArray<UIView *> *selection = [NSMutableArray array];
     NSMutableArray<NSNumber *> *hidden = [NSMutableArray array];
+    NSMutableArray<UIView *> *geometryViews = [NSMutableArray array];
+    Class maskClass = Nil;
     BOOL foundContent = NO;
     for (UIView *child in platter.subviews) {
         NSString *name = NSStringFromClass(child.class);
@@ -129,12 +199,20 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
         if ([name isEqualToString:@"_UILiquidLensView"] || [name hasSuffix:@"DestOutView"]) {
             [selection addObject:child];
             [hidden addObject:@(child.hidden)];
+            [geometryViews addObject:child];
             if ([name isEqualToString:@"_UILiquidLensView"]) {
                 self.selectionLens = child;
                 self.selectionLensAlpha = child.alpha;
+            } else {
+                maskClass = child.class;
             }
         } else if (content || [name hasSuffix:@"BadgeContainerView"]) {
             [contentOwners addObject:child];
+            if (content) {
+                for (UIView *item in child.subviews) {
+                    if ([item isKindOfClass:UIControl.class]) [geometryViews addObject:item];
+                }
+            }
             // SelectedContentView is a capture source for the lens, not a
             // second visible row. Fade its lens once, keeping that source
             // intact. For normal items fade the button, not its vibrant
@@ -161,6 +239,27 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     self.contentOwners = contentOwners;
     self.selectionViews = selection;
     self.selectionHidden = hidden;
+    Class buttonClass = NSClassFromString(@"_UITabButton");
+    Class lensClass = NSClassFromString(@"_UILiquidLensView");
+    if (!buttonClass || !lensClass || !maskClass) {
+        [self restoreNativeTabBar];
+        return NO;
+    }
+    ApolloInstallDownItemGeometryHooks(buttonClass, lensClass, maskClass);
+    NSMutableArray<ApolloCompactItemGeometry *> *geometry = [NSMutableArray array];
+    for (UIView *view in geometryViews) {
+        ApolloCompactItemGeometry *item = [ApolloCompactItemGeometry new];
+        item.owner = self;
+        item.view = view;
+        item.expandedBounds = view.bounds;
+        item.selection = [selection containsObject:view];
+        item.lens = view == self.selectionLens;
+        item.expandedCenter = [tabBar convertPoint:view.center fromView:view.superview];
+        [geometry addObject:item];
+        objc_setAssociatedObject(view, &ApolloCompactItemGeometryKey, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    self.itemGeometry = geometry;
+    self.itemLayoutSize = self.nativeExpandedFrame.size;
     ApolloCompactPlatterOwner *owner = [ApolloCompactPlatterOwner new];
     owner.view = self;
     objc_setAssociatedObject(platter, &ApolloCompactPlatterOwnerKey, owner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -170,7 +269,8 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
 - (BOOL)ownsNativeTabBar:(UITabBar *)tabBar {
     UIView *platter = self.nativePlatter;
     if (self.nativeTabBar != tabBar || !platter || platter.superview != tabBar ||
-        platter != ApolloExpandedTabBarPlatter(tabBar)) return NO;
+        platter != ApolloExpandedTabBarPlatter(tabBar) ||
+        !CGSizeEqualToSize(self.nativeExpandedFrame.size, self.itemLayoutSize)) return NO;
     for (UIView *view in self.foregroundViews) {
         if (![view isDescendantOfView:platter]) return NO;
     }
@@ -179,6 +279,9 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     }
     for (UIView *view in self.selectionViews) {
         if (view.superview != platter) return NO;
+    }
+    for (ApolloCompactItemGeometry *item in self.itemGeometry) {
+        if (![item.view isDescendantOfView:platter]) return NO;
     }
     return self.foregroundViews.count > 0;
 }
@@ -210,6 +313,22 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     return bar.superview ? [bar.superview convertRect:frame fromView:bar] : CGRectNull;
 }
 
+- (CGRect)foregroundFrameInTabBar {
+    CGRect expanded = self.nativeExpandedFrame;
+    CGFloat progress = MAX(0.0, self.expansionProgress);
+    // Foreground reaches its canonical position when its fade completes.
+    // The glass alone continues Safari's overshoot/settling curve. In
+    // particular, the later 0.997 undershoot cannot re-round the icons.
+    if (progress >= 0.95) return expanded;
+    CGRect frame = [self.nativeTabBar convertRect:self.frame fromView:self.superview];
+    CGFloat correction = (progress / 0.95 - progress) / (1.0 - progress);
+    frame.origin.x += (expanded.origin.x - frame.origin.x) * correction;
+    frame.origin.y += (expanded.origin.y - frame.origin.y) * correction;
+    frame.size.width += (expanded.size.width - frame.size.width) * correction;
+    frame.size.height += (expanded.size.height - frame.size.height) * correction;
+    return frame;
+}
+
 - (void)applyNativeFrame:(CGRect)frame expansionProgress:(CGFloat)progress {
     self.expansionProgress = progress;
     self.frame = frame;
@@ -217,6 +336,10 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     self.nativePlatter.frame = [self.nativeTabBar convertRect:frame fromView:self.nativeTabBar.superview];
     self.applyingNativeFrame = NO;
     [self.nativePlatter layoutIfNeeded];
+    for (ApolloCompactItemGeometry *item in self.itemGeometry) {
+        item.view.bounds = item.presentationBounds;
+        item.view.center = item.center;
+    }
     // Native labels keep their font size as the items redistribute. Wait for
     // sufficient width before revealing them, avoiding crowded glyphs during
     // the narrow part of the morph. They are fully visible before settling.
@@ -240,10 +363,19 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     if (platter) {
         objc_setAssociatedObject(platter, &ApolloCompactPlatterOwnerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    // Remove guards before restoring native geometry, including interrupted
+    // collapse, navigation, rotation, and setting changes.
+    for (ApolloCompactItemGeometry *item in self.itemGeometry) {
+        objc_setAssociatedObject(item.view, &ApolloCompactItemGeometryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     if (bar && platter.superview == bar) {
         CGRect frame = self.nativeExpandedFrame;
         frame.size.width += bar.bounds.size.width - self.nativeBarBounds.size.width;
         platter.frame = frame;
+    }
+    for (ApolloCompactItemGeometry *item in self.itemGeometry) {
+        item.view.bounds = item.expandedBounds;
+        item.view.center = [item.view.superview convertPoint:item.expandedCenter fromView:bar];
     }
     for (NSUInteger i = 0; i < self.foregroundViews.count; i++) {
         self.foregroundViews[i].alpha = self.foregroundAlphas[i].doubleValue;
@@ -260,6 +392,7 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     self.selectionViews = nil;
     self.selectionHidden = nil;
     self.selectionLens = nil;
+    self.itemGeometry = nil;
 }
 
 - (void)dealloc {

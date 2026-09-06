@@ -6,6 +6,10 @@ NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT UIView * _Nullable ApolloExpandedTabBarPlatter(UITabBar *tabBar);
 FOUNDATION_EXPORT CGRect ApolloCompactNativePlatterBounds(UIView *platter, CGRect proposedBounds);
 FOUNDATION_EXPORT CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter);
+FOUNDATION_EXPORT CGRect ApolloCompactNativeItemBounds(UIView *view, CGRect proposedBounds);
+FOUNDATION_EXPORT CGPoint ApolloCompactNativeItemCenter(UIView *view, CGPoint proposedCenter);
+FOUNDATION_EXPORT CGRect ApolloCompactNativeItemFrame(UIView *view, CGRect proposedFrame);
+FOUNDATION_EXPORT void ApolloInstallDownItemGeometryHooks(Class buttonClass, Class lensClass, Class maskClass);
 
 // Name-only compact tab bar. Its owner supplies the frame, transition, and
 // expanded touch target; UIControlEventTouchUpInside requests expansion.
