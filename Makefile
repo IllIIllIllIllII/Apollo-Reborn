@@ -100,6 +100,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSaveAllMedia.xm \
     $(SRC_DIR)/ApolloSaveAllMediaBridge.swift \
     $(SRC_DIR)/ApolloSaveAllMediaMenus.xm \
+    $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
     $(SRC_DIR)/ApolloGalleryMenu.xm \
     $(SRC_DIR)/ApolloGalleryOrientation.xm \
     $(SRC_DIR)/ApolloBannedProfile.xm \
