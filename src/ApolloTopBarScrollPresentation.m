@@ -196,9 +196,14 @@ static void ApolloTopBarAnimate(ApolloTopBarScrollState *state, CGFloat from, CG
     CAPropertyAnimation *animation;
     if (animated && !UIAccessibilityIsReduceMotionEnabled()) {
         CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:@"transform.translation.y"];
+        // Stretch the whole motion by 35% so the top bar keeps pace with the
+        // bottom bar. Scaling stiffness by time squared and damping by time
+        // preserves the spring's bounce; increasing duration alone does not
+        // slow a physical spring. Header copies share these parameters/clock.
+        const CGFloat timeScale = 1.35;
         spring.mass = 1.0;
-        spring.stiffness = state.hidden ? 420.0 : 320.0;
-        spring.damping = state.hidden ? 32.0 : 24.0;
+        spring.stiffness = (state.hidden ? 420.0 : 320.0) / (timeScale * timeScale);
+        spring.damping = (state.hidden ? 32.0 : 24.0) / timeScale;
         spring.initialVelocity = 0.0;
         spring.fromValue = @(from);
         spring.toValue = @(to);

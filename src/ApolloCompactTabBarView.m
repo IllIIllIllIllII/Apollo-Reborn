@@ -5,6 +5,23 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+UIView *ApolloExpandedTabBarPlatter(UITabBar *tabBar) {
+    // iOS 27 uses _UITabBarItemPlatterView, a subclass of the iOS 26 platter.
+    // Matching an exact class name silently rejected Down on iOS 27. Resolve
+    // the shared base once and accept its subclasses in both consumers, so
+    // finding the frame and copying the icons cannot disagree about the owner.
+    static Class platterClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        platterClass = NSClassFromString(@"UIKit._UITabBarPlatterView");
+    });
+    for (UIView *child in tabBar.subviews) {
+        if ([child isKindOfClass:platterClass] &&
+            child.bounds.size.width > tabBar.bounds.size.width * 0.5) return child;
+    }
+    return nil;
+}
+
 // Copy semantic content, not rendered UIKit pixels. The native tab foreground
 // contains blend/vibrancy operations whose screenshots can be blank before a
 // render pass, or white when detached from their original glass compositor.
@@ -206,19 +223,15 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
 - (BOOL)captureExpandedContentFromTabBar:(UITabBar *)tabBar expandedFrame:(CGRect)expandedFrame {
     if (!tabBar.superview || CGRectIsNull(expandedFrame) || CGRectIsEmpty(expandedFrame)) return NO;
     UIView *normal = nil, *selected = nil, *lens = nil;
-    for (UIView *platter in tabBar.subviews) {
-        if (![NSStringFromClass(platter.class) hasSuffix:@"._UITabBarPlatterView"] ||
-            platter.bounds.size.width < tabBar.bounds.size.width * 0.5) continue;
-        // These are sibling content-only owners in UIKit 26/27. Capturing the
-        // platter itself would also freeze the native glass and liquid lens.
-        for (UIView *child in platter.subviews) {
-            NSString *name = NSStringFromClass(child.class);
-            if ([name hasSuffix:@"SelectedContentView"]) selected = child;
-            else if ([name containsString:@"_UITabBarPlatterView"] &&
-                     [name hasSuffix:@"ContentView"]) normal = child;
-            else if ([name isEqualToString:@"_UILiquidLensView"]) lens = child;
-        }
-        if (normal) break;
+    UIView *platter = ApolloExpandedTabBarPlatter(tabBar);
+    // These are sibling content-only owners in UIKit 26/27. Capturing the
+    // platter itself would also freeze the native glass and liquid lens.
+    for (UIView *child in platter.subviews) {
+        NSString *name = NSStringFromClass(child.class);
+        if ([name hasSuffix:@"SelectedContentView"]) selected = child;
+        else if ([name containsString:@"_UITabBarPlatterView"] &&
+                 [name hasSuffix:@"ContentView"]) normal = child;
+        else if ([name isEqualToString:@"_UILiquidLensView"]) lens = child;
     }
     if (!normal || !selected || !lens || normal.hidden || selected.hidden) return NO;
     CGRect (^relativeFrame)(UIView *) = ^CGRect(UIView *view) {

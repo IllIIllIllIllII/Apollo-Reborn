@@ -2,6 +2,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Shared native owner for transition geometry and foreground capture.
+FOUNDATION_EXPORT UIView * _Nullable ApolloExpandedTabBarPlatter(UITabBar *tabBar);
+
 // Name-only compact tab bar. Its owner supplies the frame, transition, and
 // expanded touch target; UIControlEventTouchUpInside requests expansion.
 @interface ApolloCompactTabBarView : UIControl
