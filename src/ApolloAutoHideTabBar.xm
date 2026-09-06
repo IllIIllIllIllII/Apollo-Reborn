@@ -374,6 +374,9 @@ typedef struct {
     CGFloat progress;
 } ApolloDownMotionSample;
 
+// Retain the measured curve and its settling shape at a slightly brisker pace.
+static const CGFloat ApolloDownMotionPlaybackRate = 1.10;
+
 static const ApolloDownMotionSample ApolloDownCollapseMotion[] = {
     {0.000000, -0.000000},
     {0.015000, 0.175270},
@@ -424,7 +427,8 @@ static const ApolloDownMotionSample ApolloDownExpandMotion[] = {
 @property (nonatomic, assign) BOOL compact;
 @property (nonatomic, assign) CFTimeInterval startedAt;
 @property (nonatomic, assign) NSTimeInterval startOffset;
-@property (nonatomic, copy) void (^update)(CGFloat expansionProgress);
+@property (nonatomic, assign) CGFloat initialNativeHandoff;
+@property (nonatomic, copy) void (^update)(CGFloat expansionProgress, CGFloat nativeHandoff);
 @property (nonatomic, copy) void (^completion)(void);
 - (void)startFromExpansionProgress:(CGFloat)progress;
 - (void)invalidate;
@@ -451,7 +455,11 @@ static const ApolloDownMotionSample ApolloDownExpandMotion[] = {
     CGFloat motionProgress = self.compact ? 1.0 - progress : progress;
     // A reversal resumes at the recorded curve's matching size. It never
     // jumps to an endpoint or reruns a full-duration animation for a sliver.
-    for (NSUInteger i = 1; i < count; i++) {
+    // Reversing back during foreground rollback is already on the final,
+    // monotonic settling segment. Do not replay the first expansion crossing
+    // and its overshoot while UIKit is partially visible underneath.
+    NSUInteger firstSample = !self.compact && self.initialNativeHandoff > 0.0 ? count - 1 : 1;
+    for (NSUInteger i = firstSample; i < count; i++) {
         if (motionProgress > samples[i].progress) continue;
         CGFloat span = samples[i].progress - samples[i - 1].progress;
         CGFloat fraction = span > 0.0 ? (motionProgress - samples[i - 1].progress) / span : 0.0;
@@ -478,11 +486,17 @@ static const ApolloDownMotionSample ApolloDownExpandMotion[] = {
     // timestamp is the PREVIOUS display frame, which can be 33 ms old on
     // the first callback. Starting there would skip the reveal's gentle onset.
     if (self.startedAt == 0.0) self.startedAt = link.targetTimestamp;
-    NSTimeInterval elapsed = MAX(0.0, link.targetTimestamp - self.startedAt) + self.startOffset;
-    BOOL finished = elapsed >= samples[count - 1].time ||
-        UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    NSTimeInterval played = MAX(0.0, link.targetTimestamp - self.startedAt) *
+        ApolloDownMotionPlaybackRate;
+    // A reversal during the final foreground handoff starts at the currently
+    // displayed blend. Wind it back for 40 ms before shrinking, so
+    // UIKit's stationary full-width bar cannot ghost outside the moving pill.
+    NSTimeInterval rollback = self.compact && self.initialNativeHandoff > 0.0 ? 0.04 : 0.0;
+    NSTimeInterval elapsed = MAX(0.0, played - rollback) + self.startOffset;
+    BOOL inactive = UIApplication.sharedApplication.applicationState != UIApplicationStateActive;
+    BOOL motionFinished = elapsed >= samples[count - 1].time;
     CGFloat progress = 1.0;
-    if (!finished) {
+    if (!motionFinished && !inactive) {
         for (NSUInteger i = 1; i < count; i++) {
             if (elapsed > samples[i].time) continue;
             CGFloat fraction = (elapsed - samples[i - 1].time) / (samples[i].time - samples[i - 1].time);
@@ -490,10 +504,30 @@ static const ApolloDownMotionSample ApolloDownExpandMotion[] = {
             break;
         }
     }
-    if (self.update) {
-        [UIView performWithoutAnimation:^{ self.update(self.compact ? 1.0 - progress : progress); }];
+    CGFloat nativeHandoff = 0.0;
+    if (self.compact && rollback > 0.0) {
+        CGFloat fraction = MIN(1.0, played / rollback);
+        CGFloat eased = fraction * fraction * (3.0 - 2.0 * fraction);
+        nativeHandoff = self.initialNativeHandoff * (1.0 - eased);
+    } else if (!self.compact) {
+        // Geometry is within a point of native by 0.625 s. Rejoin UIKit's
+        // adaptive lens during the settling tail, avoiding a one-frame swap
+        // at completion: equal tint UIColors render differently in the two
+        // live glass materials. Use time because the geometry overshoots.
+        CGFloat fraction = self.initialNativeHandoff > 0.0
+            ? MIN(1.0, played / 0.18)
+            : MIN(1.0, MAX(0.0, (elapsed - 0.625) / 0.18));
+        CGFloat eased = fraction * fraction * (3.0 - 2.0 * fraction);
+        nativeHandoff = self.initialNativeHandoff + (1.0 - self.initialNativeHandoff) * eased;
     }
-    if (finished) {
+    if (self.update) {
+        [UIView performWithoutAnimation:^{
+            self.update(self.compact ? 1.0 - progress : progress, nativeHandoff);
+        }];
+    }
+    // Restore native interaction as soon as the copy is fully transparent;
+    // an invisible remainder of the curve must not leave both bars untappable.
+    if (inactive || (self.compact ? motionFinished : nativeHandoff >= 1.0)) {
         void (^completion)(void) = self.completion;
         [self invalidate];
         if (completion) completion();
@@ -541,6 +575,7 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
         CATransform3DIsIdentity(tabBar.layer.sublayerTransform)) return;
 
     BOOL interrupted = state.downAnimator != nil;
+    CGFloat initialNativeHandoff = interrupted ? state.compactPill.nativeHandoffProgress : 0.0;
     [state.downAnimator invalidate];
     state.downAnimator = nil;
     state.hasPresentationTarget = YES;
@@ -582,10 +617,11 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
     pill.accessibilityElementsHidden = NO;
     ApolloSetTabBarPresentationOwnership(tabBar, YES);
     [UIView performWithoutAnimation:^{
-        tabBar.alpha = 0.0;
+        tabBar.alpha = initialNativeHandoff > 0.0 ? 1.0 : 0.0;
         tabBar.transform = CGAffineTransformIdentity;
         tabBar.layer.sublayerTransform = CATransform3DIdentity;
         pill.alpha = 1.0;
+        pill.nativeHandoffProgress = initialNativeHandoff;
     }];
 
     state.presentationAnimationActive = canAnimate;
@@ -600,6 +636,7 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
             ApolloCommitTabBarPresentation(strongTBC.tabBar, compact ? 0.0 : 1.0,
                 CATransform3DIdentity, compact);
             if (compact) {
+                current.compactPill.nativeHandoffProgress = 0.0;
                 current.compactPill.frame = ApolloDownCompactFrame(strongTBC.tabBar, current.compactPill);
                 current.compactPill.expansionProgress = 0.0;
                 current.compactPill.alpha = 1.0;
@@ -616,9 +653,15 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
 
     ApolloDownTransitionAnimator *animator = [ApolloDownTransitionAnimator new];
     animator.compact = compact;
-    animator.update = ^(CGFloat expansionProgress) {
-        pill.frame = ApolloDownInterpolatedFrame(expanded, target, expansionProgress);
-        pill.expansionProgress = expansionProgress;
+    animator.initialNativeHandoff = initialNativeHandoff;
+    animator.update = ^(CGFloat expansionProgress, CGFloat nativeHandoff) {
+        // Once materials hand over, align foregrounds exactly before fading
+        // the copy. UIKit's native glass stays opaque and untransformed.
+        pill.frame = nativeHandoff > 0.0 ? expanded :
+            ApolloDownInterpolatedFrame(expanded, target, expansionProgress);
+        pill.expansionProgress = nativeHandoff > 0.0 ? 1.0 : expansionProgress;
+        tabBar.alpha = nativeHandoff > 0.0 ? 1.0 : 0.0;
+        pill.nativeHandoffProgress = nativeHandoff;
     };
     animator.completion = finish;
     state.downAnimator = animator;
