@@ -2,6 +2,7 @@
 #import "ApolloCommon.h"
 #import "ApolloGalleryVideoExport.h"
 #import "ApolloToast.h"
+#import "ApolloThemeRuntime.h"
 
 #import <ImageIO/ImageIO.h>
 #import <Photos/Photos.h>
@@ -69,6 +70,130 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 }
 %end
 
+// Use the same circular loading view as Apollo's media preparation UI.
+@interface DACircularProgressView : UIView
+@property (nonatomic, strong) UIColor *trackTintColor;
+@property (nonatomic, strong) UIColor *progressTintColor;
+@property (nonatomic) double thicknessRatio;
+@property (nonatomic) double progress;
+@property (nonatomic) NSInteger indeterminate;
+@end
+
+@interface ApolloSaveAllMediaProgressController : UIViewController
+@property (nonatomic) NSUInteger total;
+@property (nonatomic, strong) UILabel *countLabel;
+@property (nonatomic, strong) DACircularProgressView *loadingCircle;
+@property (nonatomic, strong) UIButton *cancelButton;
+@property (nonatomic, copy) dispatch_block_t cancellation;
+- (void)updateCompleted:(NSUInteger)completed;
+@end
+
+@implementation ApolloSaveAllMediaProgressController
+- (instancetype)init {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) {
+        self.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        self.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    }
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.25];
+    self.view.accessibilityViewIsModal = YES;
+    UIVisualEffectView *panel = [[UIVisualEffectView alloc] initWithEffect:
+        [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+    panel.translatesAutoresizingMaskIntoConstraints = NO;
+    panel.layer.cornerRadius = 22.0;
+    panel.clipsToBounds = YES;
+    [self.view addSubview:panel];
+
+    UILabel *title = [UILabel new];
+    title.text = @"Saving All Media";
+    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    title.adjustsFontForContentSizeCategory = YES;
+    title.textAlignment = NSTextAlignmentCenter;
+    title.numberOfLines = 0;
+    title.textColor = UIColor.labelColor;
+
+    self.countLabel = [UILabel new];
+    self.countLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    self.countLabel.adjustsFontForContentSizeCategory = YES;
+    self.countLabel.textAlignment = NSTextAlignmentCenter;
+    self.countLabel.textColor = UIColor.secondaryLabelColor;
+    self.countLabel.accessibilityLabel = @"Media completed";
+
+    UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor;
+    DACircularProgressView *circle = [[NSClassFromString(@"DACircularProgressView") alloc] init];
+    circle.trackTintColor = UIColor.clearColor;
+    circle.progressTintColor = accent;
+    circle.thicknessRatio = 0.12;
+    circle.progress = 0.25;
+    self.loadingCircle = circle;
+    circle.translatesAutoresizingMaskIntoConstraints = NO;
+    circle.isAccessibilityElement = NO;
+    UIView *loading = [UIView new];
+    [loading addSubview:circle];
+    [NSLayoutConstraint activateConstraints:@[
+        [loading.heightAnchor constraintEqualToConstant:44],
+        [circle.widthAnchor constraintEqualToConstant:36],
+        [circle.heightAnchor constraintEqualToConstant:36],
+        [circle.centerXAnchor constraintEqualToAnchor:loading.centerXAnchor],
+        [circle.centerYAnchor constraintEqualToAnchor:loading.centerYAnchor],
+    ]];
+
+    self.cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.cancelButton setTitle:@"Cancel" forState:UIControlStateNormal];
+    self.cancelButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    self.cancelButton.titleLabel.adjustsFontForContentSizeCategory = YES;
+    self.cancelButton.tintColor = accent;
+    self.cancelButton.backgroundColor = UIColor.tertiarySystemFillColor;
+    self.cancelButton.layer.cornerRadius = 10.0;
+    self.cancelButton.clipsToBounds = YES;
+    [self.cancelButton addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.cancelButton.heightAnchor constraintGreaterThanOrEqualToConstant:44].active = YES;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[title, self.countLabel, loading, self.cancelButton]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 16.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel.contentView addSubview:stack];
+    NSLayoutConstraint *width = [panel.widthAnchor constraintEqualToConstant:300];
+    width.priority = UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        width,
+        [panel.widthAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.widthAnchor constant:-40],
+        [panel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [panel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [stack.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor constant:24],
+        [stack.bottomAnchor constraintEqualToAnchor:panel.contentView.bottomAnchor constant:-12],
+        [stack.leadingAnchor constraintEqualToAnchor:panel.contentView.leadingAnchor constant:24],
+        [stack.trailingAnchor constraintEqualToAnchor:panel.contentView.trailingAnchor constant:-24],
+    ]];
+    [self updateCompleted:0];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    // Apollo's loader clears indeterminate mode when first attached to a
+    // window, so start its native animation after presentation completes.
+    self.loadingCircle.indeterminate = 1;
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    self.loadingCircle.indeterminate = 0;
+}
+- (void)updateCompleted:(NSUInteger)completed {
+    NSUInteger count = MIN(completed, self.total);
+    self.countLabel.text = [NSString stringWithFormat:@"%lu / %lu", (unsigned long)count, (unsigned long)self.total];
+    self.countLabel.accessibilityValue = [NSString stringWithFormat:@"%lu of %lu", (unsigned long)count, (unsigned long)self.total];
+}
+- (void)cancelTapped {
+    self.cancelButton.enabled = NO;
+    [self.cancelButton setTitle:@"Stopping…" forState:UIControlStateNormal];
+    if (self.cancellation) self.cancellation();
+}
+@end
+
 // All job state is confined to the main queue. Download completion handlers do
 // only file inspection/moves before handing ownership of that file back to the
 // main queue. A strong process-wide owner keeps the job alive if the user closes
@@ -76,7 +201,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 @interface ApolloSaveAllMediaJob : NSObject
 @property (nonatomic, copy) NSArray<ApolloSaveAllMediaItem *> *items;
 @property (nonatomic, weak) UIViewController *presenter;
-@property (nonatomic, strong) UIAlertController *progressAlert;
+@property (nonatomic, strong) ApolloSaveAllMediaProgressController *progressController;
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, strong) NSURLSessionDownloadTask *downloadTask;
 @property (nonatomic, strong) NSURL *directoryURL;
@@ -170,24 +295,26 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     configuration.timeoutIntervalForResource = 300.0;
     self.session = [NSURLSession sessionWithConfiguration:configuration];
 
-    self.progressAlert = [UIAlertController alertControllerWithTitle:self.items.count == 1 ? @"Saving Media" : @"Saving All Media"
-        message:self.items.count == 1 ? @"Preparing media…" : [NSString stringWithFormat:@"Preparing %lu items…", (unsigned long)self.items.count]
-        preferredStyle:UIAlertControllerStyleAlert];
-    __weak ApolloSaveAllMediaJob *weakSelf = self;
-    [self.progressAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-        [weakSelf cancel];
-    }]];
-    // Start from the presentation completion so a very fast response cannot
-    // finish/dismiss this controller while UIKit is still presenting it.
-    [presenter presentViewController:self.progressAlert animated:YES completion:^{ [self saveNextItem]; }];
     ApolloLog(@"[SaveAllMedia] started count=%lu", (unsigned long)self.items.count);
+    if (self.items.count == 1) {
+        // Every single-item caller skips progress UI and its presentation
+        // delay. Only the normal success banner (or a real error) appears.
+        [self saveNextItem];
+        return;
+    }
+
+    self.progressController = [ApolloSaveAllMediaProgressController new];
+    self.progressController.total = self.items.count;
+    __weak ApolloSaveAllMediaJob *weakSelf = self;
+    self.progressController.cancellation = ^{ [weakSelf cancel]; };
+    // Batch completion can dismiss the panel. Begin after presentation so a
+    // fast first request cannot race that transition.
+    [presenter presentViewController:self.progressController animated:YES completion:^{ [self saveNextItem]; }];
 }
 
-- (void)updateProgress:(NSString *)stage {
+- (void)updateProgress:(__unused NSString *)stage {
     if (self.cancelled || self.finished) return;
-    self.progressAlert.message = [NSString stringWithFormat:@"Item %lu of %lu\n%@\n%lu saved",
-        (unsigned long)(self.nextIndex + 1), (unsigned long)self.items.count,
-        stage, (unsigned long)self.savedCount];
+    [self.progressController updateCompleted:self.nextIndex];
 }
 
 - (void)cancel {
@@ -308,6 +435,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     if (success) self.savedCount++;
     else self.failedCount++;
     self.nextIndex++;
+    [self.progressController updateCompleted:self.nextIndex];
     // A later main-queue turn gives cancellation a chance to stop a batch of
     // cached/fast responses before the next request begins.
     dispatch_async(dispatch_get_main_queue(), ^{ [self saveNextItem]; });
@@ -342,8 +470,8 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
         if (allSaved && ApolloSaveAllShowNativeSuccess(total)) return;
         ApolloShowToastWithStyle(title, detail, style, nil);
     };
-    UIAlertController *progress = self.progressAlert;
-    self.progressAlert = nil;
+    ApolloSaveAllMediaProgressController *progress = self.progressController;
+    self.progressController = nil;
     if (progress.presentingViewController && !progress.isBeingDismissed) {
         [progress dismissViewControllerAnimated:YES completion:showResult];
     } else {
