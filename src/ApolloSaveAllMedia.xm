@@ -70,19 +70,22 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 }
 %end
 
-// Use the same circular loading view as Apollo's media preparation UI.
+// Use Apollo's native progress ring in determinate mode, driven by the
+// number of items completed rather than an unrelated spinning animation.
 @interface DACircularProgressView : UIView
 @property (nonatomic, strong) UIColor *trackTintColor;
 @property (nonatomic, strong) UIColor *progressTintColor;
 @property (nonatomic) double thicknessRatio;
 @property (nonatomic) double progress;
 @property (nonatomic) NSInteger indeterminate;
+@property (nonatomic) NSInteger clockwiseProgress;
+- (void)setProgress:(double)progress animated:(BOOL)animated;
 @end
 
 @interface ApolloSaveAllMediaProgressController : UIViewController
 @property (nonatomic) NSUInteger total;
 @property (nonatomic, strong) UILabel *countLabel;
-@property (nonatomic, strong) DACircularProgressView *loadingCircle;
+@property (nonatomic, strong) DACircularProgressView *progressCircle;
 @property (nonatomic, strong) UIButton *cancelButton;
 @property (nonatomic, copy) dispatch_block_t cancellation;
 - (void)updateCompleted:(NSUInteger)completed;
@@ -125,11 +128,13 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 
     UIColor *accent = ApolloThemeAccentColor() ?: self.view.tintColor;
     DACircularProgressView *circle = [[NSClassFromString(@"DACircularProgressView") alloc] init];
-    circle.trackTintColor = UIColor.clearColor;
+    circle.trackTintColor = UIColor.tertiarySystemFillColor;
     circle.progressTintColor = accent;
     circle.thicknessRatio = 0.12;
-    circle.progress = 0.25;
-    self.loadingCircle = circle;
+    circle.indeterminate = 0;
+    circle.clockwiseProgress = 1;
+    circle.progress = 0;
+    self.progressCircle = circle;
     circle.translatesAutoresizingMaskIntoConstraints = NO;
     circle.isAccessibilityElement = NO;
     UIView *loading = [UIView new];
@@ -172,20 +177,17 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
     ]];
     [self updateCompleted:0];
 }
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // Apollo's loader clears indeterminate mode when first attached to a
-    // window, so start its native animation after presentation completes.
-    self.loadingCircle.indeterminate = 1;
-}
-- (void)viewDidDisappear:(BOOL)animated {
-    [super viewDidDisappear:animated];
-    self.loadingCircle.indeterminate = 0;
-}
 - (void)updateCompleted:(NSUInteger)completed {
     NSUInteger count = MIN(completed, self.total);
     self.countLabel.text = [NSString stringWithFormat:@"%lu / %lu", (unsigned long)count, (unsigned long)self.total];
     self.countLabel.accessibilityValue = [NSString stringWithFormat:@"%lu of %lu", (unsigned long)count, (unsigned long)self.total];
+    double fraction = self.total ? (double)count / (double)self.total : 0;
+    if (self.progressCircle.progress != fraction) {
+        // Render the final full circle immediately before the completion
+        // dismissal; intermediate updates can animate between item counts.
+        BOOL animate = count < self.total && self.viewIfLoaded.window && !UIAccessibilityIsReduceMotionEnabled();
+        [self.progressCircle setProgress:fraction animated:animate];
+    }
 }
 - (void)cancelTapped {
     self.cancelButton.enabled = NO;
