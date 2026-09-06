@@ -333,14 +333,10 @@ static void ApolloCommitTabBarPresentation(UITabBar *tabBar,
 // untouched and animate a sibling glass
 // capsule, so neither list layout nor native tab hit geometry can jump.
 static CGRect ApolloDownExpandedFrame(UITabBar *tabBar) {
-    for (UIView *child in tabBar.subviews) {
-        if ([NSStringFromClass(child.class) hasSuffix:@"._UITabBarPlatterView"] &&
-            child.bounds.size.width > tabBar.bounds.size.width * 0.5) {
-            // Read canonical native geometry; Down never transforms this view.
-            return [tabBar.superview convertRect:child.frame fromView:tabBar];
-        }
-    }
-    return CGRectNull;
+    UIView *platter = ApolloExpandedTabBarPlatter(tabBar);
+    // Read canonical native geometry; Down never transforms this view.
+    return platter && tabBar.superview
+        ? [platter convertRect:platter.bounds toView:tabBar.superview] : CGRectNull;
 }
 
 static CGRect ApolloDownCompactFrame(UITabBar *tabBar, ApolloCompactTabBarView *pill) {
@@ -526,7 +522,11 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
     UITabBar *tabBar = tbc.tabBar;
     ApolloTabBarRuntimeState *state = ApolloRuntimeState(tbc, YES);
     CGRect expanded = ApolloDownExpandedFrame(tabBar);
-    if (!ApolloDownCanPresent(tbc, expanded)) compact = NO;
+    if (!ApolloDownCanPresent(tbc, expanded)) {
+        if (compact) ApolloLog(@"[AutoHideTabBarFix] Down unavailable expanded=%@ barHidden=%d inWindow=%d",
+            NSStringFromCGRect(expanded), tabBar.hidden, tabBar.window != nil);
+        compact = NO;
+    }
     ApolloTopBarSetScrollHidden(tbc, compact, animated, reason);
     BOOL sameTarget = state.hasPresentationTarget && state.presentationTargetHidden == compact &&
         state.presentationStyle == sTabBarHideStyle;
