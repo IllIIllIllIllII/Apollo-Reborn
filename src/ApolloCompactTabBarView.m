@@ -121,6 +121,8 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
 
 @interface ApolloCompactTabBarView ()
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UIVisualEffectView *glassView;
+@property (nonatomic, strong) UIView *expandedBackground;
 @property (nonatomic, strong) UIView *expandedContent;
 @property (nonatomic, readwrite) CGSize expandedContentSize;
 @end
@@ -143,6 +145,7 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
     // capsule configuration follows the owner's animated bounds changes.
     UIVisualEffectView *glass = [[UIVisualEffectView alloc]
         initWithEffect:ApolloImmersiveGlassEffect(nil, 0.0, YES)];
+    _glassView = glass;
     glass.translatesAutoresizingMaskIntoConstraints = NO;
     glass.userInteractionEnabled = YES;
     if (@available(iOS 26.0, *)) {
@@ -171,15 +174,21 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
     // Content inside the effect receives UIKit's native glass vibrancy and
     // foreground adaptation as the scrolled content changes behind it.
     [glass.contentView addSubview:_titleLabel];
-    // Semantic copies inherit the new glass's live foreground adaptation.
-    // Their own bounds stay expanded; only their outer scale changes.
+    // Keep the ordinary foreground outside the effect from the start. At the
+    // native handoff only this content fades: fading a glass effect or any
+    // ancestor changes its compositing and produces a brightness pulse.
+    // Its bounds stay expanded; only its outer scale changes.
     _expandedContent = [[UIView alloc] initWithFrame:CGRectZero];
     _expandedContent.userInteractionEnabled = NO;
     _expandedContent.isAccessibilityElement = NO;
     _expandedContent.clipsToBounds = NO;
     _expandedContent.alpha = 0.0;
     glass.contentView.clipsToBounds = NO;
-    [glass.contentView addSubview:_expandedContent];
+    [self addSubview:_expandedContent];
+    _expandedBackground = [[UIView alloc] initWithFrame:CGRectZero];
+    _expandedBackground.userInteractionEnabled = NO;
+    _expandedBackground.alpha = 0.0;
+    [glass.contentView addSubview:_expandedBackground];
 
     [NSLayoutConstraint activateConstraints:@[
         [glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
@@ -277,11 +286,15 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
     highlight.layer.cornerRadius = MIN(selectedFrame.size.width, selectedFrame.size.height) * 0.5;
     highlight.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
         BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
-        return [UIColor colorWithWhite:dark ? 1.0 : 0.0 alpha:dark ? 0.12 : 0.045];
+        // The native selected lens darkens the surrounding glass in both
+        // appearances. Match its measured contrast so exchanging materials
+        // does not flash a lighter capsule behind the selected icon.
+        return [UIColor colorWithWhite:0.0 alpha:dark ? 0.50 : 0.075];
     }];
     [content addSubview:normalCopy];
-    [content addSubview:highlight];
     [content addSubview:selectedCopy];
+    for (UIView *old in self.expandedBackground.subviews) [old removeFromSuperview];
+    [self.expandedBackground addSubview:highlight];
     for (UIView *old in self.expandedContent.subviews) [old removeFromSuperview];
     [self.expandedContent addSubview:content];
     self.expandedContentSize = expandedFrame.size;
@@ -293,12 +306,24 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
     // Preserve slight geometric overshoot so a reversal starts from the
     // actual displayed size; only opacity is restricted to its valid range.
     _expansionProgress = expansionProgress;
-    self.expandedContent.alpha = MIN(1.0, MAX(0.0, (expansionProgress - 0.15) / 0.60));
+    CGFloat foregroundAlpha = MIN(1.0, MAX(0.0, (expansionProgress - 0.15) / 0.60));
+    self.expandedContent.alpha = foregroundAlpha * (1.0 - self.nativeHandoffProgress);
+    self.expandedBackground.alpha = foregroundAlpha;
     self.titleAlpha = MIN(1.0, MAX(0.0, (0.35 - expansionProgress) / 0.25));
     // The owner drives frame + progress per display-link tick. Resolve the
     // native capsule's constraints and foreground geometry in this same tick.
     [self setNeedsLayout];
     [self layoutIfNeeded];
+}
+
+- (void)setNativeHandoffProgress:(CGFloat)progress {
+    _nativeHandoffProgress = MIN(1.0, MAX(0.0, progress));
+    // Swap materials at full opacity, then dissolve only the ordinary copied
+    // foreground over native glyphs. The copied selection backing leaves with
+    // its glass so it cannot darken UIKit's real selected-tab lens.
+    self.glassView.hidden = _nativeHandoffProgress > 0.0;
+    self.expandedContent.alpha = (1.0 - _nativeHandoffProgress) *
+        MIN(1.0, MAX(0.0, (self.expansionProgress - 0.15) / 0.60));
 }
 
 - (void)layoutSubviews {
@@ -308,6 +333,9 @@ static UITabBarItem *ApolloCompactTabItemForButton(UIView *button, UITabBar *tab
     self.expandedContent.bounds = (CGRect){CGPointZero, self.expandedContentSize};
     self.expandedContent.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
     self.expandedContent.transform = CGAffineTransformMakeScale(scale, scale);
+    self.expandedBackground.bounds = self.expandedContent.bounds;
+    self.expandedBackground.center = self.expandedContent.center;
+    self.expandedBackground.transform = self.expandedContent.transform;
 }
 
 - (CGSize)compactSize {

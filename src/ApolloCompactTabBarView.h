@@ -12,6 +12,7 @@ FOUNDATION_EXPORT UIView * _Nullable ApolloExpandedTabBarPlatter(UITabBar *tabBa
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, assign) CGFloat titleAlpha;
 @property (nonatomic, assign) CGFloat expansionProgress; // 0 = compact, 1 = expanded
+@property (nonatomic, assign) CGFloat nativeHandoffProgress; // copied foreground -> native foreground
 @property (nonatomic, readonly) CGSize expandedContentSize;
 
 - (CGSize)compactSize;
