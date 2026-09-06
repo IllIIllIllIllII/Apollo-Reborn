@@ -2,8 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Shared native owner for transition geometry and foreground capture.
+// Shared native glass owner on iOS 26 and 27.
 FOUNDATION_EXPORT UIView * _Nullable ApolloExpandedTabBarPlatter(UITabBar *tabBar);
+FOUNDATION_EXPORT CGRect ApolloCompactNativePlatterBounds(UIView *platter, CGRect proposedBounds);
+FOUNDATION_EXPORT CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter);
 
 // Name-only compact tab bar. Its owner supplies the frame, transition, and
 // expanded touch target; UIControlEventTouchUpInside requests expansion.
@@ -12,13 +14,13 @@ FOUNDATION_EXPORT UIView * _Nullable ApolloExpandedTabBarPlatter(UITabBar *tabBa
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, assign) CGFloat titleAlpha;
 @property (nonatomic, assign) CGFloat expansionProgress; // 0 = compact, 1 = expanded
-@property (nonatomic, assign) CGFloat nativeHandoffProgress; // copied foreground -> native foreground
-@property (nonatomic, readonly) CGSize expandedContentSize;
+@property (nonatomic, readonly) CGRect expandedFrame;
 
 - (CGSize)compactSize;
-// Call once with laid-out, untransformed native content before hiding the bar.
-// expandedFrame is expressed in tabBar.superview coordinates.
-- (BOOL)captureExpandedContentFromTabBar:(UITabBar *)tabBar expandedFrame:(CGRect)expandedFrame;
+- (BOOL)prepareNativeTabBar:(UITabBar *)tabBar;
+- (BOOL)ownsNativeTabBar:(UITabBar *)tabBar;
+- (void)applyNativeFrame:(CGRect)frame expansionProgress:(CGFloat)progress;
+- (void)restoreNativeTabBar;
 
 @end
 
