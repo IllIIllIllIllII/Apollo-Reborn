@@ -33,7 +33,7 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
         return NO;
     }
 
-    NSString *title = [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)count];
+    NSString *title = count == 1 ? @"Saved!" : [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)count];
     NSObject *token = [NSObject new];
     dispatch_async(dispatch_get_main_queue(), ^{
         sApolloSaveAllPendingBannerTitle = title;
@@ -129,7 +129,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
             return;
         }
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Photos Access Required"
-            message:@"Allow Apollo to add photos in Settings, then try Save All Media again."
+            message:@"Allow Apollo to add photos in Settings, then try saving again."
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"Open Settings" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
@@ -170,8 +170,8 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     configuration.timeoutIntervalForResource = 300.0;
     self.session = [NSURLSession sessionWithConfiguration:configuration];
 
-    self.progressAlert = [UIAlertController alertControllerWithTitle:@"Saving All Media"
-        message:[NSString stringWithFormat:@"Preparing %lu items…", (unsigned long)self.items.count]
+    self.progressAlert = [UIAlertController alertControllerWithTitle:self.items.count == 1 ? @"Saving Media" : @"Saving All Media"
+        message:self.items.count == 1 ? @"Preparing media…" : [NSString stringWithFormat:@"Preparing %lu items…", (unsigned long)self.items.count]
         preferredStyle:UIAlertControllerStyleAlert];
     __weak ApolloSaveAllMediaJob *weakSelf = self;
     [self.progressAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -326,7 +326,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     NSUInteger skipped = total - self.savedCount - self.failedCount;
     BOOL allSaved = self.savedCount == total;
     NSString *title = allSaved
-        ? [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)total]
+        ? (total == 1 ? @"Saved!" : [NSString stringWithFormat:@"Saved All %lu Items!", (unsigned long)total])
         : [NSString stringWithFormat:@"Saved %lu of %lu Items", (unsigned long)self.savedCount, (unsigned long)total];
     NSString *detail = nil;
     if (self.cancelled && skipped > 0) {
