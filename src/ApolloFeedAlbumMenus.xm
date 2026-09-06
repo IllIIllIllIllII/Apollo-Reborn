@@ -33,6 +33,7 @@
 @property (nonatomic, weak) ApolloFeedGalleryCarouselView *carousel;
 @property (nonatomic) NSUInteger index;
 @property (nonatomic) BOOL compact;
+@property (nonatomic) BOOL albumOverview;
 @property (nonatomic) BOOL ended;
 @property (nonatomic, copy) dispatch_block_t pendingAction;
 @end
@@ -104,6 +105,7 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
     context.albumURL = ApolloFeedAlbumGet(link, @"URL");
     context.presenter = presenter;
     context.compact = compact;
+    context.albumOverview = compact;
     context.items = ApolloSaveAllMediaItemsFromLink(link, nil);
     if (compact) {
         id thumbnail = ApolloFeedAlbumIvar(cell, "thumbnailNode");
@@ -132,12 +134,16 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
             }
             if (!context.sourceView) return nil;
         } else {
-            // The native mosaic's three slots map directly to gallery items
-            // 0, 1 and 2, including the last slot's total-images overlay.
+            // The count badge and the space between mosaic thumbnails refer
+            // to the whole album. Individual image holds retain image actions.
             UIView *cover = ApolloFeedAlbumNodeView(ApolloFeedAlbumIvar(album, "obscuredContentInfoOverlayNode"));
             if (ApolloFeedAlbumContainsPoint(cover, source, location)) return nil;
+            UIView *albumView = ApolloFeedAlbumNodeView(album);
+            if (!ApolloFeedAlbumContainsPoint(albumView, source, location)) return nil;
+            UIView *countView = ApolloFeedAlbumNodeView(ApolloFeedAlbumIvar(album, "totalImagesNode"));
+            context.albumOverview = ApolloFeedAlbumContainsPoint(countView, source, location);
             const char *slots[] = { "thumbnailNode1", "thumbnailNode2", "thumbnailNode3" };
-            for (NSUInteger index = 0; index < 3; index++) {
+            for (NSUInteger index = 0; !context.albumOverview && index < 3; index++) {
                 id thumbnail = ApolloFeedAlbumIvar(album, slots[index]);
                 UIView *view = ApolloFeedAlbumNodeView(thumbnail);
                 if (!ApolloFeedAlbumContainsPoint(view, source, location)) continue;
@@ -147,13 +153,20 @@ static ApolloFeedAlbumMenuContext *ApolloFeedAlbumContext(UIContextMenuInteracti
                 context.previewImage = ApolloFeedAlbumGet(thumbnail, @"image");
                 break;
             }
-            if (!context.sourceView) return nil;
+            if (!context.sourceView) {
+                context.albumOverview = YES;
+                context.sourceView = albumView;
+                // Committing the album preview opens its first item.
+                context.thumbnail = ApolloFeedAlbumIvar(album, "thumbnailNode1");
+            }
         }
-        if (context.items.count && (context.index >= context.items.count || context.items[context.index].isVideo)) return nil;
-        // Keep an unrevealed/undownloaded placeholder on Apollo's native route.
-        if (!context.previewImage) return nil;
+        if (!context.albumOverview) {
+            if (context.items.count && (context.index >= context.items.count || context.items[context.index].isVideo)) return nil;
+            // Keep an unrevealed/undownloaded placeholder on Apollo's native route.
+            if (!context.previewImage) return nil;
+        }
     }
-    ApolloLog(@"[FeedAlbumMenu] image hold mode=%@ index=%lu", compact ? @"compact" : (context.carousel ? @"carousel" : @"mosaic"), (unsigned long)context.index);
+    ApolloLog(@"[FeedAlbumMenu] image hold mode=%@ index=%lu", compact ? @"compact" : (context.albumOverview ? @"album" : (context.carousel ? @"carousel" : @"mosaic")), (unsigned long)context.index);
     return context;
 }
 
@@ -244,7 +257,7 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         ApolloFeedAlbumMenuContext *live = weakContext;
         ApolloFeedAlbumResolve(live, ^(NSArray *items) { ApolloSaveAllMedia(items, live.presenter); });
     });
-    if (context.compact) {
+    if (context.albumOverview) {
         UIAction *copy = ApolloFeedAlbumAction(@"Copy Link", @"doc.on.doc", context, ^{
             UIPasteboard.generalPasteboard.URL = weakContext.albumURL;
         });
