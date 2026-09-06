@@ -43,7 +43,8 @@ NSNotificationName const ApolloPostReadStateDidChangeNotification = @"ApolloPost
 // saved from any comments controller. Never synchronously notify UIKit from
 // either path: observers take queue-ordered snapshots and could otherwise
 // deadlock with the writer. Coalesce bursts (including remove/re-add revisits)
-// into one main-queue refresh after the current writer has finished.
+// into one main-queue refresh; the observer's queue-ordered snapshot waits for
+// any pending writer before reading the IDs.
 static os_unfair_lock sReadStateNotificationLock = OS_UNFAIR_LOCK_INIT;
 static BOOL sReadStateNotificationPending = NO;
 
@@ -200,7 +201,7 @@ static BOOL ApolloMutateTrackerSet(void (^mutation)(NSMutableOrderedSet *tracker
 // hook below. Note: this writes the tracker's set directly, so the native
 // Reddit-account batch counters (hide-read sync, Premium visited sync) never
 // see tweak marks - there is no stable native entry point to route through.
-BOOL ApolloMarkPostIDAsRead(NSString *postID) {
+static BOOL ApolloMarkPostIDAsRead(NSString *postID) {
     if (postID.length == 0) return NO;
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"DisableMarkingPostsRead"]) return NO;
     if (!getTrackerReadPostIDs()) {
@@ -219,17 +220,11 @@ BOOL ApolloMarkPostIDAsRead(NSString *postID) {
     });
 }
 
-// NewCommentsTracker's snapshots ivar is an inline Swift OrderedDictionary,
-// not an NSDictionary. Its native save(_:forPostID:) synchronously encodes the
-// entire collection with JSONEncoder and writes this NSData to standard defaults
-// on EVERY save, before posting com.christianselig.ReadCommentsUpdated. Unlike
-// ReadPostIDs, this mirror is therefore a current, safe Foundation entry point.
-//
-// Verified native JSON: ["abc123", {"totalComments": 42, "timestamp": ...}, ...].
-// CommentsViewController.viewDidDisappear: saves its loaded link's totalComments
-// and current date regardless of how it was opened, including apollo:// links.
-// Reuse that lifecycle and storage; do not create competing baselines on feed
-// rendering, or call a private Swift method through a hardcoded app address.
+// NewCommentsTracker synchronously publishes its snapshots to defaults before
+// posting com.christianselig.ReadCommentsUpdated. This avoids reading its inline
+// Swift OrderedDictionary: the JSON is ["abc123", {"totalComments": 42,
+// "timestamp": ...}, ...]. CommentsViewController.viewDidDisappear: owns baseline
+// updates, including for apollo:// links, so rendering never creates a baseline.
 NSDictionary<NSString *, NSNumber *> *ApolloLastReadCommentTotalsSnapshot(void) {
     static NSObject *cacheLock;
     static NSData *cachedData;

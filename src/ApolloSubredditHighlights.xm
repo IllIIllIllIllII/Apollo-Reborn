@@ -1782,9 +1782,9 @@ static NSString *ApolloHLSignature(NSString *sub, NSArray<ApolloHLItem *> *items
     return [state stringByAppendingString:ApolloHLItemsPresentationSig(items)];
 }
 
-// Content-only signature (no collapse-state prefix) used to detect when a subreddit's
-// pinned set actually changes between fetches — so a background re-poll rebuilds only
-// on a real change, not on every poll.
+// Ordered post identities used to distinguish pin changes from metadata updates.
+// A changed set can require a new web harvest; metadata uses the presentation
+// signature to decide whether the displayed cards need rebuilding.
 static NSString *ApolloHLItemsContentSig(NSArray<ApolloHLItem *> *items) {
     NSMutableArray *ids = [NSMutableArray array];
     // REST/enriched items carry t3_ fullnames, while freshly scraped cards can
@@ -2588,13 +2588,9 @@ static void ApolloHLToggleCollapsed(NSString *sub) {
     if (items.count > 0) ApolloHLApplyItems(key, items);
 }
 
-// The WebView reliably gives us the LIST of highlights (titles + permalinks, in
-// order) but its DOM thumbnails are lazy-loaded/unreliable for cards scrolled off
-// screen. So we don't trust the DOM image: we take the post ids from the web set
-// and batch-fetch each post's real data via the API's /api/info endpoint — the same
-// reliable source that gives the first 2 their crisp thumbnails. Thumbnail/flair/
-// comment-count are filled from /api/info, then the API stickied cache, then the
-// web DOM as a last resort. Web order is preserved. `completion` runs on main.
+// A web harvest supplies ordered titles/links but little metadata, especially
+// for off-screen cards. Keep their cached presentation until REST or /api/info
+// supplies a real replacement; never make the new DOM objects look empty first.
 static void ApolloHLRestoreCachedMetadata(NSArray<ApolloHLItem *> *webItems,
                                           NSArray<ApolloHLItem *> *cachedItems) {
     NSMutableDictionary<NSString *, ApolloHLItem *> *cachedByID = [NSMutableDictionary dictionary];
@@ -2664,6 +2660,8 @@ static void ApolloHLMergeMetadata(NSArray<ApolloHLItem *> *webItems,
     }
 }
 
+// Fetch reliable metadata for every web highlight, including the cards absent
+// from /hot. Merge into a private copy and deliver current results on main.
 static void ApolloHLEnrichViaInfo(NSString *sub, NSUInteger refreshGeneration,
                                 NSArray<ApolloHLItem *> *webItems, NSArray<ApolloHLItem *> *apiItems,
                                 void (^completion)(NSArray<ApolloHLItem *> *)) {
@@ -2723,10 +2721,9 @@ static void ApolloHLRemoveCarousel(NSString *subreddit); // defined with ApolloH
 // The web set contributed nothing the carousel may show (every scraped item is
 // feed-owned). Fall back to the REST set — it can still hold a pin the scrape
 // missed — and if that is empty too, take down whatever carousel is on display
-// (a stale disk seed, or the fast paint from this very upgrade) instead of
-// stranding it. One helper, called from BOTH zero-item exits of the web
-// upgrade: the pre-enrichment id-filter and the post-enrichment flag-filter.
-// Returning early from only one of them left the other stranded. Main queue.
+// (a stale disk seed, or the fast paint from this upgrade) instead of stranding
+// it. Both web upgrades and quiet metadata refreshes use this after filtering
+// out every feed-owned card. Main queue.
 static void ApolloHLWebSetAllFeedOwned(NSString *sub) {
     NSArray<ApolloHLItem *> *restOnly = ApolloHLCarouselItems(ApolloHLRestCache()[sub] ?: @[]);
     if (restOnly.count > 0) {
@@ -2803,7 +2800,6 @@ static void ApolloHLMaybeWebUpgrade(NSString *subreddit) {
             ApolloHLApplyItems(sub, items);
         }
 
-        NSString *preEnrichmentSig = ApolloHLItemsPresentationSig(items);
         // Enrich the already-visible list with reliable /api/info thumbnails. A
         // presentation-signature change rebuilds the cards, while an identical
         // response is a no-op and cannot cause a visible flash.
@@ -2814,15 +2810,12 @@ static void ApolloHLMaybeWebUpgrade(NSString *subreddit) {
             // ids above couldn't cover because the REST fetch never landed.
             NSArray<ApolloHLItem *> *enriched = ApolloHLCarouselItems(enrichedAll);
             if (enriched.count == 0) { ApolloHLWebSetAllFeedOwned(sub); return; }
-            BOOL metadataChanged = ![ApolloHLItemsPresentationSig(enriched) isEqualToString:preEnrichmentSig];
             NSArray<ApolloHLItem *> *shown = ApolloHLCache()[sub];
-            // With the same IDs the fast path may never have installed `items`;
-            // REST already filled its fresh totals before preEnrichmentSig was
-            // captured. Compare the displayed metadata as well in that case.
-            metadataChanged |= ![ApolloHLItemsPresentationSig(enriched) isEqualToString:ApolloHLItemsPresentationSig(shown)];
-            BOOL setChanged = ![ApolloHLItemsContentSig(enriched) isEqualToString:ApolloHLItemsContentSig(shown)];
-            if (metadataChanged || setChanged) {
-                ApolloLog(@"[Highlights] web enrichment r/%@ applied (metadataChanged=%d setChanged=%d)", sub, metadataChanged, setChanged);
+            // Compare what is actually displayed: the fast path leaves the
+            // existing cards in place when the harvested IDs are unchanged.
+            BOOL presentationChanged = ![ApolloHLItemsPresentationSig(enriched) isEqualToString:ApolloHLItemsPresentationSig(shown)];
+            if (presentationChanged) {
+                ApolloLog(@"[Highlights] web enrichment r/%@ applied", sub);
                 ApolloHLApplyItems(sub, enriched);
             }
         });
@@ -2854,11 +2847,9 @@ static void ApolloHLRemoveCarousel(NSString *subreddit) {
     ApolloHLClearDeDup(subreddit);
 }
 
-// Re-fetch a subreddit's highlights and update the carousel ONLY when the pinned set
-// actually changed. Cheap REST re-poll; rebuilds on a content change; re-runs the heavy
-// web upgrade when the set changed (or always, for an explicit pull-to-refresh). If a
-// mod removed every highlight, tears the carousel down. `alwaysWeb` = an explicit
-// refresh (re-harvest the web set even if the REST stickies are unchanged).
+// Refresh pin membership and metadata, rebuilding only when the displayed cards
+// change. Full mode uses /api/info for quiet comment updates, and re-harvests the
+// web set when REST pins change or alwaysWeb requests an explicit pull-to-refresh.
 static void ApolloHLRefreshSub(NSString *subreddit, BOOL alwaysWeb) {
     if (!sCommunityHighlights) return;
     NSString *key = subreddit.lowercaseString;
@@ -2873,7 +2864,7 @@ static void ApolloHLRefreshSub(NSString *subreddit, BOOL alwaysWeb) {
     ApolloHLFetchHighlights(subreddit, YES, ^(NSArray<ApolloHLItem *> *freshREST) {
         if (!sCommunityHighlights || modeGeneration != sApolloHLModeGeneration ||
             refreshGeneration != [ApolloHLRefreshGenerations()[key] unsignedIntegerValue]) return;
-        if (freshREST == nil) return; // an in-flight request is already refreshing this sub
+        if (freshREST == nil) return; // failed request or in-flight dedupe; retain the displayed cards
         BOOL changed = oldSig && ![ApolloHLItemsContentSig(freshREST) isEqualToString:oldSig];
 
         if (freshREST.count == 0 && changed) {
@@ -2904,16 +2895,20 @@ static void ApolloHLRefreshSub(NSString *subreddit, BOOL alwaysWeb) {
             }
         } else if (!alwaysWeb && ApolloHLCache()[key].count) {
             // Refresh totals for all Full-mode cards without reloading Reddit's
-            // web page just for new comments. Copy the items: mutating the live
-            // cache before comparing signatures would hide the metadata change.
-            NSArray *copy = ApolloHLItemsFromPlist(ApolloHLItemsToPlist(ApolloHLCache()[key]));
-            NSString *requestedIDs = ApolloHLItemsContentSig(copy);
-            ApolloHLEnrichViaInfo(key, refreshGeneration, copy, freshREST, ^(NSArray<ApolloHLItem *> *updated) {
+            // web page just for new comments. Enrichment owns its private copy.
+            NSArray *items = ApolloHLCache()[key];
+            NSString *requestedIDs = ApolloHLItemsContentSig(items);
+            ApolloHLEnrichViaInfo(key, refreshGeneration, items, freshREST, ^(NSArray<ApolloHLItem *> *updated) {
                 if (!sCommunityHighlights || !sCommunityHighlightsWeb) return;
                 NSArray *current = ApolloHLCache()[key];
                 if (![ApolloHLItemsContentSig(current) isEqualToString:requestedIDs]) return;
-                if (![ApolloHLItemsPresentationSig(updated) isEqualToString:ApolloHLItemsPresentationSig(current)]) {
-                    ApolloHLApplyItems(key, updated);
+                // A web-only interactive highlight may become a classic sticky
+                // without changing the filtered REST set. Honor ownership from
+                // either fresh REST IDs or the enriched item's own flags.
+                NSArray *carouselItems = ApolloHLDropFeedOwned(key, ApolloHLCarouselItems(updated));
+                if (carouselItems.count == 0) { ApolloHLWebSetAllFeedOwned(key); return; }
+                if (![ApolloHLItemsPresentationSig(carouselItems) isEqualToString:ApolloHLItemsPresentationSig(current)]) {
+                    ApolloHLApplyItems(key, carouselItems);
                 }
             });
         }
