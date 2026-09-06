@@ -15,9 +15,10 @@
 // choose the TOP (header) edge treatment explicitly: Soft, Hard, or Blur (a
 // tweak-drawn progressive blur — see ApolloProgressiveBlur.xm).
 //
-// Only the top edge is ever touched. Earlier builds applied the chosen style
+// Header Style only changes the top edge. Earlier builds applied its style
 // to all four edges, which painted a hard band behind the tab bar in Hard
-// mode; the bottom/left/right edges now always keep the system's treatment.
+// mode. Down separately suppresses the bottom effect behind its floating
+// pill; bottom/left/right styles always keep the system's treatment.
 //
 // UIScrollEdgeEffect/UIScrollEdgeEffectStyle are public iOS 26 SDK classes,
 // but referencing them directly would create a hard class reference that
@@ -100,6 +101,90 @@ static void ApolloNudgeEdgeEffectRebuild(UIScrollView *scrollView) {
     }
 }
 
+// Down keeps one native glass platter throughout its morph. UIKit also draws
+// a separate full-width bottom pocket inside the content scroll view. Leaving
+// that pocket enabled produces a stationary blur behind the compact pill on
+// iOS 27. Keep it disabled for the entire Down mode, including expanded, so
+// expansion never changes the material sampled by the selected tab at settle.
+// This is independent of Header Style and never changes an edge's style.
+@interface ApolloDownBottomEdgeState : NSObject
+@property (nonatomic, weak) UIScrollView *scrollView;
+@property (nonatomic, weak) id effect;
+@property (nonatomic) BOOL nativeHidden;
+@property (nonatomic) BOOL writingHidden;
+@property (nonatomic) BOOL refreshScheduled;
+@end
+@implementation ApolloDownBottomEdgeState
+@end
+static char kApolloDownBottomEdgeStateKey;
+static NSHashTable<ApolloDownBottomEdgeState *> *sApolloDownBottomEdges;
+
+static BOOL ApolloDownOwnsBottomEdge(UIScrollView *scrollView) {
+    if (!scrollView.window || !ApolloSupportsNativeTabBarScrollBehavior() ||
+        sTabBarHideStyle != ApolloTabBarHideStyleDown ||
+        ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return NO;
+    UITabBarController *controller = nil;
+    for (UIResponder *responder = scrollView; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            controller = ((UIViewController *)responder).tabBarController;
+            if (controller) break;
+        }
+    }
+    UITabBar *bar = controller.tabBar;
+    UIView *content = controller.selectedViewController.viewIfLoaded;
+    if (!content || ![scrollView isDescendantOfView:content] ||
+        bar.window != scrollView.window || bar.hidden) return NO;
+    CGRect scrollFrame = [scrollView convertRect:scrollView.bounds toView:bar.window];
+    CGRect barFrame = [bar convertRect:bar.bounds toView:bar.window];
+    // Only the main content reaching this bottom bar qualifies. Do not hide
+    // pockets belonging to embedded carousels, small lists, or modal sheets.
+    return scrollFrame.size.width >= barFrame.size.width * 0.75 &&
+        scrollFrame.size.height >= bar.window.bounds.size.height * 0.5 &&
+        CGRectIntersectsRect(scrollFrame, barFrame);
+}
+
+static void ApolloRefreshDownBottomEdge(ApolloDownBottomEdgeState *state) {
+    id effect = state.effect;
+    if (!effect) return;
+    BOOL hidden = ApolloDownOwnsBottomEdge(state.scrollView) || state.nativeHidden;
+    BOOL current = ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden));
+    if (current == hidden) return;
+    state.writingHidden = YES;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, @selector(setHidden:), hidden);
+    state.writingHidden = NO;
+    ApolloNudgeEdgeEffectRebuild(state.scrollView);
+}
+
+static void ApolloApplyDownBottomEdge(UIScrollView *scrollView) {
+    SEL selector = NSSelectorFromString(@"bottomEdgeEffect");
+    if (![scrollView respondsToSelector:selector]) return;
+    id effect = ((id (*)(id, SEL))objc_msgSend)(scrollView, selector);
+    if (![effect respondsToSelector:@selector(isHidden)] ||
+        ![effect respondsToSelector:@selector(setHidden:)]) return;
+    ApolloDownBottomEdgeState *state = objc_getAssociatedObject(effect, &kApolloDownBottomEdgeStateKey);
+    if (!state) {
+        state = [ApolloDownBottomEdgeState new];
+        state.effect = effect;
+        state.nativeHidden = ((BOOL (*)(id, SEL))objc_msgSend)(effect, @selector(isHidden));
+        objc_setAssociatedObject(effect, &kApolloDownBottomEdgeStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!sApolloDownBottomEdges) sApolloDownBottomEdges = [NSHashTable weakObjectsHashTable];
+        [sApolloDownBottomEdges addObject:state];
+    }
+    state.scrollView = scrollView;
+    ApolloRefreshDownBottomEdge(state);
+    // didMoveToWindow can precede the tab controller's final geometry. Check
+    // again after that layout without installing another layoutSubviews hook.
+    if (!state.refreshScheduled) {
+        state.refreshScheduled = YES;
+        __weak ApolloDownBottomEdgeState *weakState = state;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDownBottomEdgeState *current = weakState;
+            current.refreshScheduled = NO;
+            ApolloRefreshDownBottomEdge(current);
+        });
+    }
+}
+
 static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger mode) {
     SEL topSelector = NSSelectorFromString(@"topEdgeEffect");
     if (![scrollView respondsToSelector:topSelector]) return;
@@ -160,6 +245,7 @@ static void ApolloApplyHeaderStyleToTopEdge(UIScrollView *scrollView, NSInteger 
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView) {
     if (!IsLiquidGlass()) return;
     ApolloApplyHeaderStyleToTopEdge(scrollView, ApolloResolvedScrollEdgeEffectStyle());
+    ApolloApplyDownBottomEdge(scrollView);
 }
 
 static void ApolloApplyScrollEdgeEffectStyleToViewTree(UIView *view) {
@@ -202,6 +288,11 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
     for (UIWindow *window in UIApplication.sharedApplication.windows) {
         ApolloApplyAndNudgeViewTree(window);
     }
+    // Also release effects on detached/cached controllers when Down is
+    // disabled. The weak registry does not keep those controllers alive.
+    for (ApolloDownBottomEdgeState *state in sApolloDownBottomEdges.allObjects) {
+        ApolloRefreshDownBottomEdge(state);
+    }
     // The rebuild that runs in the same turn as an un-hide/style change can
     // compute pocket geometry from mid-change state (observed: hard band
     // missing its status-bar cover until the next scroll tick). A second
@@ -218,8 +309,8 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 // new hard default while navigation chrome changes. SwiftUI solves this through
 // an inherited environment value on NavigationStack; Apollo is UIKit, so the
 // equivalent app-wide enforcement point is UIScrollEdgeEffect's setters. Both
-// hooks act only on effects stamped as top-edge by the apply pass — bottom and
-// horizontal edges always keep whatever UIKit wants.
+// Header style hooks act only on stamped top effects. Down's separate bottom
+// lease records UIKit's latest visibility request while temporarily hiding it.
 %group ApolloScrollEdgeEffectRuntimeHooks
 
 %hook ApolloRuntimeScrollEdgeEffect
@@ -241,6 +332,12 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
 }
 
 - (void)setHidden:(BOOL)hidden {
+    ApolloDownBottomEdgeState *bottom = objc_getAssociatedObject(self, &kApolloDownBottomEdgeStateKey);
+    if (bottom && !bottom.writingHidden) {
+        bottom.nativeHidden = hidden;
+        %orig(ApolloDownOwnsBottomEdge(bottom.scrollView) || hidden);
+        return;
+    }
     if (IsLiquidGlass() &&
         ApolloResolvedScrollEdgeEffectStyle() == ApolloScrollEdgeEffectStyleBlur &&
         objc_getAssociatedObject(self, &kApolloScrollEdgeEffectIsTopKey)) {
@@ -282,4 +379,8 @@ static void ApolloApplyScrollEdgeEffectStyleToAllScrollViews(void) {
                                                    usingBlock:^(__unused NSNotification *notification) {
         ApolloApplyScrollEdgeEffectStyleToAllScrollViews();
     }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:ApolloTabBarScrollBehaviorChangedNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *notification) {
+            ApolloApplyScrollEdgeEffectStyleToAllScrollViews();
+        }];
 }
