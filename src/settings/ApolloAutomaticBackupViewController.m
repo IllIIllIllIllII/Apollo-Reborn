@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import <stdlib.h>
 
+#import "ApolloCommon.h"
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloBackupRestore.h"
 
@@ -48,6 +49,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 @property (nonatomic) BOOL refreshScheduled;
 @property (nonatomic) BOOL refreshingRows;
 @property (nonatomic) BOOL refreshRequested;
+@property (nonatomic) BOOL acceptingFolderSelection;
 @end
 
 @implementation ApolloAutomaticBackupViewController
@@ -267,17 +269,36 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     [self presentViewController:picker animated:YES completion:nil];
 }
 
-- (void)documentPicker:(__unused UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *folderURL = urls.firstObject;
-    if (!folderURL) return;
+- (void)acceptFilesFolderURL:(NSURL *)folderURL fromPicker:(UIDocumentPickerViewController *)controller {
+    if (!folderURL || self.acceptingFolderSelection) return;
+    self.acceptingFolderSelection = YES;
+    ApolloLog(@"[AutomaticBackup] Files folder picker returned a folder");
     __weak typeof(self) weakSelf = self;
-    // UIDocumentPickerViewController owns its selection dismissal. Waiting on a
-    // second explicit dismissal can leave this completion block uncalled, so the
-    // chosen folder is never handed to the manager. Start accepting the folder
-    // directly from the delegate callback; the picker returns on its own.
+    // Accept the security-scoped URL before asking the remote Files UI to close.
+    // Folder acceptance must not depend on UIKit's dismissal completion path.
     [ApolloAutomaticBackup.sharedManager selectFolderURL:folderURL completion:^(NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        strongSelf.acceptingFolderSelection = NO;
+        ApolloLog(@"[AutomaticBackup] Files folder selection %@ (code %ld)",
+                  error ? @"failed" : @"completed", (long)error.code);
         if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
     }];
+    [controller dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    [self acceptFilesFolderURL:urls.firstObject fromPicker:controller];
+}
+
+// A few older Files providers still deliver the original single-URL delegate
+// callback even when the picker was created with the modern content-type API.
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
+    [self acceptFilesFolderURL:url fromPicker:controller];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.acceptingFolderSelection = NO;
+    [controller dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)backUpNow {
