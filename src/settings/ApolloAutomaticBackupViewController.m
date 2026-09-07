@@ -267,14 +267,16 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     [self presentViewController:picker animated:YES completion:nil];
 }
 
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+- (void)documentPicker:(__unused UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *folderURL = urls.firstObject;
     if (!folderURL) return;
     __weak typeof(self) weakSelf = self;
-    [controller dismissViewControllerAnimated:YES completion:^{
-        [ApolloAutomaticBackup.sharedManager selectFolderURL:folderURL completion:^(NSError *error) {
-            if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
-        }];
+    // UIDocumentPickerViewController owns its selection dismissal. Waiting on a
+    // second explicit dismissal can leave this completion block uncalled, so the
+    // chosen folder is never handed to the manager. Start accepting the folder
+    // directly from the delegate callback; the picker returns on its own.
+    [ApolloAutomaticBackup.sharedManager selectFolderURL:folderURL completion:^(NSError *error) {
+        if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
     }];
 }
 
