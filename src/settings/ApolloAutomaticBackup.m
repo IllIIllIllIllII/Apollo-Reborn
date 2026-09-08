@@ -559,10 +559,19 @@ static BOOL ApolloAutomaticBackupInDirectory(
     if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
     self.selectedFolderURL = url;
     self.selectedFolderScopeActive = [url startAccessingSecurityScopedResource];
+    NSError *bookmarkError = nil;
+    NSData *bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+        includingResourceValuesForKeys:nil relativeToURL:nil error:&bookmarkError];
+    if (!bookmark) {
+        if (self.selectedFolderScopeActive) [url stopAccessingSecurityScopedResource];
+        self.selectedFolderURL = nil;
+        self.selectedFolderScopeActive = NO;
+        completion(ApolloAutomaticBackupError(@"Could not remember this folder. Please try again."));
+        return;
+    }
     ApolloAutomaticBackupJob *job = [self beginJob];
     dispatch_async(self.workQueue, ^{
         @autoreleasepool {
-            __block NSData *bookmark = nil;
             NSError *error = nil;
             BOOL rootIsBackupDirectory = [url.lastPathComponent isEqualToString:kBackupDirectoryName];
             BOOL success = ApolloAutomaticBackupInDirectory(url, YES, rootIsBackupDirectory, job, &error,
@@ -580,9 +589,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
                             return [NSFileManager.defaultManager removeItemAtURL:newProbe error:probeError];
                         });
                     if (!writable) return NO;
-                    bookmark = [url bookmarkDataWithOptions:0
-                            includingResourceValuesForKeys:nil relativeToURL:nil error:writeError];
-                    return bookmark != nil && !job.isCancelled;
+                    return !job.isCancelled;
                 });
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSError *resultError = error;
