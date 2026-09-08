@@ -31,6 +31,7 @@ __END_DECLS
 - (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7, 14, 30
 - (void)useLocalFolder;
 - (void)useSavedFolderWithCompletion:(void (^)(NSError *_Nullable error))completion;
+- (void)selectedFolderURLWithCompletion:(void (^)(NSURL *_Nullable folderURL, NSError *_Nullable error))completion;
 // Pass the original folder URL from a UTTypeFolder document picker (asCopy:NO).
 // Creates an Apollo Reborn Backups subfolder and remembers the folder permission.
 // Completion, like every public completion below, is delivered on the main queue.

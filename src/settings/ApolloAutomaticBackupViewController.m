@@ -51,6 +51,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 @property (nonatomic) BOOL refreshRequested;
 @property (nonatomic) BOOL acceptingFolderSelection;
 @property (nonatomic, strong) NSURL *folderExportTemplateURL;
+@property (nonatomic) BOOL viewingSelectedFolder;
 @end
 
 @implementation ApolloAutomaticBackupViewController
@@ -113,10 +114,11 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
         cell.detailTextLabel.text = manager.destinationName;
         cell.detailTextLabel.numberOfLines = 0;
         cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         [weakSelf apollo_applyPrimaryTextColorToCell:cell];
         return cell;
-    } onSelect:nil];
+    } onSelect:^{ [weakSelf viewSelectedFolder]; }];
     folder.visible = ^BOOL { return manager.usesSelectedFolder; };
 
     ApolloSettingsRow *lastBackup = [ApolloSettingsRow valueRowWithID:@"automatic.lastBackup"
@@ -289,6 +291,24 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     [self presentViewController:picker animated:YES completion:nil];
 }
 
+- (void)viewSelectedFolder {
+    __weak typeof(self) weakSelf = self;
+    [ApolloAutomaticBackup.sharedManager selectedFolderURLWithCompletion:^(NSURL *folderURL, NSError *error) {
+        if (!folderURL) {
+            ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
+            return;
+        }
+        UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:@[UTTypeZIP] asCopy:NO];
+        picker.delegate = weakSelf;
+        picker.allowsMultipleSelection = NO;
+        picker.directoryURL = folderURL;
+        picker.modalPresentationStyle = UIModalPresentationFormSheet;
+        weakSelf.viewingSelectedFolder = YES;
+        [weakSelf presentViewController:picker animated:YES completion:nil];
+    }];
+}
+
 - (void)acceptFilesFolderURL:(NSURL *)folderURL fromPicker:(UIDocumentPickerViewController *)controller {
     if (!folderURL || self.acceptingFolderSelection) return;
     self.acceptingFolderSelection = YES;
@@ -309,16 +329,27 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (self.viewingSelectedFolder) {
+        self.viewingSelectedFolder = NO;
+        [controller dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
     [self acceptFilesFolderURL:urls.firstObject fromPicker:controller];
 }
 
 // A few older Files providers still deliver the original single-URL delegate
 // callback even when the picker was created with the modern content-type API.
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
+    if (self.viewingSelectedFolder) {
+        self.viewingSelectedFolder = NO;
+        [controller dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
     [self acceptFilesFolderURL:url fromPicker:controller];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    self.viewingSelectedFolder = NO;
     self.acceptingFolderSelection = NO;
     [NSFileManager.defaultManager removeItemAtURL:self.folderExportTemplateURL error:nil];
     self.folderExportTemplateURL = nil;

@@ -486,6 +486,32 @@ static BOOL ApolloAutomaticBackupInDirectory(
     });
 }
 
+- (void)selectedFolderURLWithCompletion:(void (^)(NSURL *, NSError *))completion {
+    if (self.selectedFolderURL) {
+        completion(self.selectedFolderURL, nil);
+        return;
+    }
+    if (![self loadStateIfNeeded]) {
+        completion(nil, ApolloAutomaticBackupError(self.stateReadError ?: @"Unlock the phone and try again."));
+        return;
+    }
+    NSData *bookmark = [self.state[@"folderBookmark"] isKindOfClass:NSData.class]
+        ? self.state[@"folderBookmark"] : nil;
+    dispatch_async(self.workQueue, ^{
+        BOOL stale = NO;
+        NSError *error = nil;
+        NSURL *url = bookmark ? [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
+                                              bookmarkDataIsStale:&stale error:&error] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (url) {
+                self.selectedFolderURL = url;
+                self.selectedFolderScopeActive = [url startAccessingSecurityScopedResource];
+            }
+            completion(url, url ? nil : ApolloAutomaticBackupError(@"Choose the backup folder again in Files."));
+        });
+    });
+}
+
 - (ApolloAutomaticBackupJob *)beginJob {
     [self stopTimer];
     ApolloAutomaticBackupJob *job = [ApolloAutomaticBackupJob new];
