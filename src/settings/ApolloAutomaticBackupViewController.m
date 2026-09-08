@@ -2,11 +2,9 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <QuartzCore/QuartzCore.h>
-#import <stdlib.h>
 
 #import "ApolloCommon.h"
 #import "settings/ApolloAutomaticBackup.h"
-#import "settings/ApolloBackupRestore.h"
 
 static NSString *ApolloBackupDateDescription(NSDate *date) {
     if (!date) return @"Never";
@@ -15,54 +13,45 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
                                           timeStyle:NSDateFormatterShortStyle];
 }
 
-static NSString *ApolloLocalBackupTitle(NSURL *url) {
-    NSDate *date = nil;
-    [url getResourceValue:&date forKey:NSURLContentModificationDateKey error:nil];
-    return date ? ApolloBackupDateDescription(date) : @"Settings Backup";
-}
-
-static NSString *ApolloLocalBackupDetail(NSURL *url) {
-    NSNumber *size = nil;
-    [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
-    if (!size) return @"Settings and accounts";
-    NSString *sizeDescription = [NSByteCountFormatter stringFromByteCount:size.longLongValue
-                                                              countStyle:NSByteCountFormatterCountStyleFile];
-    return [NSString stringWithFormat:@"Settings and accounts · %@", sizeDescription];
-}
-
 static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, NSString *message) {
     if (!presenter) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                  message:message
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
                                                            preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-@interface ApolloLocalBackupsViewController : ApolloSettingsFormViewController <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
-@property (nonatomic) BOOL refreshScheduled;
-@property (nonatomic) BOOL preparingCopy;
-@property (nonatomic, strong) NSURL *pendingBackupURL;
-@end
+typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
+    ApolloBackupPickerNone,
+    ApolloBackupPickerSelectFolder,
+    ApolloBackupPickerBrowse,
+};
 
-@interface ApolloAutomaticBackupViewController () <UIDocumentPickerDelegate>
+@interface ApolloAutomaticBackupViewController () <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
 @property (nonatomic) BOOL refreshScheduled;
 @property (nonatomic) BOOL refreshingRows;
 @property (nonatomic) BOOL refreshRequested;
+@property (nonatomic) BOOL preparingPicker;
 @property (nonatomic) BOOL acceptingFolderSelection;
+@property (nonatomic) BOOL backupAfterFolderSelection;
+@property (nonatomic) ApolloBackupPickerPurpose pickerPurpose;
+@property (nonatomic, strong) UIDocumentPickerViewController *activePicker;
 @property (nonatomic, strong) NSURL *folderExportTemplateURL;
-@property (nonatomic) BOOL viewingSelectedFolder;
+@property (nonatomic) BOOL folderUnavailable;
+@property (nonatomic) BOOL folderValidationInFlight;
+@property (nonatomic) NSUInteger folderValidationGeneration;
+@property (nonatomic, copy) NSString *resolvedFolderName;
 @end
 
 @implementation ApolloAutomaticBackupViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Automatic Backups";
-    [NSNotificationCenter.defaultCenter addObserver:self
-                                           selector:@selector(backupStateDidChange:)
-                                               name:ApolloAutomaticBackupDidChangeNotification
-                                             object:nil];
+    self.title = @"Backup Settings";
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(backupStateDidChange:)
+        name:ApolloAutomaticBackupDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(backupStateDidChange:)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -70,137 +59,153 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     [self refreshBackupRows];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self validateBackupFolder];
+}
+
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+    if (_folderExportTemplateURL) [NSFileManager.defaultManager removeItemAtURL:_folderExportTemplateURL.URLByDeletingLastPathComponent error:nil];
+}
+
+- (BOOL)canPerformBackupAction {
+    return !ApolloAutomaticBackup.sharedManager.isBackingUp && !self.preparingPicker &&
+        !self.acceptingFolderSelection && !self.activePicker;
 }
 
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     __weak typeof(self) weakSelf = self;
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
-    BOOL (^canConfigure)(void) = ^BOOL { return !manager.isBackingUp; };
+    BOOL (^canConfigure)(void) = ^BOOL { return [weakSelf canPerformBackupAction]; };
+    BOOL (^automaticVisible)(void) = ^BOOL { return manager.enabled; };
 
     ApolloSettingsRow *enabled = [ApolloSettingsRow switchRowWithID:@"automatic.enabled"
-                                                             title:@"Automatic Backups"
-                                                              isOn:^BOOL { return manager.enabled; }
-                                                          onToggle:^(UISwitch *sender) {
-        [manager setEnabled:sender.isOn];
-    }];
+        title:@"Automatic Backups" isOn:^BOOL { return manager.enabled; }
+        onToggle:^(UISwitch *sender) { [manager setEnabled:sender.isOn]; }];
     enabled.enabled = canConfigure;
 
+    ApolloSettingsRow *backupNow = [ApolloSettingsRow buttonRowWithID:@"automatic.backupNow"
+        title:@"Back Up Now" action:^{ [weakSelf backUpNow]; }];
+    backupNow.enabled = canConfigure;
+
     ApolloSettingsRow *interval = [ApolloSettingsRow valueRowWithID:@"automatic.interval"
-                                                              title:@"Interval"
-                                                             detail:^NSString * {
+        title:@"Backup Interval" detail:^NSString * {
         return manager.intervalDays == 1 ? @"Every Day"
             : [NSString stringWithFormat:@"Every %ld Days", (long)manager.intervalDays];
-    }
-                                                           onSelect:^{ [weakSelf chooseInterval]; }];
+    } onSelect:^{ [weakSelf chooseInterval]; }];
     interval.enabled = canConfigure;
+    interval.visible = automaticVisible;
     interval.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 1; };
 
-    ApolloSettingsRow *destination = [ApolloSettingsRow valueRowWithID:@"automatic.destination"
-                                                                 title:@"Save To"
-                                                                detail:^NSString * {
-        return manager.usesSelectedFolder ? @"Files Folder" : @"On This iPhone";
-    }
-                                                              onSelect:^{ [weakSelf chooseDestination]; }];
-    destination.enabled = canConfigure;
-    destination.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 1; };
-
+    // The folder row also communicates setup and access state.
     ApolloSettingsRow *folder = [ApolloSettingsRow customRowWithID:@"automatic.folder"
-                                                             cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AutomaticBackupFolder"];
-        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"AutomaticBackupFolder"];
-        cell.textLabel.text = @"Selected Folder";
-        cell.detailTextLabel.text = manager.destinationName;
+        cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
+        BOOL hasFolder = manager.hasSavedFolder;
+        NSString *reuseID = @"AutomaticBackupFolderValue";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                              reuseIdentifier:reuseID];
+        cell.textLabel.text = @"Backup Folder";
+        cell.detailTextLabel.text = !hasFolder ? @"Set Up Folder"
+            : (weakSelf.folderUnavailable ? @"Folder Unavailable — Tap to Reconnect"
+                : (weakSelf.resolvedFolderName ?: manager.savedFolderName));
         cell.detailTextLabel.numberOfLines = 0;
         cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessoryType = hasFolder && !weakSelf.folderUnavailable
+            ? UITableViewCellAccessoryNone : UITableViewCellAccessoryDisclosureIndicator;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.contentView.alpha = canConfigure() ? 1.0 : 0.4;
         [weakSelf apollo_applyPrimaryTextColorToCell:cell];
         return cell;
-    } onSelect:^{ [weakSelf viewSelectedFolder]; }];
-    folder.visible = ^BOOL { return manager.usesSelectedFolder; };
+    } onSelect:^{
+        if (!manager.hasSavedFolder || weakSelf.folderUnavailable) [weakSelf chooseFilesFolder];
+        else [weakSelf viewSelectedFolder];
+    }];
+    folder.enabled = canConfigure;
+    folder.visible = automaticVisible;
 
     ApolloSettingsRow *lastBackup = [ApolloSettingsRow valueRowWithID:@"automatic.lastBackup"
-                                                                 title:@"Last Backup"
-                                                                detail:^NSString * { return ApolloBackupDateDescription(manager.lastBackupDate); }
-                                                              onSelect:nil];
+        title:@"Last Backup" detail:^NSString * { return ApolloBackupDateDescription(manager.lastBackupDate); } onSelect:nil];
+    lastBackup.visible = automaticVisible;
     lastBackup.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 0; };
 
     ApolloSettingsRow *nextBackup = [ApolloSettingsRow valueRowWithID:@"automatic.nextBackup"
-                                                                 title:@"Next Backup"
-                                                                detail:^NSString * {
+        title:@"Next Backup" detail:^NSString * {
+        if (!manager.hasSavedFolder) return @"Setup Required";
         NSDate *next = manager.nextBackupDate;
         if (!next || next.timeIntervalSinceNow <= 0) return @"When Apollo Is Open";
         return ApolloBackupDateDescription(next);
     } onSelect:nil];
-    nextBackup.visible = ^BOOL { return manager.enabled; };
+    nextBackup.visible = automaticVisible;
     nextBackup.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 0; };
-
-    ApolloSettingsRow *status = [ApolloSettingsRow customRowWithID:@"automatic.status"
-                                                             cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AutomaticBackupStatus"];
-        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"AutomaticBackupStatus"];
-        cell.textLabel.text = @"Status";
-        cell.detailTextLabel.text = manager.isBackingUp ? @"Please Wait…"
-            : (manager.lastErrorMessage ?: (manager.enabled ? @"Ready" : @"Automatic Backups Off"));
-        cell.detailTextLabel.numberOfLines = 0;
-        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
-        return cell;
-    } onSelect:nil];
-
-    ApolloSettingsRow *backupNow = [ApolloSettingsRow customRowWithID:@"automatic.backupNow"
-                                                                cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
-        // Isolate the busy-state alpha from the form's shared button reuse pool.
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AutomaticBackupNow"];
-        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"AutomaticBackupNow"];
-        cell.textLabel.text = @"Back Up Now";
-        cell.textLabel.numberOfLines = 0;
-        [weakSelf apollo_applyAccentActionTextColorToCell:cell];
-        cell.contentView.alpha = manager.isBackingUp ? 0.4 : 1.0;
-        cell.selectionStyle = manager.isBackingUp ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
-        return cell;
-    } onSelect:^{ [weakSelf backUpNow]; }];
-    backupNow.enabled = canConfigure;
-
-    ApolloSettingsRow *localBackups = [ApolloSettingsRow disclosureRowWithID:@"automatic.localBackups"
-                                                                      title:@"Local Backups"
-                                                                     detail:^NSString * {
-        return [NSString stringWithFormat:@"%lu", (unsigned long)manager.localBackupURLs.count];
-    } push:^UIViewController * {
-        return [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    }];
-    localBackups.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 1; };
 
     return @[
         [ApolloSettingsSection sectionWithTitle:nil
-                                          footer:@"Backups run while Apollo is open, or the next time you open it after the interval has passed."
-                                            rows:@[enabled]],
-        [ApolloSettingsSection sectionWithTitle:@"Schedule & Location"
-                                          footer:@"Choose a location in Files, including iCloud Drive. Apollo creates an Apollo Reborn Backups folder there. Each destination keeps the latest five backups from this installation."
-                                            rows:@[interval, destination, folder]],
-        [ApolloSettingsSection sectionWithTitle:@"Backup Status"
-                                          footer:@"Backup archives are unencrypted and contain your API keys and login credentials. Keep them private."
-                                            rows:@[lastBackup, nextBackup, status, backupNow]],
-        [ApolloSettingsSection sectionWithTitle:nil
-                                          footer:@"Local backups are deleted if you delete Apollo. Open Local Backups to export a copy or restore one. Use Restore Settings in Data for backup ZIPs saved in Files."
-                                            rows:@[localBackups]],
+            footer:@"Backups include settings, API keys, and login credentials. Keep them private."
+            rows:@[enabled, backupNow]],
+        [ApolloSettingsSection sectionWithTitle:@"Backup Setup"
+            footer:@"Automatic backups require a backup folder. The latest 10 automatic backups from this installation are kept. Manual backups stay until you delete them."
+            rows:@[interval, folder]],
+        [ApolloSettingsSection sectionWithTitle:@"Backup Activity"
+            footer:@"Automatic backups run while Apollo is open, or the next time you open it after the interval has passed."
+            rows:@[lastBackup, nextBackup]],
     ];
 }
 
+// The form retains section identities when its conditional rows are hidden.
+// Collapse empty sections while retaining their titles for the next toggle.
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return [super tableView:tableView numberOfRowsInSection:section] ? UITableViewAutomaticDimension : CGFLOAT_MIN;
+}
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    return [super tableView:tableView numberOfRowsInSection:section] ? UITableViewAutomaticDimension : CGFLOAT_MIN;
+}
+
 - (void)backupStateDidChange:(__unused NSNotification *)notification {
-    // Setters can notify synchronously from a switch handler. Defer the row
-    // reload so UIKit finishes delivering that control event before replacing
-    // its cell, and coalesce the saving/status notifications from one turn.
     if (self.refreshScheduled) return;
     self.refreshScheduled = YES;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         weakSelf.refreshScheduled = NO;
         [weakSelf refreshBackupRows];
+        [weakSelf validateBackupFolder];
     });
+}
+
+- (void)updateFolderUnavailable:(BOOL)unavailable name:(NSString *)name {
+    // A successful selection/save/browser read supersedes any older check.
+    self.folderValidationGeneration++;
+    BOOL changed = self.folderUnavailable != unavailable ||
+        !(self.resolvedFolderName == name || [self.resolvedFolderName isEqualToString:name]);
+    self.folderUnavailable = unavailable;
+    self.resolvedFolderName = name;
+    if (changed) [self refreshBackupRows];
+}
+
+- (void)validateBackupFolder {
+    if (!self.isViewLoaded || !self.view.window) return;
+    ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
+    if (!manager.hasSavedFolder) {
+        [self updateFolderUnavailable:NO name:nil];
+        return;
+    }
+    if (self.folderValidationInFlight || manager.isBackingUp) return;
+    self.folderValidationInFlight = YES;
+    NSUInteger generation = self.folderValidationGeneration;
+    __weak typeof(self) weakSelf = self;
+    // Check actual directory access: a failed archive or full disk does not mean
+    // the selected folder is missing. This read never changes the schedule.
+    [manager selectedFolderURLWithCompletion:^(NSURL *folderURL, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.folderValidationInFlight = NO;
+        if (generation != strongSelf.folderValidationGeneration) {
+            [strongSelf validateBackupFolder];
+            return;
+        }
+        [strongSelf updateFolderUnavailable:error != nil || !folderURL name:folderURL.lastPathComponent];
+    }];
 }
 
 - (void)refreshBackupRows {
@@ -211,17 +216,14 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     }
     self.refreshingRows = YES;
     __weak typeof(self) weakSelf = self;
-    // The form ends its beginUpdates/endUpdates block synchronously, but the
-    // inserted/deleted cells can still be animating. Wait for that transaction
-    // before reloading any surviving rows, and serialize subsequent refreshes.
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf) return;
-            for (NSString *rowID in @[@"automatic.enabled", @"automatic.interval", @"automatic.destination",
-                                      @"automatic.folder", @"automatic.lastBackup", @"automatic.nextBackup",
-                                      @"automatic.status", @"automatic.backupNow", @"automatic.localBackups"]) {
+            for (NSString *rowID in @[@"automatic.enabled", @"automatic.backupNow",
+                                      @"automatic.interval", @"automatic.folder", @"automatic.lastBackup",
+                                      @"automatic.nextBackup"]) {
                 [strongSelf reloadRowWithID:rowID];
             }
             strongSelf.refreshingRows = NO;
@@ -238,323 +240,189 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 - (void)chooseInterval {
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
     if (manager.isBackingUp) return;
-    NSArray<NSNumber *> *days = @[@1, @3, @7, @14, @30];
+    NSArray<NSNumber *> *days = @[@1, @3, @7];
     NSUInteger current = [days indexOfObject:@(manager.intervalDays)];
-    ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.interval"], @"Backup Interval",
-                                @[@"Every Day", @"Every 3 Days", @"Every 7 Days", @"Every 14 Days", @"Every 30 Days"],
+    ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.interval"], nil,
+                                @[@"Every Day", @"Every 3 Days", @"Every 7 Days"],
                                 current == NSNotFound ? 1 : (NSInteger)current, ^(NSInteger pickedIndex) {
         if (!manager.isBackingUp) [manager setIntervalDays:days[(NSUInteger)pickedIndex].integerValue];
     });
 }
 
-- (void)chooseDestination {
-    ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
-    if (manager.isBackingUp) return;
-    __weak typeof(self) weakSelf = self;
-    BOOL hasSavedFolder = manager.hasSavedFolder;
-    NSString *reuseTitle = [NSString stringWithFormat:@"Use %@", manager.savedFolderName ?: @"Previous Files Folder"];
-    NSArray<NSString *> *choices = hasSavedFolder
-        ? @[@"On This iPhone", reuseTitle, @"Choose New Location in Files"]
-        : @[@"On This iPhone", @"Choose Location in Files"];
-    ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.destination"], @"Backup Location",
-                                choices, manager.usesSelectedFolder ? 1 : 0,
-                                ^(NSInteger pickedIndex) {
-        if (manager.isBackingUp) return;
-        if (pickedIndex == 0) {
-            [manager useLocalFolder];
-        } else if (hasSavedFolder && pickedIndex == 1) {
-            [manager useSavedFolderWithCompletion:^(NSError *error) {
-                if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
-            }];
-        } else {
-            [weakSelf chooseFilesFolder];
-        }
-    });
+- (void)presentBackupPicker:(UIDocumentPickerViewController *)picker purpose:(ApolloBackupPickerPurpose)purpose {
+    self.preparingPicker = NO;
+    self.pickerPurpose = purpose;
+    self.activePicker = picker;
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    picker.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:picker animated:YES completion:nil];
+    picker.presentationController.delegate = self;
+    [self refreshBackupRows];
 }
 
 - (void)chooseFilesFolder {
-    NSURL *templateURL = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
-        URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
-    [NSFileManager.defaultManager removeItemAtURL:templateURL error:nil];
-    NSError *templateError = nil;
-    if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL
-                                withIntermediateDirectories:YES attributes:nil error:&templateError]) {
-        ApolloBackupShowAlert(self, @"Unable to Open Files", templateError.localizedDescription);
+    if (![self canPerformBackupAction]) return;
+    // A unique staging parent prevents cleanup from touching any saved backups.
+    NSURL *staging = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+        URLByAppendingPathComponent:NSUUID.UUID.UUIDString isDirectory:YES];
+    NSURL *templateURL = [staging URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL withIntermediateDirectories:YES
+        attributes:@{NSFileProtectionKey: NSFileProtectionComplete, NSFilePosixPermissions: @0700} error:&error]) {
+        [NSFileManager.defaultManager removeItemAtURL:staging error:nil];
+        self.backupAfterFolderSelection = NO;
+        ApolloBackupShowAlert(self, @"Unable to Open Files", error.localizedDescription);
         return;
     }
     self.folderExportTemplateURL = templateURL;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
         initForExportingURLs:@[templateURL] asCopy:YES];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    picker.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:picker animated:YES completion:nil];
+    [self presentBackupPicker:picker purpose:ApolloBackupPickerSelectFolder];
+}
+
+- (void)showFolderUnavailable:(NSError *)error {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Folder Unavailable"
+        message:error.localizedDescription ?: @"Select a backup folder in Files to continue."
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Select Folder" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf chooseFilesFolder]; }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)viewSelectedFolder {
+    if (![self canPerformBackupAction]) return;
+    self.preparingPicker = YES;
+    [self refreshBackupRows];
     __weak typeof(self) weakSelf = self;
-    [ApolloAutomaticBackup.sharedManager selectedFolderURLWithCompletion:^(NSURL *folderURL, NSError *error) {
-        if (!folderURL) {
-            ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
+    void (^presentBrowser)(NSURL *, NSError *) = ^(NSURL *folderURL, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.preparingPicker = NO;
+        if (!strongSelf.view.window) return;
+        if (error) {
+            [strongSelf updateFolderUnavailable:YES name:nil];
+            [strongSelf refreshBackupRows];
+            [strongSelf showFolderUnavailable:error];
             return;
         }
+        [strongSelf updateFolderUnavailable:NO name:folderURL.lastPathComponent];
+        // Browsing never changes the saved destination.
         UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
             initForOpeningContentTypes:@[UTTypeZIP] asCopy:NO];
-        picker.delegate = weakSelf;
-        picker.allowsMultipleSelection = NO;
         picker.directoryURL = folderURL;
-        picker.modalPresentationStyle = UIModalPresentationFormSheet;
-        weakSelf.viewingSelectedFolder = YES;
-        [weakSelf presentViewController:picker animated:YES completion:nil];
-    }];
+        [strongSelf presentBackupPicker:picker purpose:ApolloBackupPickerBrowse];
+    };
+    ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
+    if (manager.hasSavedFolder) [manager selectedFolderURLWithCompletion:presentBrowser];
+    else presentBrowser(nil, nil);
 }
 
-- (void)acceptFilesFolderURL:(NSURL *)folderURL fromPicker:(UIDocumentPickerViewController *)controller {
-    if (!folderURL || self.acceptingFolderSelection) return;
-    self.acceptingFolderSelection = YES;
-    ApolloLog(@"[AutomaticBackup] Files folder picker returned a folder");
-    __weak typeof(self) weakSelf = self;
-    // Accept the security-scoped URL before asking the remote Files UI to close.
-    // Folder acceptance must not depend on UIKit's dismissal completion path.
-    [ApolloAutomaticBackup.sharedManager selectFolderURL:folderURL completion:^(NSError *error) {
-        typeof(self) strongSelf = weakSelf;
-        strongSelf.acceptingFolderSelection = NO;
-        ApolloLog(@"[AutomaticBackup] Files folder selection %@ (code %ld)",
-                  error ? @"failed" : @"completed", (long)error.code);
-        if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
-        [NSFileManager.defaultManager removeItemAtURL:strongSelf.folderExportTemplateURL error:nil];
-        strongSelf.folderExportTemplateURL = nil;
-    }];
-    [controller dismissViewControllerAnimated:YES completion:nil];
+- (void)cleanupFolderTemplate {
+    if (self.folderExportTemplateURL) {
+        [NSFileManager.defaultManager removeItemAtURL:self.folderExportTemplateURL.URLByDeletingLastPathComponent error:nil];
+        self.folderExportTemplateURL = nil;
+    }
+}
+
+- (void)handlePickedURLs:(NSArray<NSURL *> *)urls fromPicker:(UIDocumentPickerViewController *)picker {
+    if (picker != self.activePicker) return;
+    ApolloBackupPickerPurpose purpose = self.pickerPurpose;
+    self.activePicker = nil;
+    self.pickerPurpose = ApolloBackupPickerNone;
+    NSURL *url = urls.firstObject;
+    if (!url) {
+        self.backupAfterFolderSelection = NO;
+        [self cleanupFolderTemplate];
+        [picker dismissViewControllerAnimated:YES completion:^{ [self validateBackupFolder]; }];
+        [self refreshBackupRows];
+        return;
+    }
+    if (purpose == ApolloBackupPickerSelectFolder) {
+        self.acceptingFolderSelection = YES;
+        BOOL backupAfterSelection = self.backupAfterFolderSelection;
+        self.backupAfterFolderSelection = NO;
+        __weak typeof(self) weakSelf = self;
+        // Capture the permission bookmark during the Files callback. Present
+        // errors only after the sheet finishes dismissing.
+        __block BOOL dismissed = NO;
+        __block BOOL finished = NO;
+        __block NSError *selectionError = nil;
+        void (^finishSelection)(void) = ^{
+            if (!dismissed || !finished) return;
+            typeof(self) strongSelf = weakSelf;
+            strongSelf.acceptingFolderSelection = NO;
+            [strongSelf cleanupFolderTemplate];
+            [strongSelf refreshBackupRows];
+            if (selectionError) [strongSelf showFolderUnavailable:selectionError];
+            else {
+                [strongSelf updateFolderUnavailable:NO name:url.lastPathComponent];
+                if (backupAfterSelection) [strongSelf backUpNow];
+            }
+        };
+        [ApolloAutomaticBackup.sharedManager selectFolderURL:url completion:^(NSError *error) {
+            selectionError = error;
+            finished = YES;
+            finishSelection();
+        }];
+        [picker dismissViewControllerAnimated:YES completion:^{ dismissed = YES; finishSelection(); }];
+    } else {
+        [picker dismissViewControllerAnimated:YES completion:^{ [self validateBackupFolder]; }];
+    }
+    [self refreshBackupRows];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    if (self.viewingSelectedFolder) {
-        self.viewingSelectedFolder = NO;
-        [controller dismissViewControllerAnimated:YES completion:nil];
-        return;
-    }
-    [self acceptFilesFolderURL:urls.firstObject fromPicker:controller];
+    [self handlePickedURLs:urls fromPicker:controller];
 }
 
-// A few older Files providers still deliver the original single-URL delegate
-// callback even when the picker was created with the modern content-type API.
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
-    if (self.viewingSelectedFolder) {
-        self.viewingSelectedFolder = NO;
-        [controller dismissViewControllerAnimated:YES completion:nil];
-        return;
-    }
-    [self acceptFilesFolderURL:url fromPicker:controller];
+    [self handlePickedURLs:url ? @[url] : @[] fromPicker:controller];
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    self.viewingSelectedFolder = NO;
-    self.acceptingFolderSelection = NO;
-    [NSFileManager.defaultManager removeItemAtURL:self.folderExportTemplateURL error:nil];
-    self.folderExportTemplateURL = nil;
-    [controller dismissViewControllerAnimated:YES completion:nil];
+    if (controller != self.activePicker) return;
+    self.activePicker = nil;
+    self.pickerPurpose = ApolloBackupPickerNone;
+    self.backupAfterFolderSelection = NO;
+    [self cleanupFolderTemplate];
+    [controller dismissViewControllerAnimated:YES completion:^{ [self validateBackupFolder]; }];
+    [self refreshBackupRows];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
+    if (presentationController.presentedViewController == self.activePicker) {
+        self.activePicker = nil;
+        self.pickerPurpose = ApolloBackupPickerNone;
+        self.backupAfterFolderSelection = NO;
+        [self cleanupFolderTemplate];
+        [self refreshBackupRows];
+        [self validateBackupFolder];
+    }
 }
 
 - (void)backUpNow {
+    if (![self canPerformBackupAction]) return;
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
-    if (manager.isBackingUp) return;
-    __weak typeof(self) weakSelf = self;
-    [manager backUpNowWithCompletion:^(NSError *error) {
-        if (error) ApolloBackupShowAlert(weakSelf, @"Backup Failed", error.localizedDescription);
-        else ApolloBackupShowAlert(weakSelf, @"Backup Complete", @"Your settings backup was saved to the selected location.");
-    }];
-}
-
-@end
-
-@implementation ApolloLocalBackupsViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Local Backups";
-    [NSNotificationCenter.defaultCenter addObserver:self
-                                           selector:@selector(backupStateDidChange:)
-                                               name:ApolloAutomaticBackupDidChangeNotification
-                                             object:nil];
-}
-
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
-    [self refreshLocalBackups];
-}
-
-- (void)dealloc {
-    [NSNotificationCenter.defaultCenter removeObserver:self];
-    if (_pendingBackupURL) [NSFileManager.defaultManager removeItemAtURL:_pendingBackupURL error:nil];
-}
-
-- (NSArray<ApolloSettingsSection *> *)buildForm {
-    __weak typeof(self) weakSelf = self;
-    ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
-    NSArray<NSURL *> *urls = manager.localBackupURLs;
-    NSMutableArray<ApolloSettingsRow *> *rows = [NSMutableArray array];
-
-    // This stable identity remains in the model even when hidden, so a dynamic
-    // archive list can rebuild its one section without table-index arithmetic.
-    ApolloSettingsRow *empty = [ApolloSettingsRow customRowWithID:@"local.backups.anchor"
-                                                            cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"LocalBackupsEmpty"];
-        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"LocalBackupsEmpty"];
-        cell.textLabel.text = @"No Local Backups";
-        cell.textLabel.textColor = UIColor.secondaryLabelColor;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        return cell;
-    } onSelect:nil];
-    empty.visible = ^BOOL { return urls.count == 0; };
-    [rows addObject:empty];
-
-    for (NSURL *url in urls) {
-        NSString *rowID = [@"local.backup." stringByAppendingString:url.lastPathComponent];
-        ApolloSettingsRow *backup = [ApolloSettingsRow customRowWithID:rowID
-                                                                 cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
-            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"LocalBackupArchive"];
-            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"LocalBackupArchive"];
-            cell.textLabel.text = ApolloLocalBackupTitle(url);
-            cell.textLabel.numberOfLines = 0;
-            cell.detailTextLabel.text = ApolloLocalBackupDetail(url);
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
-            BOOL enabled = !manager.isBackingUp && !weakSelf.preparingCopy;
-            cell.textLabel.enabled = enabled;
-            cell.contentView.alpha = enabled ? 1.0 : 0.4;
-            cell.accessoryType = enabled ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
-            cell.selectionStyle = enabled ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
-            if (enabled) [weakSelf apollo_applyPrimaryTextColorToCell:cell];
-            return cell;
-        } onSelect:^{ [weakSelf showActionsForBackupURL:url rowID:rowID]; }];
-        backup.enabled = ^BOOL { return !manager.isBackingUp && !weakSelf.preparingCopy; };
-        [rows addObject:backup];
-    }
-
-    return @[[ApolloSettingsSection sectionWithTitle:@"Saved on This iPhone"
-                                               footer:@"The latest five local backups are kept, newest first. Tap one to export it to Files or restore it. These backups are deleted if you delete Apollo."
-                                                 rows:rows]];
-}
-
-- (void)backupStateDidChange:(__unused NSNotification *)notification {
-    if (self.refreshScheduled) return;
-    self.refreshScheduled = YES;
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        weakSelf.refreshScheduled = NO;
-        [weakSelf refreshLocalBackups];
-    });
-}
-
-- (void)refreshLocalBackups {
-    if (!self.isViewLoaded) return;
-    [self rebuildSectionContainingRowID:@"local.backups.anchor" withRowAnimation:UITableViewRowAnimationNone];
-}
-
-- (void)showActionsForBackupURL:(NSURL *)url rowID:(NSString *)rowID {
-    if (self.preparingCopy || ApolloAutomaticBackup.sharedManager.isBackingUp) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:ApolloLocalBackupTitle(url)
-                                                                   message:@"This unencrypted backup contains API keys and login credentials."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Export" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [weakSelf prepareBackupURL:url forRestore:NO];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        [weakSelf prepareBackupURL:url forRestore:YES];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    UIView *source = [self cellForRowID:rowID] ?: self.view;
-    sheet.popoverPresentationController.sourceView = source;
-    sheet.popoverPresentationController.sourceRect = source.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)prepareBackupURL:(NSURL *)url forRestore:(BOOL)restore {
-    if (self.preparingCopy || self.pendingBackupURL) return;
-    self.preparingCopy = YES;
-    [self refreshLocalBackups];
-    __weak typeof(self) weakSelf = self;
-    [ApolloAutomaticBackup.sharedManager prepareLocalBackupAtURL:url completion:^(NSURL *copyURL, NSError *error) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf.view.window) {
-            if (copyURL) [NSFileManager.defaultManager removeItemAtURL:copyURL error:nil];
-            strongSelf.preparingCopy = NO;
-            return;
-        }
-        strongSelf.preparingCopy = NO;
-        [strongSelf refreshLocalBackups];
-        if (!copyURL) {
-            ApolloBackupShowAlert(strongSelf, @"Backup Unavailable", error.localizedDescription ?: @"Could not open this backup.");
-            return;
-        }
-        // Keep an independent copy while the picker/confirmation is visible;
-        // automatic retention may remove the original archive in the meantime.
-        strongSelf.pendingBackupURL = copyURL;
-        if (restore) [strongSelf confirmRestore];
-        else [strongSelf exportPreparedBackup];
-    }];
-}
-
-- (void)exportPreparedBackup {
-    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForExportingURLs:@[self.pendingBackupURL] asCopy:YES];
-    picker.delegate = self;
-    picker.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:picker animated:YES completion:nil];
-    picker.presentationController.delegate = self;
-}
-
-- (void)cleanupPreparedBackup {
-    if (self.pendingBackupURL) [NSFileManager.defaultManager removeItemAtURL:self.pendingBackupURL error:nil];
-    self.pendingBackupURL = nil;
-}
-
-- (void)documentPicker:(__unused UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(__unused NSArray<NSURL *> *)urls {
-    [self cleanupPreparedBackup];
-}
-
-- (void)documentPickerWasCancelled:(__unused UIDocumentPickerViewController *)controller {
-    [self cleanupPreparedBackup];
-}
-
-- (void)presentationControllerDidDismiss:(__unused UIPresentationController *)presentationController {
-    [self cleanupPreparedBackup];
-}
-
-- (void)confirmRestore {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Confirm Restore"
-                                                                   message:@"This will replace all existing settings and logged-in accounts with the backup. This cannot be undone."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action) {
-        [weakSelf cleanupPreparedBackup];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
-        [weakSelf restorePreparedBackup];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)restorePreparedBackup {
-    NSURL *url = self.pendingBackupURL;
-    if (!url) return;
-    NSString *errorTitle = nil;
-    NSString *errorMessage = nil;
-    BOOL restored = ApolloBackupRestoreRestoreFromZipURL(url, &errorTitle, &errorMessage);
-    [self cleanupPreparedBackup];
-    if (!restored) {
-        ApolloBackupShowAlert(self, errorTitle ?: @"Restore Failed", errorMessage ?: @"Could not restore this backup.");
+    if (!manager.hasSavedFolder) {
+        self.backupAfterFolderSelection = YES;
+        [self chooseFilesFolder];
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Restore Complete"
-                                                                   message:@"Settings successfully restored. Apollo needs to restart to apply changes."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Close App" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        exit(0);
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    [manager backUpNowWithCompletion:^(NSString *filename, NSError *error) {
+        if (error) {
+            [weakSelf validateBackupFolder];
+            ApolloBackupShowAlert(weakSelf, @"Backup Failed", error.localizedDescription);
+        }
+        else {
+            [weakSelf updateFolderUnavailable:NO name:weakSelf.resolvedFolderName ?: manager.savedFolderName];
+            NSString *message = [NSString stringWithFormat:@"Settings saved as:\n%@\n\nThis file contains your logged-in account credentials. Keep it private.", filename];
+            ApolloBackupShowAlert(weakSelf, @"Backup Complete", message);
+        }
+    }];
 }
 
 @end

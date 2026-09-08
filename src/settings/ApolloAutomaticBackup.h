@@ -25,23 +25,19 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSDate *lastBackupDate;
 @property (nonatomic, readonly, nullable) NSDate *nextBackupDate;
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
-@property (nonatomic, readonly) NSArray<NSURL *> *localBackupURLs; // newest first
 
 - (void)setEnabled:(BOOL)enabled;
-- (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7, 14, 30
-- (void)useLocalFolder;
-- (void)useSavedFolderWithCompletion:(void (^)(NSError *_Nullable error))completion;
+- (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7
+// Resolves the actual backup directory for an in-app Files browser or restore picker.
+// This does not change the selected destination or its backup schedule.
 - (void)selectedFolderURLWithCompletion:(void (^)(NSURL *_Nullable folderURL, NSError *_Nullable error))completion;
-// Pass the original folder URL from a UTTypeFolder document picker (asCopy:NO).
-// Creates an Apollo Reborn Backups subfolder and remembers the folder permission.
+// Pass the original exported directory URL from the Files Save callback.
+// The returned directory itself becomes the destination, including provider renames.
 // Completion, like every public completion below, is delivered on the main queue.
 - (void)selectFolderURL:(NSURL *)url completion:(void (^)(NSError *_Nullable error))completion;
-- (void)backUpNowWithCompletion:(void (^)(NSError *_Nullable error))completion;
+// Successful completion includes the actual archive filename saved by Files.
+- (void)backUpNowWithCompletion:(void (^)(NSString *_Nullable filename, NSError *_Nullable error))completion;
 
-// An independent temporary copy remains available while a share/restore UI is up,
-// even if retention later removes the original. The caller removes the copy after use.
-- (void)prepareLocalBackupAtURL:(NSURL *)url
-                    completion:(void (^)(NSURL *_Nullable copyURL, NSError *_Nullable error))completion;
 @end
 
 NS_ASSUME_NONNULL_END

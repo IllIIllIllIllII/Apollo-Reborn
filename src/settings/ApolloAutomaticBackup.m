@@ -1,6 +1,8 @@
 #import "settings/ApolloAutomaticBackup.h"
 
 #import <UIKit/UIKit.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <stdlib.h>
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
@@ -10,7 +12,7 @@ NSNotificationName const ApolloAutomaticBackupDidChangeNotification = @"ApolloAu
 
 static NSString *const kBackupDirectoryName = @"Apollo Reborn Backups";
 static NSTimeInterval const kRetryInterval = 15 * 60;
-static NSUInteger const kBackupsToKeep = 5;
+static NSUInteger const kBackupsToKeep = 10;
 
 // A job can be cancelled by expiration or restore without waiting for the worker:
 // archive capture sometimes dispatches to main, so waiting here would deadlock.
@@ -39,35 +41,15 @@ static NSError *ApolloAutomaticBackupError(NSString *message) {
 
 static NSInteger ApolloAutomaticBackupDays(NSInteger days) {
     switch (days) {
-        case 1: case 3: case 7: case 14: case 30: return days;
+        case 1: case 3: case 7: return days;
         default: return 3;
     }
-}
-
-static NSURL *ApolloAutomaticBackupDocumentsURL(void) {
-    return [[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory
-                                                inDomains:NSUserDomainMask].firstObject;
-}
-
-static NSURL *ApolloAutomaticBackupLocalDirectory(void) {
-    return [ApolloAutomaticBackupDocumentsURL() URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
 }
 
 static NSURL *ApolloAutomaticBackupStateURL(void) {
     NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
                                                           inDomains:NSUserDomainMask].firstObject;
     return [support URLByAppendingPathComponent:@"ApolloReborn/AutomaticBackups/state.plist"];
-}
-
-// Match only our exact naming scheme. Retention additionally requires this
-// installation's random ID, so another phone's or a manual backup is never pruned.
-static BOOL ApolloAutomaticBackupIsArchiveName(NSString *name, NSString *installationID) {
-    NSString *identifier = installationID
-        ? [NSRegularExpression escapedPatternForString:installationID]
-        : @"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}";
-    NSString *pattern = [NSString stringWithFormat:
-        @"^Apollo_Auto_Backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}_[0-9]{3}_%@\\.zip$", identifier];
-    return [name rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
 }
 
 static BOOL ApolloAutomaticBackupDirectoryIsUsable(NSURL *directory, NSError **error) {
@@ -79,7 +61,7 @@ static BOOL ApolloAutomaticBackupDirectoryIsUsable(NSURL *directory, NSError **e
     return NO;
 }
 
-// Coordinate each affected item, including local files that Files may be reading.
+// Coordinate each affected item that Files may be reading.
 // A coordinated write to an ordinary directory does not lock its descendants.
 // These helpers finish their coordination before a caller starts another one.
 static BOOL ApolloAutomaticBackupReadItem(
@@ -146,59 +128,219 @@ static BOOL ApolloAutomaticBackupWriteItems(
     return YES;
 }
 
-static NSArray<NSURL *> *ApolloAutomaticBackupArchives(NSURL *directory, NSString *installationID) {
-    if (!ApolloAutomaticBackupDirectoryIsUsable(directory, nil)) return @[];
-    NSArray<NSURL *> *contents = [[NSFileManager defaultManager]
-        contentsOfDirectoryAtURL:directory
-        includingPropertiesForKeys:@[NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey]
-        options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
-    NSMutableArray<NSURL *> *archives = [NSMutableArray array];
-    for (NSURL *url in contents) {
-        if (!ApolloAutomaticBackupIsArchiveName(url.lastPathComponent, installationID)) continue;
-        NSNumber *regular = nil, *symlink = nil;
-        [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
-        [url getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:nil];
-        if (regular.boolValue && !symlink.boolValue) [archives addObject:url];
-    }
-    [archives sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
-        return [b.lastPathComponent compare:a.lastPathComponent options:NSLiteralSearch];
-    }];
-    return archives;
+// Short names are user-facing only; ownership comes from this installation's
+// private ledger. A content fingerprint prevents a reused name from authorizing
+// deletion of a replacement file saved by another installation.
+static BOOL ApolloAutomaticBackupIsShortArchiveName(NSString *name) {
+    return [name rangeOfString:@"^Apollo_(Auto|Manual)_Backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{3,}\\.zip$"
+        options:NSRegularExpressionSearch].location != NSNotFound;
 }
 
-static void ApolloAutomaticBackupPrune(NSURL *directory, NSString *installationID,
-                                      NSURL *justSaved, ApolloAutomaticBackupJob *job) {
-    __block NSArray<NSURL *> *archives = nil;
+static NSData *ApolloAutomaticBackupFingerprint(NSURL *url, ApolloAutomaticBackupJob *job, NSError **error) {
+    NSInputStream *stream = [NSInputStream inputStreamWithURL:url];
+    [stream open];
+    CC_SHA256_CTX context;
+    CC_SHA256_Init(&context);
+    uint8_t buffer[64 * 1024];
+    BOOL success = YES;
+    for (;;) {
+        if (job.isCancelled) { success = NO; break; }
+        NSInteger length = [stream read:buffer maxLength:sizeof(buffer)];
+        if (length == 0) break;
+        if (length < 0) {
+            if (error) *error = stream.streamError;
+            success = NO;
+            break;
+        }
+        CC_SHA256_Update(&context, buffer, (CC_LONG)length);
+    }
+    [stream close];
+    if (!success) return nil;
+    unsigned char hash[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Final(hash, &context);
+    return [NSData dataWithBytes:hash length:sizeof(hash)];
+}
+
+static NSString *ApolloAutomaticBackupDirectoryKey(NSURL *directory) {
+    return directory.URLByStandardizingPath.absoluteString;
+}
+
+static NSMutableDictionary *ApolloAutomaticBackupOwnershipRecords(id stored) {
+    NSMutableDictionary *records = [NSMutableDictionary dictionary];
+    if (![stored isKindOfClass:NSDictionary.class]) return records;
+    for (id name in stored) {
+        if (![name isKindOfClass:NSString.class] || ![name hasPrefix:@"Apollo_Auto_Backup_"] ||
+            !ApolloAutomaticBackupIsShortArchiveName(name)) continue;
+        id record = stored[name];
+        if (![record isKindOfClass:NSDictionary.class]) continue;
+        id hash = record[@"sha256"], date = record[@"savedAt"];
+        if ([hash isKindOfClass:NSData.class] && [hash length] == CC_SHA256_DIGEST_LENGTH &&
+            [date isKindOfClass:NSDate.class]) records[name] = record;
+    }
+    return records;
+}
+
+static NSString *ApolloAutomaticBackupDayString(NSDate *date) {
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = NSTimeZone.localTimeZone;
+    formatter.dateFormat = @"yyyy-MM-dd";
+    return [formatter stringFromDate:date];
+}
+
+// Share a daily sequence across automatic/manual backups and count every matching
+// name, regardless of owner or file type. Never reuse an existing file's number.
+static NSUInteger ApolloAutomaticBackupNextSequence(NSArray<NSString *> *names, NSString *day) {
+    NSUInteger largest = 0;
+    for (NSString *name in names) {
+        if (!ApolloAutomaticBackupIsShortArchiveName(name)) continue;
+        NSString *prefix = [NSString stringWithFormat:@"Apollo_%@_Backup_%@_",
+            [name hasPrefix:@"Apollo_Auto_"] ? @"Auto" : @"Manual", day];
+        if (![name hasPrefix:prefix]) continue;
+        NSString *digits = [[name substringFromIndex:prefix.length] stringByDeletingPathExtension];
+        unsigned long long number = strtoull(digits.UTF8String, NULL, 10);
+        if (number >= NSUIntegerMax) return 0;
+        largest = MAX(largest, (NSUInteger)number);
+    }
+    return largest + 1;
+}
+
+static NSURL *ApolloAutomaticBackupPublish(NSURL *zip, NSURL *directory, BOOL automatic,
+                                          NSDate *date, ApolloAutomaticBackupJob *job, NSError **error) {
+    __block NSArray<NSString *> *names = nil;
+    if (!ApolloAutomaticBackupReadItem(directory, job, error, ^BOOL(NSURL *newDirectory, NSError **readError) {
+        if (!ApolloAutomaticBackupDirectoryIsUsable(newDirectory, readError)) return NO;
+        names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:newDirectory.path error:readError];
+        return names != nil;
+    })) return nil;
+    NSString *day = ApolloAutomaticBackupDayString(date);
+    NSUInteger sequence = ApolloAutomaticBackupNextSequence(names, day);
+    // Coordination serializes cooperating providers; the filesystem's no-overwrite
+    // move also catches a competing writer that creates a name after enumeration.
+    for (NSUInteger retry = 0; sequence && retry < 128 && !job.isCancelled; retry++, sequence++) {
+        NSString *name = [NSString stringWithFormat:@"Apollo_%@_Backup_%@_%03lu.zip",
+            automatic ? @"Auto" : @"Manual", day, (unsigned long)sequence];
+        NSURL *destination = [directory URLByAppendingPathComponent:name];
+        NSURL *pending = [directory URLByAppendingPathComponent:
+            [NSString stringWithFormat:@".%@.%@.pending", name, NSUUID.UUID.UUIDString]];
+        __block NSURL *published = nil;
+        __block BOOL collision = NO;
+        NSError *publishError = nil;
+        BOOL success = ApolloAutomaticBackupWriteItems(pending, NSFileCoordinatorWritingForMoving,
+            destination, 0, job, &publishError, ^BOOL(NSURL *newPending, NSURL *newDestination, NSError **writeError) {
+                NSFileManager *fm = NSFileManager.defaultManager;
+                NSURL *parent = newPending.URLByDeletingLastPathComponent;
+                if (!ApolloAutomaticBackupDirectoryIsUsable(parent, writeError) ||
+                    ![parent.URLByStandardizingPath.path isEqualToString:
+                        newDestination.URLByDeletingLastPathComponent.URLByStandardizingPath.path]) {
+                    if (writeError) *writeError = ApolloAutomaticBackupError(@"The backup folder moved. Please try again.");
+                    return NO;
+                }
+                if ([fm attributesOfItemAtPath:newDestination.path error:nil]) {
+                    collision = YES;
+                    return NO;
+                }
+                @try {
+                    if (![fm copyItemAtURL:zip toURL:newPending error:writeError]) return NO;
+                    if (job.isCancelled) return NO;
+                    NSFileCoordinator *coordinator = job.coordinator;
+                    [coordinator itemAtURL:newPending willMoveToURL:newDestination];
+                    NSError *moveError = nil;
+                    if (![fm moveItemAtURL:newPending toURL:newDestination error:&moveError]) {
+                        collision = [moveError.domain isEqualToString:NSCocoaErrorDomain] &&
+                            moveError.code == NSFileWriteFileExistsError;
+                        if (writeError) *writeError = moveError;
+                        return NO;
+                    }
+                    [coordinator itemAtURL:newPending didMoveToURL:newDestination];
+                    published = newDestination;
+                    return YES;
+                } @finally {
+                    [fm removeItemAtURL:newPending error:nil];
+                }
+            });
+        if (success) return published;
+        if (!collision) {
+            if (error) *error = publishError;
+            return nil;
+        }
+    }
+    if (error) *error = ApolloAutomaticBackupError(job.isCancelled
+        ? @"Backup was interrupted. It will be retried when Apollo is open."
+        : @"Could not reserve a unique backup name. Please try again.");
+    return nil;
+}
+
+static void ApolloAutomaticBackupPrune(NSURL *directory, NSURL *justSaved, NSMutableDictionary *ownership,
+                                      ApolloAutomaticBackupJob *job) {
+    __block NSArray<NSURL *> *contents = nil;
     if (!ApolloAutomaticBackupReadItem(directory, job, nil, ^BOOL(NSURL *newDirectory, NSError **error) {
         if (!ApolloAutomaticBackupDirectoryIsUsable(newDirectory, error)) return NO;
-        archives = ApolloAutomaticBackupArchives(newDirectory, installationID);
-        return YES;
+        contents = [NSFileManager.defaultManager contentsOfDirectoryAtURL:newDirectory
+            includingPropertiesForKeys:nil options:NSDirectoryEnumerationSkipsHiddenFiles error:error];
+        return contents != nil;
     })) return;
-    // Always keep the newly saved ZIP, including after the phone's clock moved
-    // backwards. Lexical UTC timestamps order the other archives newest first.
-    NSUInteger retained = 1;
-    for (NSURL *url in archives) {
+    NSSet *existingNames = [NSSet setWithArray:[contents valueForKey:@"lastPathComponent"]];
+    for (NSString *name in ownership.allKeys) {
+        if (![existingNames containsObject:name]) [ownership removeObjectForKey:name];
+    }
+    NSMutableArray<NSDictionary *> *archives = [NSMutableArray array];
+    for (NSURL *url in contents) {
         if (job.isCancelled) return;
-        if ([url.lastPathComponent isEqualToString:justSaved.lastPathComponent]) continue;
+        NSString *name = url.lastPathComponent;
+        // Older UUID-named archives labeled manual runs as Auto too. Preserve
+        // every ambiguous legacy archive rather than risk pruning a manual one.
+        if (![name hasPrefix:@"Apollo_Auto_Backup_"] || !ApolloAutomaticBackupIsShortArchiveName(name)) continue;
+        NSDictionary *record = ownership[name];
+        if (!record) continue;
+        __block BOOL replaced = NO;
+        BOOL owned = ApolloAutomaticBackupReadItem(url, job, nil, ^BOOL(NSURL *newURL, NSError **readError) {
+            NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:newURL.path error:readError];
+            if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular]) return NO;
+            NSData *hash = ApolloAutomaticBackupFingerprint(newURL, job, readError);
+            replaced = hash && ![hash isEqual:record[@"sha256"]];
+            return hash && !replaced;
+        });
+        if (replaced) [ownership removeObjectForKey:name];
+        if (!owned) continue;
+        [archives addObject:@{@"url": url, @"date": record[@"savedAt"]}];
+    }
+    [archives sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSComparisonResult dateOrder = [b[@"date"] compare:a[@"date"]];
+        return dateOrder != NSOrderedSame ? dateOrder
+            : [[b[@"url"] lastPathComponent] compare:[a[@"url"] lastPathComponent] options:NSNumericSearch];
+    }];
+    // Keep the new automatic archive even after a clock correction. Manual
+    // archives never consume an automatic retention slot or become candidates.
+    BOOL justSavedIsAutomatic = [justSaved.lastPathComponent hasPrefix:@"Apollo_Auto_Backup_"] &&
+        ApolloAutomaticBackupIsShortArchiveName(justSaved.lastPathComponent);
+    NSUInteger retained = justSavedIsAutomatic ? 1 : 0;
+    for (NSDictionary *archive in archives) {
+        if (job.isCancelled) return;
+        NSURL *url = archive[@"url"];
+        NSString *name = url.lastPathComponent;
+        if ([name isEqualToString:justSaved.lastPathComponent]) continue;
         if (retained++ < kBackupsToKeep) continue;
+        NSDictionary *record = ownership[name];
+        __block BOOL noLongerOwned = NO;
         NSError *error = nil;
         BOOL removed = ApolloAutomaticBackupWriteItems(url, NSFileCoordinatorWritingForDeleting, nil, 0,
             job, &error, ^BOOL(NSURL *newURL, __unused NSURL *unused, NSError **deleteError) {
                 if (!ApolloAutomaticBackupDirectoryIsUsable(newURL.URLByDeletingLastPathComponent, deleteError)) return NO;
-                // Recheck after coordination: another app may have moved or
-                // replaced the item since directory enumeration completed.
                 NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:newURL.path error:deleteError];
-                if (!attributes) return YES; // Already removed; retention is satisfied.
+                if (!attributes) return YES;
                 if (![attributes[NSFileType] isEqualToString:NSFileTypeRegular] ||
-                    ![newURL.lastPathComponent isEqualToString:url.lastPathComponent] ||
+                    ![newURL.lastPathComponent isEqualToString:name] ||
                     ![newURL.URLByDeletingLastPathComponent.URLByStandardizingPath.path isEqualToString:
-                        url.URLByDeletingLastPathComponent.URLByStandardizingPath.path] ||
-                    !ApolloAutomaticBackupIsArchiveName(newURL.lastPathComponent, installationID)) return YES;
-                return [NSFileManager.defaultManager removeItemAtURL:newURL error:deleteError];
+                        directory.URLByStandardizingPath.path]) return YES;
+                NSData *hash = ApolloAutomaticBackupFingerprint(newURL, job, deleteError);
+                if (!hash) return NO;
+                if (![hash isEqual:record[@"sha256"]]) { noLongerOwned = YES; return YES; }
+                return !job.isCancelled && [NSFileManager.defaultManager removeItemAtURL:newURL error:deleteError];
             });
-        if (!removed) {
-            ApolloLog(@"[AutomaticBackup] Could not prune an older archive (code %ld)", (long)error.code);
-        }
+        if (removed || noLongerOwned) [ownership removeObjectForKey:name];
+        else ApolloLog(@"[AutomaticBackup] Could not prune an older archive (code %ld)", (long)error.code);
     }
 }
 
@@ -209,13 +351,13 @@ static void ApolloAutomaticBackupPrune(NSURL *directory, NSString *installationI
 // archive publication, and each retention deletion separately. Never wait for a
 // provider on the main thread, and never nest coordinated-write accessors.
 static BOOL ApolloAutomaticBackupInDirectory(
-    NSURL *root, BOOL external, BOOL rootIsBackupDirectory, ApolloAutomaticBackupJob *job, NSError **outError,
+    NSURL *root, BOOL rootIsBackupDirectory, ApolloAutomaticBackupJob *job, NSError **outError,
     BOOL (^accessor)(NSURL *directory, NSError **error)) {
     if (!root.isFileURL) {
         if (outError) *outError = ApolloAutomaticBackupError(@"Choose the backup folder again in Files.");
         return NO;
     }
-    BOOL scoped = external && [root startAccessingSecurityScopedResource];
+    BOOL scoped = [root startAccessingSecurityScopedResource];
     BOOL success = NO;
     NSError *workError = nil;
     @try {
@@ -226,20 +368,22 @@ static BOOL ApolloAutomaticBackupInDirectory(
                 : [newRoot URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
             return YES;
         });
-        BOOL directoryReady = rootReady && ApolloAutomaticBackupWriteItems(directory, 0, nil, 0,
+        // A directly selected/exported directory already exists and its scope
+        // need not permit inspecting the parent. Only legacy parent selections
+        // require creating the backup subdirectory.
+        BOOL directoryReady = rootReady && (rootIsBackupDirectory || ApolloAutomaticBackupWriteItems(directory, 0, nil, 0,
             job, &workError, ^BOOL(NSURL *newDirectory, __unused NSURL *unused, NSError **createError) {
                 NSFileManager *fm = NSFileManager.defaultManager;
                 if (!ApolloAutomaticBackupDirectoryIsUsable(newDirectory.URLByDeletingLastPathComponent, createError)) return NO;
                 NSDictionary *existing = [fm attributesOfItemAtPath:newDirectory.path error:nil];
                 if (!existing) {
-                    NSDictionary *attributes = external ? nil : @{NSFileProtectionKey: NSFileProtectionComplete};
                     if (![fm createDirectoryAtURL:newDirectory withIntermediateDirectories:NO
-                                       attributes:attributes error:createError]) return NO;
+                                       attributes:nil error:createError]) return NO;
                 }
                 if (!ApolloAutomaticBackupDirectoryIsUsable(newDirectory, createError)) return NO;
                 directory = newDirectory;
                 return YES;
-            });
+            }));
         if (directoryReady && !job.isCancelled) {
             success = accessor(directory, &workError);
         }
@@ -289,7 +433,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
 - (BOOL)enabled { return sAutomaticBackupsEnabled; }
 - (NSInteger)intervalDays { return ApolloAutomaticBackupDays(sAutomaticBackupIntervalDays); }
 - (BOOL)isBackingUp { return self.job != nil; }
-- (BOOL)usesSelectedFolder { return sAutomaticBackupDestination == 1; }
+- (BOOL)usesSelectedFolder { return self.hasSavedFolder; }
 - (BOOL)loadStateIfNeeded {
     if (self.stateLoaded) return YES;
     if (!UIApplication.sharedApplication.isProtectedDataAvailable) return NO;
@@ -315,22 +459,21 @@ static BOOL ApolloAutomaticBackupInDirectory(
     return YES;
 }
 - (NSString *)destinationName {
-    if (!self.usesSelectedFolder) return @"On This iPhone";
-    [self loadStateIfNeeded];
-    id name = self.state[@"folderName"];
-    return [name isKindOfClass:NSString.class] && [name length] ? name : @"Choose a Folder";
+    return self.savedFolderName ?: @"Select Folder";
 }
 - (BOOL)hasSavedFolder {
     [self loadStateIfNeeded];
-    return [self.state[@"folderBookmark"] isKindOfClass:NSData.class];
+    id bookmark = self.state[@"folderBookmark"];
+    return [bookmark isKindOfClass:NSData.class] && [bookmark length] > 0;
 }
 - (NSString *)savedFolderName {
-    [self loadStateIfNeeded];
+    if (!self.hasSavedFolder) return nil;
+    if (![self.state[@"folderIsBackupDirectory"] boolValue]) return kBackupDirectoryName;
     id name = self.state[@"folderName"];
     return [name isKindOfClass:NSString.class] && [name length] ? name : nil;
 }
 - (NSString *)stateKey:(NSString *)suffix {
-    return [(self.usesSelectedFolder ? @"folder" : @"local") stringByAppendingString:suffix];
+    return [@"folder" stringByAppendingString:suffix];
 }
 - (NSDate *)lastBackupDate {
     [self loadStateIfNeeded];
@@ -338,7 +481,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
     return [date isKindOfClass:NSDate.class] ? date : nil;
 }
 - (NSDate *)nextBackupDate {
-    if (!self.enabled) return nil;
+    if (!self.enabled || !self.hasSavedFolder) return nil;
     NSDate *last = self.lastBackupDate;
     // An implausibly future last-success after a clock correction must not defer
     // all backups until that old wall-clock date eventually comes around again.
@@ -350,9 +493,6 @@ static BOOL ApolloAutomaticBackupInDirectory(
     if (self.stateReadError) return self.stateReadError;
     id message = self.state[[self stateKey:@"LastError"]];
     return [message isKindOfClass:NSString.class] ? message : nil;
-}
-- (NSArray<NSURL *> *)localBackupURLs {
-    return ApolloAutomaticBackupArchives(ApolloAutomaticBackupLocalDirectory(), nil);
 }
 
 - (void)notifyChange {
@@ -413,6 +553,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
         [self notifyChange];
         return;
     }
+    if (!self.hasSavedFolder) return;
     NSTimeInterval delay = MAX(2, self.nextBackupDate.timeIntervalSinceNow);
     id attempted = self.state[[self stateKey:@"LastAttempt"]];
     NSDate *lastSuccess = self.lastBackupDate;
@@ -449,46 +590,9 @@ static BOOL ApolloAutomaticBackupInDirectory(
     [self scheduleNextCheck];
 }
 
-- (void)useLocalFolder {
-    if (self.isBackingUp || self.suspendedForRestore || !self.usesSelectedFolder) return;
-    if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
-    self.selectedFolderURL = nil;
-    self.selectedFolderScopeActive = NO;
-    sAutomaticBackupDestination = 0;
-    [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:UDKeyAutomaticBackupDestination];
-    [self notifyChange];
-    [self scheduleNextCheck];
-}
-
-- (void)useSavedFolderWithCompletion:(void (^)(NSError *))completion {
-    if (self.isBackingUp || self.suspendedForRestore || ![self loadStateIfNeeded]) {
-        completion(ApolloAutomaticBackupError(@"The previous Files folder is unavailable."));
-        return;
-    }
-    NSData *bookmark = [self.state[@"folderBookmark"] isKindOfClass:NSData.class]
-        ? self.state[@"folderBookmark"] : nil;
-    if (!bookmark) {
-        completion(ApolloAutomaticBackupError(@"Choose a backup location in Files first."));
-        return;
-    }
-    dispatch_async(self.workQueue, ^{
-        BOOL stale = NO;
-        NSError *error = nil;
-        NSURL *url = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
-                                   bookmarkDataIsStale:&stale error:&error];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!url) {
-                completion(ApolloAutomaticBackupError(@"Choose the backup folder again in Files."));
-                return;
-            }
-            [self selectFolderURL:url completion:completion];
-        });
-    });
-}
-
 - (void)selectedFolderURLWithCompletion:(void (^)(NSURL *, NSError *))completion {
-    if (self.selectedFolderURL) {
-        completion(self.selectedFolderURL, nil);
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self selectedFolderURLWithCompletion:completion]; });
         return;
     }
     if (![self loadStateIfNeeded]) {
@@ -497,17 +601,58 @@ static BOOL ApolloAutomaticBackupInDirectory(
     }
     NSData *bookmark = [self.state[@"folderBookmark"] isKindOfClass:NSData.class]
         ? self.state[@"folderBookmark"] : nil;
+    if (!bookmark) {
+        completion(nil, ApolloAutomaticBackupError(@"Select a backup folder in Files first."));
+        return;
+    }
+    NSURL *cachedRoot = self.selectedFolderURL;
+    BOOL rootIsBackupDirectory = [self.state[@"folderIsBackupDirectory"] boolValue];
     dispatch_async(self.workQueue, ^{
         BOOL stale = NO;
         NSError *error = nil;
-        NSURL *url = bookmark ? [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
-                                              bookmarkDataIsStale:&stale error:&error] : nil;
+        NSURL *root = cachedRoot ?: [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
+                                               bookmarkDataIsStale:&stale error:&error];
+        BOOL scoped = [root startAccessingSecurityScopedResource];
+        __block NSURL *directory = rootIsBackupDirectory ? root
+            : [root URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
+        // Browsing and restore must not recreate a deleted folder or reset the
+        // schedule. Only validate the directory and renew stale permission data.
+        BOOL readable = directory && ApolloAutomaticBackupReadItem(directory, nil, &error,
+            ^BOOL(NSURL *coordinatedDirectory, NSError **readError) {
+                if (!ApolloAutomaticBackupDirectoryIsUsable(coordinatedDirectory, readError)) return NO;
+                directory = coordinatedDirectory;
+                return YES;
+            });
+        NSData *refreshedBookmark = readable && stale
+            ? [root bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+                includingResourceValuesForKeys:nil relativeToURL:nil error:&error] : nil;
+        BOOL success = readable && (!stale || refreshedBookmark != nil);
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (url) {
-                self.selectedFolderURL = url;
-                self.selectedFolderScopeActive = [url startAccessingSecurityScopedResource];
+            // A destination may have changed while its old provider was resolving.
+            // Do not replace the new permission cache with that stale request.
+            if (![self.state[@"folderBookmark"] isEqual:bookmark]) {
+                if (scoped) [root stopAccessingSecurityScopedResource];
+                [self selectedFolderURLWithCompletion:completion];
+                return;
             }
-            completion(url, url ? nil : ApolloAutomaticBackupError(@"Choose the backup folder again in Files."));
+            NSError *resultError = success ? nil : ApolloAutomaticBackupError(
+                @"The backup folder is unavailable. Select the folder again in Files.");
+            if (success && refreshedBookmark) {
+                self.state[@"folderBookmark"] = refreshedBookmark;
+                if (![self saveState:&resultError]) self.state[@"folderBookmark"] = bookmark;
+            }
+            if (!resultError && root == self.selectedFolderURL) {
+                // Keep the existing live scope. Balance only this read's extra
+                // acquisition, including providers that declined a second start.
+                if (scoped) [root stopAccessingSecurityScopedResource];
+            } else if (!resultError) {
+                if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
+                self.selectedFolderURL = root;
+                self.selectedFolderScopeActive = scoped;
+            } else if (scoped) {
+                [root stopAccessingSecurityScopedResource];
+            }
+            completion(resultError ? nil : directory, resultError);
         });
     });
 }
@@ -548,6 +693,10 @@ static BOOL ApolloAutomaticBackupInDirectory(
 }
 
 - (void)selectFolderURL:(NSURL *)url completion:(void (^)(NSError *))completion {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self selectFolderURL:url completion:completion]; });
+        return;
+    }
     if (self.isBackingUp || self.suspendedForRestore) {
         completion(ApolloAutomaticBackupError(@"Wait for the current operation to finish."));
         return;
@@ -556,16 +705,14 @@ static BOOL ApolloAutomaticBackupInDirectory(
         completion(ApolloAutomaticBackupError(self.stateReadError ?: @"Unlock the phone and try again."));
         return;
     }
-    if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
-    self.selectedFolderURL = url;
-    self.selectedFolderScopeActive = [url startAccessingSecurityScopedResource];
+    // Capture the new permission during the Files callback, but keep the working
+    // destination and its scope until this candidate has passed validation.
+    BOOL candidateScopeActive = [url startAccessingSecurityScopedResource];
     NSError *bookmarkError = nil;
     NSData *bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
         includingResourceValuesForKeys:nil relativeToURL:nil error:&bookmarkError];
     if (!bookmark) {
-        if (self.selectedFolderScopeActive) [url stopAccessingSecurityScopedResource];
-        self.selectedFolderURL = nil;
-        self.selectedFolderScopeActive = NO;
+        if (candidateScopeActive) [url stopAccessingSecurityScopedResource];
         completion(ApolloAutomaticBackupError(@"Could not remember this folder. Please try again."));
         return;
     }
@@ -573,8 +720,9 @@ static BOOL ApolloAutomaticBackupInDirectory(
     dispatch_async(self.workQueue, ^{
         @autoreleasepool {
             NSError *error = nil;
-            BOOL rootIsBackupDirectory = [url.lastPathComponent isEqualToString:kBackupDirectoryName];
-            BOOL success = ApolloAutomaticBackupInDirectory(url, YES, rootIsBackupDirectory, job, &error,
+            // Files has already exported the backup directory. Its actual name
+            // may differ after a rename; never add a second directory inside it.
+            BOOL success = ApolloAutomaticBackupInDirectory(url, YES, job, &error,
                 ^BOOL(NSURL *directory, NSError **writeError) {
                     // A bookmark alone says nothing about write permission. Probe
                     // the folder now, before changing a working destination.
@@ -593,15 +741,22 @@ static BOOL ApolloAutomaticBackupInDirectory(
                 });
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSError *resultError = error;
+                BOOL selected = NO;
                 if (success && !job.isCancelled && !self.suspendedForRestore) {
                     NSMutableDictionary *previous = [self.state mutableCopy];
                     self.state[@"folderBookmark"] = bookmark;
                     self.state[@"folderName"] = url.lastPathComponent.length ? url.lastPathComponent : @"Files Folder";
-                    self.state[@"folderIsBackupDirectory"] = @(rootIsBackupDirectory);
+                    self.state[@"folderIsBackupDirectory"] = @YES;
                     [self.state removeObjectForKey:@"folderLastSuccess"];
                     [self.state removeObjectForKey:@"folderLastAttempt"];
                     [self.state removeObjectForKey:@"folderLastError"];
                     if ([self saveState:&resultError]) {
+                        if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
+                        self.selectedFolderURL = url;
+                        self.selectedFolderScopeActive = candidateScopeActive;
+                        selected = YES;
+                        // Preserve the old preference for compatibility with
+                        // earlier builds. New code always uses the saved folder.
                         sAutomaticBackupDestination = 1;
                         [[NSUserDefaults standardUserDefaults] setInteger:1 forKey:UDKeyAutomaticBackupDestination];
                     } else {
@@ -610,6 +765,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
                 } else if (!resultError) {
                     resultError = ApolloAutomaticBackupError(@"Folder selection was interrupted. Please choose the folder again.");
                 }
+                if (!selected && candidateScopeActive) [url stopAccessingSecurityScopedResource];
                 [self finishJob:job];
                 completion(resultError);
             });
@@ -617,22 +773,27 @@ static BOOL ApolloAutomaticBackupInDirectory(
     });
 }
 
-- (void)backUpNowWithCompletion:(void (^)(NSError *))completion {
+- (void)backUpNowWithCompletion:(void (^)(NSString *, NSError *))completion {
     [self runBackupAutomatically:NO completion:completion];
 }
 
-- (void)runBackupAutomatically:(BOOL)automatic completion:(void (^)(NSError *))completion {
+- (void)runBackupAutomatically:(BOOL)automatic completion:(void (^)(NSString *, NSError *))completion {
     UIApplication *app = UIApplication.sharedApplication;
     if (self.isBackingUp || self.suspendedForRestore ||
         app.applicationState != UIApplicationStateActive || !app.isProtectedDataAvailable ||
         (automatic && (!self.enabled || self.nextBackupDate.timeIntervalSinceNow > 0))) {
-        if (completion) completion(ApolloAutomaticBackupError(@"Keep Apollo open and wait for the current operation to finish, then try again."));
+        if (completion) completion(nil, ApolloAutomaticBackupError(@"Keep Apollo open and wait for the current operation to finish, then try again."));
         [self scheduleNextCheck];
         return;
     }
     if (![self loadStateIfNeeded]) {
         [self notifyChange];
-        if (completion) completion(ApolloAutomaticBackupError(self.stateReadError ?: @"Unlock the phone and try again."));
+        if (completion) completion(nil, ApolloAutomaticBackupError(self.stateReadError ?: @"Unlock the phone and try again."));
+        return;
+    }
+    if (!self.hasSavedFolder) {
+        if (completion) completion(nil, ApolloAutomaticBackupError(@"Select a backup folder in Files first."));
+        [self scheduleNextCheck];
         return;
     }
     NSString *installationID = [self.state[@"installationID"] isKindOfClass:NSString.class]
@@ -640,98 +801,67 @@ static BOOL ApolloAutomaticBackupInDirectory(
     if (!installationID || ![[NSUUID alloc] initWithUUIDString:installationID]) {
         installationID = NSUUID.UUID.UUIDString;
         self.state[@"installationID"] = installationID;
+        [self.state removeObjectForKey:@"archiveOwnershipByDirectory"];
     }
-    NSString *prefix = self.usesSelectedFolder ? @"folder" : @"local";
+    NSString *prefix = @"folder";
     self.state[[prefix stringByAppendingString:@"LastAttempt"]] = [NSDate date];
     NSError *stateError = nil;
     if (![self saveState:&stateError]) {
         self.state[[prefix stringByAppendingString:@"LastError"]] = stateError.localizedDescription;
         [self notifyChange];
         [self scheduleNextCheck];
-        if (completion) completion(stateError);
+        if (completion) completion(nil, stateError);
         return;
     }
-    BOOL external = self.usesSelectedFolder;
     NSData *bookmark = [self.state[@"folderBookmark"] isKindOfClass:NSData.class]
         ? self.state[@"folderBookmark"] : nil;
+    NSDictionary *ownershipByDirectory = [self.state[@"archiveOwnershipByDirectory"] isKindOfClass:NSDictionary.class]
+        ? [self.state[@"archiveOwnershipByDirectory"] copy] : @{};
     ApolloAutomaticBackupJob *job = [self beginJob];
-    ApolloLog(@"[AutomaticBackup] Starting %@ backup to %@ storage",
-              automatic ? @"scheduled" : @"requested", external ? @"Files" : @"local");
+    NSURL *cachedRoot = self.selectedFolderURL;
+    BOOL rootIsBackupDirectory = [self.state[@"folderIsBackupDirectory"] boolValue];
+    ApolloLog(@"[AutomaticBackup] Starting %@ backup to Files storage",
+              automatic ? @"scheduled" : @"requested");
     dispatch_async(self.workQueue, ^{
         @autoreleasepool {
             NSError *error = nil;
             NSURL *zip = nil;
             __block NSData *refreshedBookmark = nil;
+            __block NSString *ownershipDirectory = nil;
+            __block NSMutableDictionary *updatedOwnership = nil;
+            __block NSURL *retentionRoot = nil;
+            __block NSURL *publishedURL = nil;
             BOOL saved = NO;
             @try {
                 BOOL stale = NO;
-                NSURL *root = external ? self.selectedFolderURL : ApolloAutomaticBackupDocumentsURL();
-                if (external && !root && bookmark) {
+                NSURL *root = cachedRoot;
+                if (!root && bookmark) {
                     root = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
                                         bookmarkDataIsStale:&stale error:&error];
-                    if (root) {
-                        self.selectedFolderURL = root;
-                        self.selectedFolderScopeActive = [root startAccessingSecurityScopedResource];
-                    }
                 }
                 if (!root) {
                     error = ApolloAutomaticBackupError(@"Choose the backup folder again in Files.");
                 } else if (!job.isCancelled) {
                     zip = ApolloBackupRestoreCreateBackupZip(&error);
                     if (zip && !job.isCancelled) {
-                        BOOL rootIsBackupDirectory = external && [self.state[@"folderIsBackupDirectory"] boolValue];
-                        saved = ApolloAutomaticBackupInDirectory(root, external, rootIsBackupDirectory, job, &error,
+                        saved = ApolloAutomaticBackupInDirectory(root, rootIsBackupDirectory, job, &error,
                             ^BOOL(NSURL *directory, NSError **writeError) {
                                 if (stale) {
-                                    refreshedBookmark = [root bookmarkDataWithOptions:0
+                                    refreshedBookmark = [root bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
                                         includingResourceValuesForKeys:nil relativeToURL:nil error:writeError];
                                     if (!refreshedBookmark) return NO;
                                 }
-                                NSDateFormatter *formatter = [NSDateFormatter new];
-                                formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-                                formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
-                                formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
-                                formatter.dateFormat = @"yyyy-MM-dd_HHmmss_SSS";
-                                NSString *name = [NSString stringWithFormat:@"Apollo_Auto_Backup_%@_%@.zip",
-                                    [formatter stringFromDate:[NSDate date]], installationID];
-                                NSURL *destination = [directory URLByAppendingPathComponent:name];
-                                NSURL *pending = [directory URLByAppendingPathComponent:
-                                    [NSString stringWithFormat:@".%@.%@.pending", name, NSUUID.UUID.UUIDString]];
-                                __block NSURL *published = nil;
-                                BOOL success = ApolloAutomaticBackupWriteItems(
-                                    pending, NSFileCoordinatorWritingForMoving, destination, 0, job, writeError,
-                                    ^BOOL(NSURL *newPending, NSURL *newDestination, NSError **publishError) {
-                                        NSFileManager *fm = NSFileManager.defaultManager;
-                                        NSURL *parent = newPending.URLByDeletingLastPathComponent;
-                                        if (!ApolloAutomaticBackupDirectoryIsUsable(parent, publishError) ||
-                                            ![parent.URLByStandardizingPath.path isEqualToString:
-                                                newDestination.URLByDeletingLastPathComponent.URLByStandardizingPath.path]) {
-                                            if (publishError) *publishError = ApolloAutomaticBackupError(@"The backup folder moved. Please try again.");
-                                            return NO;
-                                        }
-                                        @try {
-                                            if (![fm copyItemAtURL:zip toURL:newPending error:publishError]) return NO;
-                                            if (!external && ![fm setAttributes:@{NSFileProtectionKey: NSFileProtectionComplete}
-                                                ofItemAtPath:newPending.path error:publishError]) return NO;
-                                            if (job.isCancelled) return NO;
-                                            // Both names stay exclusively coordinated during
-                                            // the copy and same-directory atomic publication.
-                                            // A partial archive never appears under a ZIP name.
-                                            NSFileCoordinator *coordinator = job.coordinator;
-                                            [coordinator itemAtURL:newPending willMoveToURL:newDestination];
-                                            if (![fm moveItemAtURL:newPending toURL:newDestination error:publishError]) return NO;
-                                            [coordinator itemAtURL:newPending didMoveToURL:newDestination];
-                                            published = newDestination;
-                                            return YES;
-                                        } @finally {
-                                            [fm removeItemAtURL:newPending error:nil];
-                                        }
-                                    });
-                                // The publication coordinator must have released both URLs
-                                // before enumeration and separately coordinated deletions.
-                                if (success) ApolloAutomaticBackupPrune(published.URLByDeletingLastPathComponent,
-                                    installationID, published, job);
-                                return success;
+                                NSData *fingerprint = automatic ? ApolloAutomaticBackupFingerprint(zip, job, writeError) : nil;
+                                if (automatic && !fingerprint) return NO;
+                                NSDate *savedAt = [NSDate date];
+                                NSURL *published = ApolloAutomaticBackupPublish(zip, directory, automatic, savedAt, job, writeError);
+                                if (!published) return NO;
+                                ownershipDirectory = ApolloAutomaticBackupDirectoryKey(published.URLByDeletingLastPathComponent);
+                                updatedOwnership = ApolloAutomaticBackupOwnershipRecords(ownershipByDirectory[ownershipDirectory]);
+                                if (automatic) updatedOwnership[published.lastPathComponent] = @{@"sha256": fingerprint, @"savedAt": savedAt};
+                                retentionRoot = root;
+                                publishedURL = published;
+                                return YES;
                             });
                     }
                 }
@@ -746,58 +876,71 @@ static BOOL ApolloAutomaticBackupInDirectory(
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSError *resultError = error;
+                BOOL cancelled = interrupted || job.isCancelled;
+                void (^finish)(NSError *) = ^(NSError *finalError) {
+                    [self finishJob:job];
+                    if (completion) completion(finalError ? nil : publishedURL.lastPathComponent, finalError);
+                };
+                BOOL ledgerPersisted = NO;
                 if (!self.suspendedForRestore) {
-                    if (saved && !interrupted) {
+                    if (ownershipDirectory && updatedOwnership) {
+                        NSMutableDictionary *ledger = [ownershipByDirectory mutableCopy];
+                        ledger[ownershipDirectory] = [updatedOwnership copy];
+                        self.state[@"archiveOwnershipByDirectory"] = ledger;
+                    }
+                    if (saved && !cancelled) {
                         self.state[[prefix stringByAppendingString:@"LastSuccess"]] = [NSDate date];
                         [self.state removeObjectForKey:[prefix stringByAppendingString:@"LastError"]];
                         if (refreshedBookmark) self.state[@"folderBookmark"] = refreshedBookmark;
-                        ApolloLog(@"[AutomaticBackup] Archive saved to %@ storage", external ? @"Files" : @"local");
+                        ApolloLog(@"[AutomaticBackup] Archive saved to Files storage");
                     } else {
-                        // Store a useful status, without logging paths, file contents,
-                        // usernames, or any provider's detailed error description.
+                        resultError = resultError ?: ApolloAutomaticBackupError(@"Backup was interrupted. It will be retried when Apollo is open.");
                         self.state[[prefix stringByAppendingString:@"LastError"]] = resultError.localizedDescription;
                         ApolloLog(@"[AutomaticBackup] Backup failed or was interrupted (code %ld)", (long)resultError.code);
                     }
                     NSError *persistError = nil;
-                    if (![self saveState:&persistError] && !resultError) {
-                        resultError = ApolloAutomaticBackupError(@"Backup was saved, but its schedule could not be remembered. Check the phone's free space.");
+                    // The new archive's ownership must be durable before pruning
+                    // any old archive. A failed state write leaves all archives.
+                    ledgerPersisted = [self saveState:&persistError];
+                    if (!ledgerPersisted && !resultError) {
+                        resultError = ApolloAutomaticBackupError(@"Backup was saved, but its configuration could not be remembered. Check the phone's free space.");
                         self.state[[prefix stringByAppendingString:@"LastError"]] = resultError.localizedDescription;
                     }
                 }
-                [self finishJob:job];
-                if (completion) completion(resultError);
-            });
-        }
-    });
-}
-
-- (void)prepareLocalBackupAtURL:(NSURL *)url completion:(void (^)(NSURL *, NSError *))completion {
-    if (self.isBackingUp || self.suspendedForRestore) {
-        completion(nil, ApolloAutomaticBackupError(@"Wait for the current operation to finish."));
-        return;
-    }
-    ApolloAutomaticBackupJob *job = [self beginJob];
-    dispatch_async(self.workQueue, ^{
-        @autoreleasepool {
-            NSURL *directory = ApolloAutomaticBackupLocalDirectory().URLByResolvingSymlinksInPath;
-            NSURL *candidate = url.URLByResolvingSymlinksInPath;
-            BOOL owned = [candidate.URLByDeletingLastPathComponent.path isEqualToString:directory.path] &&
-                         ApolloAutomaticBackupIsArchiveName(url.lastPathComponent, nil);
-            NSError *error = nil;
-            NSURL *copy = nil;
-            if (owned && !job.isCancelled) {
-                NSString *name = [NSString stringWithFormat:@"%@-%@", NSUUID.UUID.UUIDString, url.lastPathComponent];
-                copy = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES] URLByAppendingPathComponent:name];
-                if (![NSFileManager.defaultManager copyItemAtURL:url toURL:copy error:&error]) copy = nil;
-            }
-            if (!copy || job.isCancelled) {
-                if (copy) [NSFileManager.defaultManager removeItemAtURL:copy error:nil];
-                copy = nil;
-                error = ApolloAutomaticBackupError(@"This backup is no longer available. Refresh the list and choose another backup.");
-            }
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self finishJob:job];
-                completion(copy, error);
+                if (!automatic || !saved || cancelled || self.suspendedForRestore || !ledgerPersisted || !publishedURL) {
+                    finish(resultError);
+                    return;
+                }
+                // The publication's provider coordination and security scope
+                // ended before this main-queue save. Resume cleanup asynchronously
+                // with a fresh scope; never wait for main from a coordinator.
+                dispatch_async(self.workQueue, ^{
+                    BOOL scoped = [retentionRoot startAccessingSecurityScopedResource];
+                    @try {
+                        ApolloAutomaticBackupPrune(publishedURL.URLByDeletingLastPathComponent,
+                            publishedURL, updatedOwnership, job);
+                    } @catch (__unused NSException *exception) {
+                        ApolloLog(@"[AutomaticBackup] Could not finish archive retention");
+                    } @finally {
+                        if (scoped) [retentionRoot stopAccessingSecurityScopedResource];
+                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        NSError *cleanupError = nil;
+                        if (!self.suspendedForRestore) {
+                            NSMutableDictionary *ledger = [self.state[@"archiveOwnershipByDirectory"] mutableCopy];
+                            ledger[ownershipDirectory] = [updatedOwnership copy];
+                            self.state[@"archiveOwnershipByDirectory"] = ledger;
+                            // If this save fails, the durable pre-prune ledger
+                            // still owns the newest file; absent entries are
+                            // removed on the next successful retention pass.
+                            if (![self saveState:&cleanupError]) {
+                                cleanupError = ApolloAutomaticBackupError(@"Backup was saved, but its cleanup state could not be remembered. Check the phone's free space.");
+                                self.state[[prefix stringByAppendingString:@"LastError"]] = cleanupError.localizedDescription;
+                            }
+                        }
+                        finish(cleanupError);
+                    });
+                });
             });
         }
     });
