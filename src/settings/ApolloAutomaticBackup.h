@@ -14,6 +14,7 @@ __END_DECLS
 // Called after the tweak's defaults and account-recovery setup have loaded.
 - (void)start;
 - (void)suspendForSettingsRestore;
+- (void)resumeAfterFailedSettingsRestore;
 
 @property (nonatomic, readonly) BOOL enabled;
 @property (nonatomic, readonly) NSInteger intervalDays;
@@ -24,6 +25,8 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSString *savedFolderName;
 @property (nonatomic, readonly, nullable) NSDate *lastBackupDate;
 @property (nonatomic, readonly, nullable) NSDate *nextBackupDate;
+// Future retry eligibility while an automatic failure is in backoff; otherwise nil.
+@property (nonatomic, readonly, nullable) NSDate *nextRetryDate;
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
 
 - (void)setEnabled:(BOOL)enabled;
@@ -31,6 +34,8 @@ __END_DECLS
 // Resolves the actual backup directory for an in-app Files browser or restore picker.
 // This does not change the selected destination or its backup schedule.
 - (void)selectedFolderURLWithCompletion:(void (^)(NSURL *_Nullable folderURL, NSError *_Nullable error))completion;
+// Cancel outstanding folder-browser requests without interrupting backup jobs.
+- (void)cancelFolderResolution;
 // Pass the original exported directory URL from the Files Save callback.
 // The returned directory itself becomes the destination, including provider renames.
 // Completion, like every public completion below, is delivered on the main queue.

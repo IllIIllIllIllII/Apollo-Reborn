@@ -133,12 +133,37 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
     ApolloSettingsRow *nextBackup = [ApolloSettingsRow valueRowWithID:@"automatic.nextBackup"
         title:@"Next Backup" detail:^NSString * {
         if (!manager.hasSavedFolder) return @"Setup Required";
+        if (manager.isBackingUp) return @"Backing Up…";
+        NSDate *retry = manager.nextRetryDate;
+        if (retry) return [@"Retry: " stringByAppendingString:ApolloBackupDateDescription(retry)];
         NSDate *next = manager.nextBackupDate;
-        if (!next || next.timeIntervalSinceNow <= 0) return @"When Apollo Is Open";
+        if (!next || next.timeIntervalSinceNow <= 0) {
+            return manager.lastErrorMessage.length ? @"Retry Pending" : @"When Apollo Is Open";
+        }
         return ApolloBackupDateDescription(next);
     } onSelect:nil];
     nextBackup.visible = automaticVisible;
     nextBackup.configure = ^(UITableViewCell *cell) { cell.detailTextLabel.numberOfLines = 0; };
+
+    ApolloSettingsRow *lastError = [ApolloSettingsRow customRowWithID:@"automatic.lastError"
+        cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
+        NSString *reuseID = @"AutomaticBackupFailure";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                              reuseIdentifier:reuseID];
+        cell.textLabel.text = @"Backup Failed";
+        cell.textLabel.numberOfLines = 0;
+        cell.detailTextLabel.text = manager.lastErrorMessage;
+        cell.detailTextLabel.numberOfLines = 0;
+        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        cell.contentView.alpha = canConfigure() ? 1.0 : 0.4;
+        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+        return cell;
+    } onSelect:^{ [weakSelf showBackupFailureActions:manager.lastErrorMessage]; }];
+    lastError.enabled = canConfigure;
+    lastError.visible = ^BOOL { return manager.enabled && manager.lastErrorMessage.length > 0; };
 
     return @[
         [ApolloSettingsSection sectionWithTitle:nil
@@ -149,7 +174,7 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
             rows:@[interval, folder]],
         [ApolloSettingsSection sectionWithTitle:@"Backup Activity"
             footer:@"Automatic backups run while Apollo is open, or the next time you open it after the interval has passed."
-            rows:@[lastBackup, nextBackup]],
+            rows:@[lastBackup, nextBackup, lastError]],
     ];
 }
 
@@ -223,7 +248,7 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
             if (!strongSelf) return;
             for (NSString *rowID in @[@"automatic.enabled", @"automatic.backupNow",
                                       @"automatic.interval", @"automatic.folder", @"automatic.lastBackup",
-                                      @"automatic.nextBackup"]) {
+                                      @"automatic.nextBackup", @"automatic.lastError"]) {
                 [strongSelf reloadRowWithID:rowID];
             }
             strongSelf.refreshingRows = NO;
@@ -247,6 +272,26 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
                                 current == NSNotFound ? 1 : (NSInteger)current, ^(NSInteger pickedIndex) {
         if (!manager.isBackingUp) [manager setIntervalDays:days[(NSUInteger)pickedIndex].integerValue];
     });
+}
+
+- (void)showBackupFailureActions:(NSString *)message {
+    if (![self canPerformBackupAction] || self.presentedViewController || !self.viewIfLoaded.window) return;
+    NSString *details = [NSString stringWithFormat:@"%@\n\nUse a new folder name to keep existing backups.",
+        message.length ? message : @"The backup could not be completed."];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Backup Failed" message:details
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Retry Now" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf backUpNow]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Set Up Another Folder" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) { [weakSelf chooseFilesFolder]; }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UIView *anchor = self.view;
+    UITableViewCell *source = [self cellForRowID:@"automatic.lastError"] ?: [self cellForRowID:@"automatic.backupNow"];
+    sheet.popoverPresentationController.sourceView = anchor;
+    sheet.popoverPresentationController.sourceRect = source ? [source convertRect:source.bounds toView:anchor]
+        : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)presentBackupPicker:(UIDocumentPickerViewController *)picker purpose:(ApolloBackupPickerPurpose)purpose {
@@ -415,7 +460,7 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
     [manager backUpNowWithCompletion:^(NSString *filename, NSError *error) {
         if (error) {
             [weakSelf validateBackupFolder];
-            ApolloBackupShowAlert(weakSelf, @"Backup Failed", error.localizedDescription);
+            [weakSelf showBackupFailureActions:error.localizedDescription];
         }
         else {
             [weakSelf updateFolderUnavailable:NO name:weakSelf.resolvedFolderName ?: manager.savedFolderName];
