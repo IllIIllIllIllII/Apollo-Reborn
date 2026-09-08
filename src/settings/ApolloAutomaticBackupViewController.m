@@ -50,7 +50,6 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 @property (nonatomic) BOOL refreshingRows;
 @property (nonatomic) BOOL refreshRequested;
 @property (nonatomic) BOOL acceptingFolderSelection;
-@property (nonatomic, strong) NSURL *folderExportTemplateURL;
 @property (nonatomic) BOOL viewingSelectedFolder;
 @end
 
@@ -273,18 +272,8 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 }
 
 - (void)chooseFilesFolder {
-    NSURL *templateURL = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
-        URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
-    [NSFileManager.defaultManager removeItemAtURL:templateURL error:nil];
-    NSError *templateError = nil;
-    if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL
-                                withIntermediateDirectories:YES attributes:nil error:&templateError]) {
-        ApolloBackupShowAlert(self, @"Unable to Open Files", templateError.localizedDescription);
-        return;
-    }
-    self.folderExportTemplateURL = templateURL;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForExportingURLs:@[templateURL] asCopy:YES];
+        initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -322,8 +311,6 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
         ApolloLog(@"[AutomaticBackup] Files folder selection %@ (code %ld)",
                   error ? @"failed" : @"completed", (long)error.code);
         if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
-        [NSFileManager.defaultManager removeItemAtURL:strongSelf.folderExportTemplateURL error:nil];
-        strongSelf.folderExportTemplateURL = nil;
     }];
     [controller dismissViewControllerAnimated:YES completion:nil];
 }
@@ -351,8 +338,6 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
     self.viewingSelectedFolder = NO;
     self.acceptingFolderSelection = NO;
-    [NSFileManager.defaultManager removeItemAtURL:self.folderExportTemplateURL error:nil];
-    self.folderExportTemplateURL = nil;
     [controller dismissViewControllerAnimated:YES completion:nil];
 }
 
