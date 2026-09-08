@@ -50,6 +50,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 @property (nonatomic) BOOL refreshingRows;
 @property (nonatomic) BOOL refreshRequested;
 @property (nonatomic) BOOL acceptingFolderSelection;
+@property (nonatomic, strong) NSURL *folderExportTemplateURL;
 @end
 
 @implementation ApolloAutomaticBackupViewController
@@ -176,7 +177,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
                                           footer:@"Backups run while Apollo is open, or the next time you open it after the interval has passed."
                                             rows:@[enabled]],
         [ApolloSettingsSection sectionWithTitle:@"Schedule & Location"
-                                          footer:@"Choose a folder in Files, including iCloud Drive. Backups are saved in an Apollo Reborn Backups subfolder. Each destination keeps the latest five backups from this installation."
+                                          footer:@"Choose a location in Files, including iCloud Drive. Apollo creates an Apollo Backup Location folder there, with backups in its Apollo Reborn Backups subfolder. Each destination keeps the latest five backups from this installation."
                                             rows:@[interval, destination, folder]],
         [ApolloSettingsSection sectionWithTitle:@"Backup Status"
                                           footer:@"Backup archives are unencrypted and contain your API keys and login credentials. Keep them private."
@@ -249,7 +250,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     if (manager.isBackingUp) return;
     __weak typeof(self) weakSelf = self;
     ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.destination"], @"Backup Location",
-                                @[@"On This iPhone", @"Choose Folder in Files"], manager.usesSelectedFolder ? 1 : 0,
+                                @[@"On This iPhone", @"Choose Location in Files"], manager.usesSelectedFolder ? 1 : 0,
                                 ^(NSInteger pickedIndex) {
         if (manager.isBackingUp) return;
         if (pickedIndex == 0) {
@@ -261,8 +262,18 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 }
 
 - (void)chooseFilesFolder {
+    NSURL *templateURL = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+        URLByAppendingPathComponent:@"Apollo Backup Location" isDirectory:YES];
+    [NSFileManager.defaultManager removeItemAtURL:templateURL error:nil];
+    NSError *templateError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL
+                                withIntermediateDirectories:YES attributes:nil error:&templateError]) {
+        ApolloBackupShowAlert(self, @"Unable to Open Files", templateError.localizedDescription);
+        return;
+    }
+    self.folderExportTemplateURL = templateURL;
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initWithDocumentTypes:@[@"public.folder"] inMode:UIDocumentPickerModeOpen];
+        initForExportingURLs:@[templateURL] asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -282,6 +293,8 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
         ApolloLog(@"[AutomaticBackup] Files folder selection %@ (code %ld)",
                   error ? @"failed" : @"completed", (long)error.code);
         if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
+        [NSFileManager.defaultManager removeItemAtURL:strongSelf.folderExportTemplateURL error:nil];
+        strongSelf.folderExportTemplateURL = nil;
     }];
     [controller dismissViewControllerAnimated:YES completion:nil];
 }
@@ -298,6 +311,8 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
     self.acceptingFolderSelection = NO;
+    [NSFileManager.defaultManager removeItemAtURL:self.folderExportTemplateURL error:nil];
+    self.folderExportTemplateURL = nil;
     [controller dismissViewControllerAnimated:YES completion:nil];
 }
 
