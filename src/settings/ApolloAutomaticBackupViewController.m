@@ -262,7 +262,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 
 - (void)chooseFilesFolder {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+        initWithDocumentTypes:@[@"public.folder"] inMode:UIDocumentPickerModeOpen];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
