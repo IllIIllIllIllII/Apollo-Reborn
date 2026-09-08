@@ -320,6 +320,15 @@ static BOOL ApolloAutomaticBackupInDirectory(
     id name = self.state[@"folderName"];
     return [name isKindOfClass:NSString.class] && [name length] ? name : @"Choose a Folder";
 }
+- (BOOL)hasSavedFolder {
+    [self loadStateIfNeeded];
+    return [self.state[@"folderBookmark"] isKindOfClass:NSData.class];
+}
+- (NSString *)savedFolderName {
+    [self loadStateIfNeeded];
+    id name = self.state[@"folderName"];
+    return [name isKindOfClass:NSString.class] && [name length] ? name : nil;
+}
 - (NSString *)stateKey:(NSString *)suffix {
     return [(self.usesSelectedFolder ? @"folder" : @"local") stringByAppendingString:suffix];
 }
@@ -406,7 +415,10 @@ static BOOL ApolloAutomaticBackupInDirectory(
     }
     NSTimeInterval delay = MAX(2, self.nextBackupDate.timeIntervalSinceNow);
     id attempted = self.state[[self stateKey:@"LastAttempt"]];
-    if ([attempted isKindOfClass:NSDate.class] && [attempted timeIntervalSinceNow] <= 300) {
+    NSDate *lastSuccess = self.lastBackupDate;
+    BOOL previousAttemptFailed = [attempted isKindOfClass:NSDate.class] &&
+        (!lastSuccess || [lastSuccess compare:attempted] == NSOrderedAscending);
+    if (previousAttemptFailed && [attempted timeIntervalSinceNow] <= 300) {
         delay = MAX(delay, [attempted timeIntervalSinceNow] + kRetryInterval);
     }
     // No periodic polling: one foreground timer for the due date. An inactive app
@@ -446,6 +458,32 @@ static BOOL ApolloAutomaticBackupInDirectory(
     [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:UDKeyAutomaticBackupDestination];
     [self notifyChange];
     [self scheduleNextCheck];
+}
+
+- (void)useSavedFolderWithCompletion:(void (^)(NSError *))completion {
+    if (self.isBackingUp || self.suspendedForRestore || ![self loadStateIfNeeded]) {
+        completion(ApolloAutomaticBackupError(@"The previous Files folder is unavailable."));
+        return;
+    }
+    NSData *bookmark = [self.state[@"folderBookmark"] isKindOfClass:NSData.class]
+        ? self.state[@"folderBookmark"] : nil;
+    if (!bookmark) {
+        completion(ApolloAutomaticBackupError(@"Choose a backup location in Files first."));
+        return;
+    }
+    dispatch_async(self.workQueue, ^{
+        BOOL stale = NO;
+        NSError *error = nil;
+        NSURL *url = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
+                                   bookmarkDataIsStale:&stale error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!url) {
+                completion(ApolloAutomaticBackupError(@"Choose the backup folder again in Files."));
+                return;
+            }
+            [self selectFolderURL:url completion:completion];
+        });
+    });
 }
 
 - (ApolloAutomaticBackupJob *)beginJob {

@@ -249,12 +249,21 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
     if (manager.isBackingUp) return;
     __weak typeof(self) weakSelf = self;
+    BOOL hasSavedFolder = manager.hasSavedFolder;
+    NSString *reuseTitle = [NSString stringWithFormat:@"Use %@", manager.savedFolderName ?: @"Previous Files Folder"];
+    NSArray<NSString *> *choices = hasSavedFolder
+        ? @[@"On This iPhone", reuseTitle, @"Choose New Location in Files"]
+        : @[@"On This iPhone", @"Choose Location in Files"];
     ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.destination"], @"Backup Location",
-                                @[@"On This iPhone", @"Choose Location in Files"], manager.usesSelectedFolder ? 1 : 0,
+                                choices, manager.usesSelectedFolder ? 1 : 0,
                                 ^(NSInteger pickedIndex) {
         if (manager.isBackingUp) return;
         if (pickedIndex == 0) {
             [manager useLocalFolder];
+        } else if (hasSavedFolder && pickedIndex == 1) {
+            [manager useSavedFolderWithCompletion:^(NSError *error) {
+                if (error) ApolloBackupShowAlert(weakSelf, @"Folder Unavailable", error.localizedDescription);
+            }];
         } else {
             [weakSelf chooseFilesFolder];
         }

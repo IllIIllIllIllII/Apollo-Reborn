@@ -20,6 +20,8 @@ __END_DECLS
 @property (nonatomic, readonly, getter=isBackingUp) BOOL backingUp;
 @property (nonatomic, readonly) BOOL usesSelectedFolder;
 @property (nonatomic, readonly) NSString *destinationName;
+@property (nonatomic, readonly) BOOL hasSavedFolder;
+@property (nonatomic, readonly, nullable) NSString *savedFolderName;
 @property (nonatomic, readonly, nullable) NSDate *lastBackupDate;
 @property (nonatomic, readonly, nullable) NSDate *nextBackupDate;
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
@@ -28,6 +30,7 @@ __END_DECLS
 - (void)setEnabled:(BOOL)enabled;
 - (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7, 14, 30
 - (void)useLocalFolder;
+- (void)useSavedFolderWithCompletion:(void (^)(NSError *_Nullable error))completion;
 // Pass the original folder URL from a UTTypeFolder document picker (asCopy:NO).
 // Creates an Apollo Reborn Backups subfolder and remembers the folder permission.
 // Completion, like every public completion below, is delivered on the main queue.
