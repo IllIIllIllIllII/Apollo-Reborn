@@ -209,7 +209,7 @@ static void ApolloAutomaticBackupPrune(NSURL *directory, NSString *installationI
 // archive publication, and each retention deletion separately. Never wait for a
 // provider on the main thread, and never nest coordinated-write accessors.
 static BOOL ApolloAutomaticBackupInDirectory(
-    NSURL *root, BOOL external, ApolloAutomaticBackupJob *job, NSError **outError,
+    NSURL *root, BOOL external, BOOL rootIsBackupDirectory, ApolloAutomaticBackupJob *job, NSError **outError,
     BOOL (^accessor)(NSURL *directory, NSError **error)) {
     if (!root.isFileURL) {
         if (outError) *outError = ApolloAutomaticBackupError(@"Choose the backup folder again in Files.");
@@ -222,7 +222,8 @@ static BOOL ApolloAutomaticBackupInDirectory(
         __block NSURL *directory = nil;
         BOOL rootReady = ApolloAutomaticBackupReadItem(root, job, &workError, ^BOOL(NSURL *newRoot, NSError **readError) {
             if (!ApolloAutomaticBackupDirectoryIsUsable(newRoot, readError)) return NO;
-            directory = [newRoot URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
+            directory = rootIsBackupDirectory ? newRoot
+                : [newRoot URLByAppendingPathComponent:kBackupDirectoryName isDirectory:YES];
             return YES;
         });
         BOOL directoryReady = rootReady && ApolloAutomaticBackupWriteItems(directory, 0, nil, 0,
@@ -262,6 +263,8 @@ static BOOL ApolloAutomaticBackupInDirectory(
 @property (nonatomic, strong) dispatch_queue_t workQueue;
 @property (nonatomic) BOOL started;
 @property (nonatomic) BOOL suspendedForRestore;
+@property (nonatomic, strong) NSURL *selectedFolderURL;
+@property (nonatomic) BOOL selectedFolderScopeActive;
 @end
 
 @implementation ApolloAutomaticBackup
@@ -436,6 +439,9 @@ static BOOL ApolloAutomaticBackupInDirectory(
 
 - (void)useLocalFolder {
     if (self.isBackingUp || self.suspendedForRestore || !self.usesSelectedFolder) return;
+    if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
+    self.selectedFolderURL = nil;
+    self.selectedFolderScopeActive = NO;
     sAutomaticBackupDestination = 0;
     [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:UDKeyAutomaticBackupDestination];
     [self notifyChange];
@@ -486,12 +492,16 @@ static BOOL ApolloAutomaticBackupInDirectory(
         completion(ApolloAutomaticBackupError(self.stateReadError ?: @"Unlock the phone and try again."));
         return;
     }
+    if (self.selectedFolderScopeActive) [self.selectedFolderURL stopAccessingSecurityScopedResource];
+    self.selectedFolderURL = url;
+    self.selectedFolderScopeActive = [url startAccessingSecurityScopedResource];
     ApolloAutomaticBackupJob *job = [self beginJob];
     dispatch_async(self.workQueue, ^{
         @autoreleasepool {
             __block NSData *bookmark = nil;
             NSError *error = nil;
-            BOOL success = ApolloAutomaticBackupInDirectory(url, YES, job, &error,
+            BOOL rootIsBackupDirectory = [url.lastPathComponent isEqualToString:kBackupDirectoryName];
+            BOOL success = ApolloAutomaticBackupInDirectory(url, YES, rootIsBackupDirectory, job, &error,
                 ^BOOL(NSURL *directory, NSError **writeError) {
                     // A bookmark alone says nothing about write permission. Probe
                     // the folder now, before changing a working destination.
@@ -506,7 +516,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
                             return [NSFileManager.defaultManager removeItemAtURL:newProbe error:probeError];
                         });
                     if (!writable) return NO;
-                    bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+                    bookmark = [url bookmarkDataWithOptions:0
                             includingResourceValuesForKeys:nil relativeToURL:nil error:writeError];
                     return bookmark != nil && !job.isCancelled;
                 });
@@ -516,6 +526,7 @@ static BOOL ApolloAutomaticBackupInDirectory(
                     NSMutableDictionary *previous = [self.state mutableCopy];
                     self.state[@"folderBookmark"] = bookmark;
                     self.state[@"folderName"] = url.lastPathComponent.length ? url.lastPathComponent : @"Files Folder";
+                    self.state[@"folderIsBackupDirectory"] = @(rootIsBackupDirectory);
                     [self.state removeObjectForKey:@"folderLastSuccess"];
                     [self.state removeObjectForKey:@"folderLastAttempt"];
                     [self.state removeObjectForKey:@"folderLastError"];
@@ -583,18 +594,25 @@ static BOOL ApolloAutomaticBackupInDirectory(
             BOOL saved = NO;
             @try {
                 BOOL stale = NO;
-                NSURL *root = external ? (bookmark ? [NSURL URLByResolvingBookmarkData:bookmark options:0
-                    relativeToURL:nil bookmarkDataIsStale:&stale error:&error] : nil)
-                    : ApolloAutomaticBackupDocumentsURL();
+                NSURL *root = external ? self.selectedFolderURL : ApolloAutomaticBackupDocumentsURL();
+                if (external && !root && bookmark) {
+                    root = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil
+                                        bookmarkDataIsStale:&stale error:&error];
+                    if (root) {
+                        self.selectedFolderURL = root;
+                        self.selectedFolderScopeActive = [root startAccessingSecurityScopedResource];
+                    }
+                }
                 if (!root) {
                     error = ApolloAutomaticBackupError(@"Choose the backup folder again in Files.");
                 } else if (!job.isCancelled) {
                     zip = ApolloBackupRestoreCreateBackupZip(&error);
                     if (zip && !job.isCancelled) {
-                        saved = ApolloAutomaticBackupInDirectory(root, external, job, &error,
+                        BOOL rootIsBackupDirectory = external && [self.state[@"folderIsBackupDirectory"] boolValue];
+                        saved = ApolloAutomaticBackupInDirectory(root, external, rootIsBackupDirectory, job, &error,
                             ^BOOL(NSURL *directory, NSError **writeError) {
                                 if (stale) {
-                                    refreshedBookmark = [root bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
+                                    refreshedBookmark = [root bookmarkDataWithOptions:0
                                         includingResourceValuesForKeys:nil relativeToURL:nil error:writeError];
                                     if (!refreshedBookmark) return NO;
                                 }

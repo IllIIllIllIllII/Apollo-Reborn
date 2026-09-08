@@ -177,7 +177,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
                                           footer:@"Backups run while Apollo is open, or the next time you open it after the interval has passed."
                                             rows:@[enabled]],
         [ApolloSettingsSection sectionWithTitle:@"Schedule & Location"
-                                          footer:@"Choose a location in Files, including iCloud Drive. Apollo creates an Apollo Backup Location folder there, with backups in its Apollo Reborn Backups subfolder. Each destination keeps the latest five backups from this installation."
+                                          footer:@"Choose a location in Files, including iCloud Drive. Apollo creates an Apollo Reborn Backups folder there. Each destination keeps the latest five backups from this installation."
                                             rows:@[interval, destination, folder]],
         [ApolloSettingsSection sectionWithTitle:@"Backup Status"
                                           footer:@"Backup archives are unencrypted and contain your API keys and login credentials. Keep them private."
@@ -263,7 +263,7 @@ static void ApolloBackupShowAlert(UIViewController *presenter, NSString *title, 
 
 - (void)chooseFilesFolder {
     NSURL *templateURL = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
-        URLByAppendingPathComponent:@"Apollo Backup Location" isDirectory:YES];
+        URLByAppendingPathComponent:@"Apollo Reborn Backups" isDirectory:YES];
     [NSFileManager.defaultManager removeItemAtURL:templateURL error:nil];
     NSError *templateError = nil;
     if (![NSFileManager.defaultManager createDirectoryAtURL:templateURL
