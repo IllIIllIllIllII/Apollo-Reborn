@@ -453,6 +453,41 @@ UIView *ApolloNavigationActionsMenuSourceView(UIView *action) {
 }
 @end
 
+@interface ApolloNavigationActionsPreviewStrip : ApolloNavigationActionsStrip
+@end
+@implementation ApolloNavigationActionsPreviewStrip
+- (BOOL)accessibilityActivate {
+    [self sendActionsForControlEvents:UIControlEventTouchUpInside];
+    return YES;
+}
+@end
+
+UIControl *ApolloNavigationActionsCreatePreview(UIView *content, UIButton *more) {
+    ApolloNavigationActionsStrip *strip = [[ApolloNavigationActionsPreviewStrip alloc] initWithContent:content more:more];
+    [strip.surface.contentView addSubview:content];
+    ApolloActionsApplyChromeToView(strip, NO);
+    return strip;
+}
+
+void ApolloNavigationActionsPreviewSetExpanded(UIControl *preview, BOOL expanded, BOOL animated,
+                                               void (^layout)(void)) {
+    ApolloNavigationActionsStrip *strip = (id)preview;
+    BOOL entering = !strip.expanded;
+    [strip removeIconAnimations];
+    [strip applyExpanded:expanded];
+    void (^changes)(void) = ^{
+        [strip displayExpanded:expanded];
+        if (layout) layout();
+    };
+    if (!animated || UIAccessibilityIsReduceMotionEnabled()) { changes(); return; }
+    [strip animateIconsExpanded:expanded entering:entering];
+    [UIView animateWithDuration:kActionsAnimationDuration delay:0 usingSpringWithDamping:0.78
+        initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+        animations:changes completion:^(BOOL finished) {
+            if (finished) [strip removeIconAnimations];
+        }];
+}
+
 static UINavigationController *ApolloActionsNavigation(UINavigationBar *bar) {
     for (UIResponder *responder = bar.nextResponder; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:UINavigationController.class]) return (id)responder;

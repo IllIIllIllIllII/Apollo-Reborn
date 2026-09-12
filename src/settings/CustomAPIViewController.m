@@ -1,4 +1,5 @@
 #import "settings/CustomAPIViewController.h"
+#import "ApolloHeaderPreview.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
@@ -1903,7 +1904,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     };
 
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
+        ? @"Classic hides the tab bar on the first downward swipe after it reappears. Two-Gesture waits for a second swipe. Both restore the bar after 30 seconds without scrolling."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
@@ -1914,6 +1915,30 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
     __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *preview = [ApolloSettingsRow customRowWithID:@"interface.headerPreview"
+        cell:^UITableViewCell *(UITableView *tableView, ApolloSettingsRow *row) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"HeaderPreview"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"HeaderPreview"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                ApolloHeaderPreview *sample = [ApolloHeaderPreview new];
+                sample.tag = 7301;
+                sample.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:sample];
+                [NSLayoutConstraint activateConstraints:@[
+                    [sample.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+                    [sample.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+                    [sample.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8],
+                    [sample.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+                ]];
+            }
+            [(ApolloHeaderPreview *)[cell.contentView viewWithTag:7301] refresh];
+            return cell;
+        } onSelect:nil];
+    preview.height = ^CGFloat { return 132; };
+    preview.visible = ^BOOL { return IsLiquidGlass(); };
+
 
     ApolloSettingsRow *userAvatars =
         [ApolloSettingsRow switchRowWithID:@"interface.userAvatars"
@@ -1964,6 +1989,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
             [weakSelf visibilityDidChange];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
 
@@ -1974,12 +2000,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             sCenterTitleBetweenButtons = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, collapseActions, centerBetween, scrollEdgeEffect ]];
+                                            footer:@"Show profile pictures beside usernames throughout Apollo.\n\nCollapse Navigation Actions tucks buttons into ••• until tapped. Scroll to collapse them again. Turn it off to keep buttons visible and optionally center the title between them and the back button.\n\nCompare header styles in the preview: Soft fades into the content, Hard adds a solid band, Blur blurs the full header, and Hidden leaves the background clear. Header options require Liquid Glass."
+                                              rows:@[ userAvatars, preview, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2011,6 +2038,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSUserDefaults standardUserDefaults] setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloScrollEdgeEffectStyleChangedNotification object:nil];
     [self reloadRowWithID:@"gen.scrollEdgeEffect"];
+    [(ApolloHeaderPreview *)[[self cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
 }
 
 - (void)presentScrollEdgeEffectStyleSheetFromSourceView:(UIView *)sourceView {

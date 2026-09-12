@@ -254,6 +254,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSignInSplash.xm \
     $(SRC_DIR)/ApolloHideSubscribePrompt.xm \
     $(SRC_DIR)/settings/CustomAPIViewController.m \
+    $(SRC_DIR)/settings/ApolloHeaderPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutViewController.m \
     $(SRC_DIR)/settings/ApolloSubredditSectionsViewController.m \

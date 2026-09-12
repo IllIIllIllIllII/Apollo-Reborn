@@ -272,7 +272,13 @@ extern NSString *const ApolloScrollEdgeEffectStyleChangedNotification;
 // didMoveToWindow hook in ApolloAutoHideTabBar.xm — kept here to avoid a
 // second %hook UIScrollView didMoveToWindow, which the Logos internal
 // generator silently drops as a duplicate symbol.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
+#ifdef __cplusplus
+}
+#endif
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its
