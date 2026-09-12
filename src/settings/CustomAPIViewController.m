@@ -1952,28 +1952,34 @@ typedef NS_ENUM(NSInteger, Tag) {
     preview.visible = ^BOOL { return IsLiquidGlass(); };
 
 
-    ApolloSettingsRow *scrollEdgeEffect = [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
-        cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
-            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"HeaderStyleSelector"];
-            if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"HeaderStyleSelector"];
-                cell.selectionStyle = UITableViewCellSelectionStyleNone;
-                ApolloHeaderStyleSelector *selector = [ApolloHeaderStyleSelector new];
-                selector.tag = 7302;
-                selector.translatesAutoresizingMaskIntoConstraints = NO;
-                selector.onSelect = ^(NSInteger style) { [weakSelf setScrollEdgeEffectStyle:style]; };
-                [cell.contentView addSubview:selector];
-                [NSLayoutConstraint activateConstraints:@[
-                    [selector.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12],
-                    [selector.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12],
-                    [selector.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8],
-                    [selector.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
-                ]];
+    ApolloSettingsRow *scrollEdgeEffect =
+        [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloHeaderStyleMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloHeaderStyleMenu"];
+            BOOL blurAvailable = ApolloProgressiveBlurAvailable();
+            NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithObjects:@"Soft", @"Hard", nil];
+            if (blurAvailable) [titles addObject:@"Blur"];
+            [titles addObject:@"Hidden"];
+            NSInteger currentIndex = 0;
+            NSInteger currentStyle = ApolloResolvedScrollEdgeEffectStyle();
+            for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
+                if (ApolloHeaderStylePickerValue(index, blurAvailable) == currentStyle) {
+                    currentIndex = index;
+                    break;
+                }
             }
-            [(ApolloHeaderStyleSelector *)[cell.contentView viewWithTag:7302] refresh];
+            cell.textLabel.text = @"Header Style";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = ApolloSettingsMenuButton(@"Header Style", [weakSelf scrollEdgeEffectStyleText],
+                titles, currentIndex, ^(NSInteger index) {
+                    [weakSelf setScrollEdgeEffectStyle:ApolloHeaderStylePickerValue(index, blurAvailable)];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         } onSelect:nil];
-    scrollEdgeEffect.height = ^CGFloat { return [ApolloHeaderStyleSelector heightForTraits:weakSelf.traitCollection] + 16; };
+    scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
     ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
         title:@"Collapse Navigation Actions"
@@ -2033,7 +2039,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     sScrollEdgeEffectStyle = style;
     [[NSUserDefaults standardUserDefaults] setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloScrollEdgeEffectStyleChangedNotification object:nil];
-    [(ApolloHeaderStyleSelector *)[[self cellForRowID:@"gen.scrollEdgeEffect"].contentView viewWithTag:7302] refresh];
+    [self reloadRowWithID:@"gen.scrollEdgeEffect"];
     [(ApolloHeaderPreview *)[[self cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
 }
 
