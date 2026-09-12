@@ -114,12 +114,15 @@
     _hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
     _hint.textColor = UIColor.secondaryLabelColor;
     _hint.textAlignment = NSTextAlignmentCenter;
-    _hint.numberOfLines = 2;
+    _hint.numberOfLines = 0;
+    _hint.adjustsFontForContentSizeCategory = YES;
     _hint.backgroundColor = self.backgroundColor;
     [self addSubview:_hint];
     UISwipeGestureRecognizer *swipe = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(collapseSample)];
     swipe.direction = UISwipeGestureRecognizerDirectionUp | UISwipeGestureRecognizerDirectionDown;
     [self addGestureRecognizer:swipe];
+    self.isAccessibilityElement = YES;
+    self.accessibilityLabel = @"ApolloReborn header preview";
     _collapsePreference = sCollapseNavigationActions;
     _expanded = !sCollapseNavigationActions;
     [self refresh];
@@ -163,6 +166,13 @@
     }
     if (sCollapseNavigationActions) detail = _expanded ? @"Swipe to collapse" : @"Tap ••• to expand";
     _hint.text = [NSString stringWithFormat:@"%@ · %@", style, detail];
+    self.accessibilityValue = [NSString stringWithFormat:@"%@ style. Navigation actions %@. %@", style,
+        _expanded ? @"expanded" : @"collapsed",
+        sCenterTitleBetweenButtons && !sCollapseNavigationActions ? @"Title centered between buttons." : @"Title centered on the header."];
+    self.accessibilityTraits = sCollapseNavigationActions ? UIAccessibilityTraitButton : UIAccessibilityTraitImage;
+    self.accessibilityHint = sCollapseNavigationActions ? @"Double-tap to expand or collapse the sample actions." : @"Use the style choices below to compare headers.";
+    self.accessibilityCustomActions = sCollapseNavigationActions
+        ? @[[[UIAccessibilityCustomAction alloc] initWithName:_expanded ? @"Collapse sample actions" : @"Expand sample actions" target:self selector:@selector(accessibilityToggleSample)]] : @[];
 }
 - (void)toggleActions {
     if (!sCollapseNavigationActions) return;
@@ -170,6 +180,19 @@
     [self updateHint];
     [self setNeedsLayout];
     ApolloNavigationActionsPreviewSetExpanded(_strip, _expanded, YES, ^{ [self layoutIfNeeded]; });
+}
+- (BOOL)accessibilityActivate {
+    if (!sCollapseNavigationActions) return NO;
+    [self toggleActions];
+    return YES;
+}
+- (BOOL)accessibilityToggleSample {
+    return [self accessibilityActivate];
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    _hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2 compatibleWithTraitCollection:self.traitCollection];
+    [self setNeedsLayout];
 }
 - (void)collapseSample {
     if (sCollapseNavigationActions && _expanded) [self toggleActions];
@@ -180,7 +203,8 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat width = self.bounds.size.width;
-    _feed.frame = CGRectMake(0, 0, width, self.bounds.size.height - 32);
+    CGFloat hintHeight = MAX(32, ceil(_hint.font.lineHeight) * (UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory) ? 3 : 2) + 12);
+    _feed.frame = CGRectMake(0, 0, width, MAX(60, self.bounds.size.height - hintHeight));
     CGFloat contentHeight = _feed.bounds.size.height + 48;
     _feed.contentSize = CGSizeMake(width, contentHeight);
     _backgroundImage.frame = CGRectMake(0, 0, width, contentHeight);
@@ -209,6 +233,6 @@
     _titleGlass.frame = CGRectMake(MAX(left, center - titleWidth / 2), 8 + (44 - titleHeight) / 2, titleWidth, titleHeight);
     _titleLabel.frame = CGRectMake(14, 8, MAX(0, titleWidth - 48), titleHeight - 16);
     _titleChevron.frame = CGRectMake(titleWidth - 28, (titleHeight - 8) / 2, 14, 8);
-    _hint.frame = CGRectMake(8, self.bounds.size.height - 32, width - 16, 32);
+    _hint.frame = CGRectMake(8, self.bounds.size.height - hintHeight, width - 16, hintHeight);
 }
 @end
