@@ -23,6 +23,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloImmersiveHeaderBackground.h"
 #import "ApolloIdentityHeaderLayout.h"
+#import "ApolloUserAvatars.h"
 
 static NSString *const ApolloUserAvatarsToggleChangedNotification = @"ApolloUserAvatarsToggleChangedNotification";
 static NSString *const ApolloProfileLayoutStructureChangedMarker = @"ApolloProfileLayoutStructureChanged";
@@ -4053,6 +4054,10 @@ static void ApolloProfileScheduleTabAvatarRefresh(NSString *reason) {
     if (reason.length > 0) {
         ApolloLog(@"[UserAvatars] Scheduled profile tab avatar refresh after %@", reason);
     }
+}
+
+void ApolloRefreshProfileTabAvatarAfterPresentation(void) {
+    ApolloProfileScheduleTabAvatarRefresh(@"tab bar presentation restore");
 }
 
 static void ApolloProfileScheduleAccountChangeTabAvatarRefresh(NSString *reason) {

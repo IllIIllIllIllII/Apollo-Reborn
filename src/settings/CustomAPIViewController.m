@@ -1,4 +1,5 @@
 #import "settings/CustomAPIViewController.h"
+#import "ApolloHeaderPreview.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
@@ -45,6 +46,9 @@
 #import "../Version.h"
 #import "Defaults.h"
 #import "settings/ApolloBackupRestore.h"
+#import "settings/ApolloAutomaticBackup.h"
+#import "settings/ApolloAutomaticBackupViewController.h"
+#import "settings/ApolloLocalBackupsViewController.h"
 #import "settings/ApolloThanksToViewController.h"
 #import "settings/ApolloBuyUsACoffeeViewController.h"
 #import "settings/ApolloReportViewController.h"
@@ -410,6 +414,10 @@ static CGFloat ApolloFeedShortcutsPreviewSideBySideCenterOffset(ApolloFeedShortc
 
 @interface CustomAPIViewController (ApolloFeedShortcutsPreview)
 - (void)apollo_refreshFeedShortcutsPreviewAnimated:(BOOL)animated;
+@end
+
+@interface CustomAPIViewController ()
+@property (nonatomic) BOOL resolvingRestoreFolder;
 @end
 
 @implementation CustomAPIViewController
@@ -1202,7 +1210,13 @@ typedef NS_ENUM(NSInteger, Tag) {
     ApolloSettingsRow *backup =
         [ApolloSettingsRow buttonRowWithID:@"data.backup"
                                      title:@"Backup Settings"
-                                    action:^{ [weakSelf backupSettings]; }];
+                                    action:^{
+            ApolloAutomaticBackupViewController *controller = [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }];
+    backup.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
 
     ApolloSettingsRow *restore =
         [ApolloSettingsRow buttonRowWithID:@"data.restore"
@@ -1903,7 +1917,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     };
 
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
+        ? @"Classic hides the tab bar on the first downward swipe after it reappears. Two-Gesture waits for a second swipe. Both restore the bar after 30 seconds without scrolling."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
@@ -1914,6 +1928,30 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
     __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *preview = [ApolloSettingsRow customRowWithID:@"interface.headerPreview"
+        cell:^UITableViewCell *(UITableView *tableView, ApolloSettingsRow *row) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"HeaderPreview"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"HeaderPreview"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                ApolloHeaderPreview *sample = [ApolloHeaderPreview new];
+                sample.tag = 7301;
+                sample.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:sample];
+                [NSLayoutConstraint activateConstraints:@[
+                    [sample.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+                    [sample.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+                    [sample.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8],
+                    [sample.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+                ]];
+            }
+            [(ApolloHeaderPreview *)[cell.contentView viewWithTag:7301] refresh];
+            return cell;
+        } onSelect:nil];
+    preview.height = ^CGFloat { return 132; };
+    preview.visible = ^BOOL { return IsLiquidGlass(); };
+
 
     ApolloSettingsRow *userAvatars =
         [ApolloSettingsRow switchRowWithID:@"interface.userAvatars"
@@ -1956,9 +1994,32 @@ typedef NS_ENUM(NSInteger, Tag) {
         } onSelect:nil];
     scrollEdgeEffect.visible = ^BOOL { return IsLiquidGlass(); };
 
+    ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
+        title:@"Collapse Navigation Actions"
+        isOn:^BOOL { return sCollapseNavigationActions; }
+        onToggle:^(UISwitch *sender) {
+            sCollapseNavigationActions = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
+            [weakSelf visibilityDidChange];
+            ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
+        }];
+    collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
+
+    ApolloSettingsRow *centerBetween = [ApolloSettingsRow switchRowWithID:@"interface.CenterTitleBetweenButtons"
+        title:@"Center Title Between Buttons"
+        isOn:^BOOL { return sCenterTitleBetweenButtons; }
+        onToggle:^(UISwitch *sender) {
+            sCenterTitleBetweenButtons = sender.on;
+            [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
+            ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
+        }];
+    centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
+
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Tap the top-right ellipsis to reveal navigation actions; scrolling collapses them. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, scrollEdgeEffect ]];
+                                            footer:@"Show profile pictures beside usernames throughout Apollo.\n\nCollapse Navigation Actions tucks buttons into ••• until tapped. Scroll to collapse them again. Turn it off to keep buttons visible and optionally center the title between them and the back button.\n\nCompare header styles in the preview: Soft fades into the content, Hard adds a solid band, Blur blurs the full header, and Hidden leaves the background clear. Header options require Liquid Glass."
+                                              rows:@[ userAvatars, preview, collapseActions, centerBetween, scrollEdgeEffect ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -1990,6 +2051,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSUserDefaults standardUserDefaults] setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloScrollEdgeEffectStyleChangedNotification object:nil];
     [self reloadRowWithID:@"gen.scrollEdgeEffect"];
+    [(ApolloHeaderPreview *)[[self cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
 }
 
 - (void)presentScrollEdgeEffectStyleSheetFromSourceView:(UIView *)sourceView {
@@ -4364,11 +4426,38 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 - (void)restoreSettings {
+    if (self.resolvingRestoreFolder || self.presentedViewController) return;
+    __weak typeof(self) weakSelf = self;
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
+        message:@"Choose where the backup is stored."
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            ApolloLocalBackupsViewController *controller =
+                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
+        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentRestorePickerAtDirectory:nil];
+            });
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    UITableViewCell *source = [self cellForRowID:@"data.restore"];
+    sheet.popoverPresentationController.sourceView = source ?: self.view;
+    sheet.popoverPresentationController.sourceRect = source ? source.bounds
+        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {
     _isRestoreOperation = YES;
     UIDocumentPickerViewController *documentPicker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeZIP] asCopy:YES];
     documentPicker.delegate = self;
     documentPicker.modalPresentationStyle = UIModalPresentationFormSheet;
     documentPicker.allowsMultipleSelection = NO;
+    documentPicker.directoryURL = folderURL;
     [self presentViewController:documentPicker animated:YES completion:nil];
 }
 

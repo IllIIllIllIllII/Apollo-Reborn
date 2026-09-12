@@ -58,6 +58,10 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloSettingsPinnedPreview.m \
     $(SRC_DIR)/settings/ApolloContributors.m \
     $(SRC_DIR)/settings/ApolloBackupRestore.m \
+    $(SRC_DIR)/settings/ApolloAutomaticBackup.m \
+    $(SRC_DIR)/settings/ApolloAutomaticBackupViewController.m \
+    $(SRC_DIR)/settings/ApolloLocalBackupsViewController.m \
+    $(SRC_DIR)/settings/ApolloBackupActionsCell.m \
     $(SRC_DIR)/settings/ApolloThanksToViewController.m \
     $(SRC_DIR)/settings/ApolloBuyUsACoffeeViewController.m \
     $(SRC_DIR)/settings/ApolloWallpaperViewerViewController.m \
@@ -98,6 +102,14 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
     $(SRC_DIR)/ApolloGalleryVideoExport.xm \
+    $(SRC_DIR)/ApolloSaveAllMediaItems.m \
+    $(SRC_DIR)/ApolloSaveAllMedia.xm \
+    $(SRC_DIR)/ApolloSaveAllMediaBridge.swift \
+    $(SRC_DIR)/ApolloSaveAllMediaMenus.xm \
+    $(SRC_DIR)/ApolloGIFSaveActivity.xm \
+    $(SRC_DIR)/ApolloMediaDownloadActions.xm \
+    $(SRC_DIR)/ApolloLinkedAlbumPostControls.xm \
+    $(SRC_DIR)/ApolloFeedAlbumMenus.xm \
     $(SRC_DIR)/ApolloGalleryMenu.xm \
     $(SRC_DIR)/ApolloGalleryOrientation.xm \
     $(SRC_DIR)/ApolloBannedProfile.xm \
@@ -143,6 +155,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
+    $(SRC_DIR)/ApolloCompactTabBarView.m \
     $(SRC_DIR)/ApolloListBottomInsetGuard.xm \
     $(SRC_DIR)/ApolloTabBarHideStyle.xm \
     $(SRC_DIR)/ApolloIPadTabBarBottom.xm \
@@ -254,6 +267,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSignInSplash.xm \
     $(SRC_DIR)/ApolloHideSubscribePrompt.xm \
     $(SRC_DIR)/settings/CustomAPIViewController.m \
+    $(SRC_DIR)/settings/ApolloHeaderPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutPreview.m \
     $(SRC_DIR)/settings/ApolloSubredditLayoutViewController.m \
     $(SRC_DIR)/settings/ApolloSubredditSectionsViewController.m \

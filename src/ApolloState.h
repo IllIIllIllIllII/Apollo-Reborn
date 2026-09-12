@@ -33,6 +33,9 @@ extern NSString *sTrendingSubredditsSource;
 extern NSString *sTrendingSubredditsLimit;
 
 extern BOOL sBlockAnnouncements;
+extern BOOL sAutomaticBackupsEnabled;
+extern NSInteger sAutomaticBackupIntervalDays;
+extern NSInteger sAutomaticBackupDestination; // 0 = local, 1 = selected Files folder
 extern BOOL sShowDeletedComments;
 extern BOOL sTapToRevealDeletedComments;
 extern BOOL sPassiveDeletedComments;
@@ -246,6 +249,8 @@ typedef NS_ENUM(NSInteger, ApolloScrollEdgeEffectStyle) {
     ApolloScrollEdgeEffectStyleHidden    = 3,
     ApolloScrollEdgeEffectStyleBlur      = 4,
 };
+extern BOOL sCollapseNavigationActions;
+extern BOOL sCenterTitleBetweenButtons;
 extern NSInteger sScrollEdgeEffectStyle;
 // Resolves the retired Automatic value defensively if it is observed before
 // load-time migration, and resolves Blur to the OS-equivalent Soft/Hard style
@@ -270,7 +275,13 @@ extern NSString *const ApolloScrollEdgeEffectStyleChangedNotification;
 // didMoveToWindow hook in ApolloAutoHideTabBar.xm — kept here to avoid a
 // second %hook UIScrollView didMoveToWindow, which the Logos internal
 // generator silently drops as a duplicate symbol.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
+#ifdef __cplusplus
+}
+#endif
 // Applies the selected style to every scroll view owned by an Apollo list
 // controller. Home, Profile, Comments, and similar screens all inherit Apollo's
 // ASTableViewController, which layers an intercepting UIScrollView over its

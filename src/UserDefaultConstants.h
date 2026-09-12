@@ -17,6 +17,14 @@ static NSString *const UDKeyUseCustomOAuthSignIn = @"UseCustomOAuthSignIn";
 static NSString *const UDKeyUserAgent = @"UserAgent";
 static NSString *const UDKeyBlockAnnouncements = @"DisableApollonouncements";
 static NSString *const UDKeyEnableFLEX = @"EnableFlexDebugging";
+// Opt-in settings ZIPs, checked while Apollo is active. Default OFF, every 3
+// days; supported intervals are 1, 3, and 7 days in a user-selected Files folder.
+// Folder permission, installation identity and last-run state live separately
+// in Application Support, so exporting/restoring settings cannot transfer them.
+static NSString *const UDKeyAutomaticBackupsEnabled = @"AutomaticBackupsEnabled";
+static NSString *const UDKeyAutomaticBackupIntervalDays = @"AutomaticBackupIntervalDays";
+// Legacy destination value retained for compatibility with older builds.
+static NSString *const UDKeyAutomaticBackupDestination = @"AutomaticBackupDestination";
 // Local crash recording (src/crash/). Default ON: reports only ever live on
 // device and are shared exclusively through the user-driven review flow.
 // KSCrash handlers install once per process, so flipping this takes effect on
@@ -272,7 +280,7 @@ static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
 static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
-// bar out, 3 = sink the full tab bar down while fading. The styles plus Off are
+// bar out, 3 = shrink into a centered pill naming the current tab. The styles plus Off are
 // surfaced on Reborn's Interface > Tab Bar row (Off = the native toggle off).
 // See ApolloTabBarHideStyle.xm and ApolloAutoHideTabBar.xm.
 static NSString *const UDKeyTabBarCollapseSide = @"TabBarCollapseSide";
@@ -339,6 +347,10 @@ static NSString *const UDKeyPerPostCommentSortMapping = @"PerPostCommentSortMapp
 // off, and launch/restore normalize a stale both-on to per-post. This toggle key is
 // the ONLY native default the feature ever writes. See ApolloPerPostCommentSort.xm.
 static NSString *const UDKeyApolloRememberSubredditCommentsSort = @"RememberRedditCommentsSort";
+// Navigation actions collapse and between-buttons title centering are opt-in (default off).
+static NSString *const UDKeyCollapseNavigationActions = @"CollapseNavigationActions";
+static NSString *const UDKeyCenterTitleBetweenButtons = @"CenterTitleBetweenButtons";
+
 // Override for the UIScrollView top scroll edge effect (Liquid Glass, iOS 26+).
 // 0 = retired System Default (migrates to 1 on iOS 26 or 2 on iOS 27),
 // 1 = Soft, 2 = Hard, 3 = Hidden, 4 = Blur.
