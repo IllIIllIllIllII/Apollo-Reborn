@@ -132,6 +132,10 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
 - (void)rebuildForm;
+// Refresh only the declarative model after UIKit has already moved a row.
+// Call synchronously from moveRowAtIndexPath: so reuse sees the new order.
+// Visibility and section/row counts must remain unchanged.
+- (void)refreshFormModelAfterRowMove;
 
 // Rebuild the model but reload only the section containing rowID — for dynamic
 // sections whose rows are generated inside -buildForm (a full reloadData would

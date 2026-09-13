@@ -1,11 +1,17 @@
 #import "settings/ApolloSubredditSectionsViewController.h"
 
 #import "ApolloCommon.h"
+#import "ApolloAccountCredentials.h"
+#import "ApolloGalleryImageLoader.h"
+#import "ApolloUserProfileCache.h"
+#import <objc/message.h>
 #import "ApolloFollowingSection.h"
 #import "ApolloSettingsForm.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
+
+#import <QuartzCore/QuartzCore.h>
 
 // The screen is a container (ApolloSubredditSectionsViewController) that pins
 // a live preview card above a declarative form-table child, mirroring the
@@ -44,11 +50,15 @@ typedef NS_ENUM(NSInteger, ApolloSubredditSectionsPreviewBlockKind) {
     ApolloSubredditSectionsPreviewBlockKindRow,
 };
 
+// Native RedditListTableViewCell uses a 28 × 28 point subreddit icon.
+static const CGFloat kApolloSectionsPreviewIconSize = 28.0;
 static const CGFloat kApolloSectionsPreviewBandHeight = 22.0;
 static const CGFloat kApolloSectionsPreviewRowHeight = 30.0;
-static const CGFloat kApolloSectionsPreviewDetailRowHeight = 40.0;
+static const CGFloat kApolloSectionsPreviewDetailRowHeight = 48.0;
+// Both divider styles share geometry; toggling only restyles the bands.
+static const CGFloat kApolloSectionsPreviewTopPadding = 10.0;
+static const CGFloat kApolloSectionsPreviewBottomPadding = 8.0;
 static const CGFloat kApolloSectionsPreviewBlockSpacing = 3.0;
-static const CGFloat kApolloSectionsPreviewVerticalPadding = 8.0;
 
 @interface ApolloSubredditSectionsPreviewBlock : NSObject
 @property (nonatomic) ApolloSubredditSectionsPreviewBlockKind kind;
@@ -57,6 +67,7 @@ static const CGFloat kApolloSectionsPreviewVerticalPadding = 8.0;
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *subtitle;     // rows only
 @property (nonatomic, strong) UIColor *circleColor; // rows only
+@property (nonatomic) BOOL showIcon;
 @property (nonatomic) BOOL starred;                 // rows only
 @property (nonatomic) BOOL modern;                  // bands only
 @property (nonatomic) CGFloat height;
@@ -101,6 +112,17 @@ static ApolloSubredditSectionsPreviewBlock *ApolloSectionsPreviewRow(NSString *k
 @implementation ApolloSubredditSectionsPreviewState
 @end
 
+// Compare identity/order as well as styling, including icon visibility.
+static BOOL ApolloPreviewStatesEqual(ApolloSubredditSectionsPreviewState *a,
+                                    ApolloSubredditSectionsPreviewState *b) {
+    if (!a || !b || a.blocks.count != b.blocks.count) return NO;
+    for (NSUInteger i = 0; i < a.blocks.count; i++) {
+        if (![a.blocks[i].key isEqualToString:b.blocks[i].key] ||
+            ![a.blocks[i].signature isEqualToString:b.blocks[i].signature]) return NO;
+    }
+    return YES;
+}
+
 // The rendering the current settings call for. The sample followed user
 // ("u/username") sits under FOLLOWING with separation on and under the U
 // letter band without — exactly what that toggle changes. Band styling
@@ -114,36 +136,44 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     BOOL modern = sSubredditListEnhancements && [defaults boolForKey:UDKeyModernSubredditDividers];
     BOOL separate = [defaults boolForKey:UDKeySeparateFollowedUsers];
-    NSString *multiredditSubtitle = sHideMultiredditDescriptions ? nil : @"apolloapp, ios, swift";
+    NSString *multiredditSubtitle = sHideMultiredditDescriptions ? nil : @"ApolloReborn, iOS, Swift";
 
     NSMutableArray<ApolloSubredditSectionsPreviewBlock *> *blocks = [NSMutableArray array];
     for (NSString *token in ApolloSubredditSectionsResolvedOrder()) {
         if ([token isEqualToString:ApolloSubredditSectionTokenFavorites]) {
             [blocks addObject:ApolloSectionsPreviewBand(@"band.favorites", @"FAVORITES", modern)];
-            [blocks addObject:ApolloSectionsPreviewRow(@"row.apolloapp", @"apolloapp", nil, UIColor.systemIndigoColor, YES)];
+            [blocks addObject:ApolloSectionsPreviewRow(@"row.apolloapp", @"Apolloapp", nil, UIColor.systemIndigoColor, YES)];
         } else if ([token isEqualToString:ApolloSubredditSectionTokenMultireddits]) {
             [blocks addObject:ApolloSectionsPreviewBand(@"band.multireddits", @"MULTIREDDITS", modern)];
             [blocks addObject:ApolloSectionsPreviewRow(@"row.multireddit", @"My Multireddit", multiredditSubtitle, UIColor.systemTealColor, NO)];
         } else if ([token isEqualToString:ApolloSubredditSectionTokenModerator]) {
             [blocks addObject:ApolloSectionsPreviewBand(@"band.moderator", @"MODERATOR", modern)];
-            [blocks addObject:ApolloSectionsPreviewRow(@"row.modclub", @"modclub", nil, UIColor.systemGreenColor, NO)];
+            [blocks addObject:ApolloSectionsPreviewRow(@"row.modclub", @"Modclub", nil, UIColor.systemGreenColor, NO)];
         } else if ([token isEqualToString:ApolloSubredditSectionTokenFollowing] && separate) {
             [blocks addObject:ApolloSectionsPreviewBand(@"band.following", @"FOLLOWING", modern)];
-            [blocks addObject:ApolloSectionsPreviewRow(@"row.username", @"u/username", nil, UIColor.systemOrangeColor, NO)];
+            [blocks addObject:ApolloSectionsPreviewRow(@"row.username", @"u/Username", nil, UIColor.systemOrangeColor, NO)];
         }
     }
     // Where the A-Z list picks up. Without separation the followed user sits
     // in its letter section — the same "row.username" key, so it slides
     // between the two places when the toggle flips.
     [blocks addObject:ApolloSectionsPreviewBand(@"band.letter", @"U", modern)];
-    [blocks addObject:ApolloSectionsPreviewRow(@"row.ukulele", @"ukulele", nil, UIColor.systemPurpleColor, NO)];
+    [blocks addObject:ApolloSectionsPreviewRow(@"row.ukulele", @"Ukulele", nil, UIColor.systemPurpleColor, NO)];
     if (!separate) {
-        [blocks addObject:ApolloSectionsPreviewRow(@"row.username", @"u/username", nil, UIColor.systemOrangeColor, NO)];
+        [blocks addObject:ApolloSectionsPreviewRow(@"row.username", @"u/Username", nil, UIColor.systemOrangeColor, NO)];
     }
 
-    CGFloat height = 2.0 * kApolloSectionsPreviewVerticalPadding;
+    id iconPreference = [defaults objectForKey:UDKeyShowSubredditIconsInSubredditList];
+    BOOL showIcons = iconPreference ? [iconPreference boolValue] : YES;
+    for (ApolloSubredditSectionsPreviewBlock *block in blocks) {
+        if (block.kind == ApolloSubredditSectionsPreviewBlockKindRow) {
+            block.showIcon = showIcons;
+            block.signature = [block.signature stringByAppendingFormat:@"|icons:%d", showIcons];
+        }
+    }
+    CGFloat height = kApolloSectionsPreviewTopPadding + kApolloSectionsPreviewBottomPadding;
     for (ApolloSubredditSectionsPreviewBlock *block in blocks) height += block.height;
-    if (blocks.count > 1) height += (CGFloat)(blocks.count - 1) * kApolloSectionsPreviewBlockSpacing;
+    if (blocks.count > 1) height += (blocks.count - 1) * kApolloSectionsPreviewBlockSpacing;
 
     ApolloSubredditSectionsPreviewState *state = [ApolloSubredditSectionsPreviewState new];
     state.blocks = blocks;
@@ -152,6 +182,78 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
 }
 
 #pragma mark - Preview view
+
+// Fetch only the three real sample subreddits; users and the synthetic
+// multireddit never issue requests. Coalesce requests across preview rebuilds.
+static NSCache<NSString *, UIImage *> *ApolloPreviewSubredditIcons(void) {
+    static NSCache *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSCache new]; cache.countLimit = 4; });
+    return cache;
+}
+
+static void ApolloLoadPreviewSubredditIcon(NSString *name, void (^completion)(UIImage *)) {
+    UIImage *cached = [ApolloPreviewSubredditIcons() objectForKey:name];
+    if (cached) { completion(cached); return; }
+    static NSMutableDictionary<NSString *, NSMutableArray *> *pending;
+    if (!pending) pending = [NSMutableDictionary new];
+    if (pending[name]) { [pending[name] addObject:[completion copy]]; return; }
+    id client = ApolloActiveAccountClient();
+    SEL fetch = NSSelectorFromString(@"subredditWithName:completion:");
+    if (![client respondsToSelector:fetch]) return;
+    pending[name] = [NSMutableArray arrayWithObject:[completion copy]];
+    void (^finish)(UIImage *) = ^(UIImage *image) {
+        if (image) [ApolloPreviewSubredditIcons() setObject:image forKey:name];
+        NSArray *callbacks = [pending[name] copy];
+        [pending removeObjectForKey:name];
+        for (void (^callback)(UIImage *) in callbacks) callback(image);
+    };
+    ((id (*)(id, SEL, id, id))objc_msgSend)(client, fetch, name, ^(id subreddit, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SEL iconSelector = NSSelectorFromString(@"iconURL");
+            NSURL *url = !error && [subreddit respondsToSelector:iconSelector]
+                ? ((id (*)(id, SEL))objc_msgSend)(subreddit, iconSelector) : nil;
+            if (![url isKindOfClass:NSURL.class] || ![url.scheme.lowercaseString isEqualToString:@"https"]) {
+                finish(nil);
+                return;
+            }
+            [[ApolloGalleryImageLoader sharedLoader] loadThumbnailAtURL:url completion:finish];
+        });
+    });
+}
+
+// Use the backing layer so Auto Layout sizes the gradient without a second
+// layout pass. Resolve the dynamic theme accent against this view's traits.
+@interface ApolloSubredditPreviewDivider : UIView
+@end
+
+@implementation ApolloSubredditPreviewDivider
++ (Class)layerClass { return CAGradientLayer.class; }
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    UIColor *accent = [(ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor)
+        resolvedColorWithTraitCollection:self.traitCollection];
+    CAGradientLayer *gradient = (CAGradientLayer *)self.layer;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    // Match the real subreddit list's three-stop fade in ApolloSubredditIndexPolish.
+    gradient.startPoint = CGPointMake(0.0, 0.5);
+    gradient.endPoint = CGPointMake(1.0, 0.5);
+    gradient.colors = @[
+        (__bridge id)[accent colorWithAlphaComponent:0.76].CGColor,
+        (__bridge id)[accent colorWithAlphaComponent:0.38].CGColor,
+        (__bridge id)[accent colorWithAlphaComponent:0.0].CGColor,
+    ];
+    gradient.locations = @[@0.0, @0.62, @1.0];
+    [CATransaction commit];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    [self setNeedsLayout];
+}
+@end
 
 @interface ApolloSubredditSectionsPreviewView : UIView
 @property (nonatomic, strong) ApolloSubredditSectionsPreviewState *previewState;
@@ -184,27 +286,28 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     label.translatesAutoresizingMaskIntoConstraints = NO;
     [band addSubview:label];
     if (block.modern) {
-        label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightBold];
+        label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
         label.textColor = [self apollo_accentColor];
-        UIView *line = [UIView new];
-        line.backgroundColor = [[self apollo_accentColor] colorWithAlphaComponent:0.55];
+        label.alpha = 0.9;
+        UIView *line = [ApolloSubredditPreviewDivider new];
         line.translatesAutoresizingMaskIntoConstraints = NO;
         [band addSubview:line];
         [NSLayoutConstraint activateConstraints:@[
-            [label.leadingAnchor constraintEqualToAnchor:band.leadingAnchor constant:12.0],
+            [label.leadingAnchor constraintEqualToAnchor:band.leadingAnchor constant:22.0],
             [label.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
-            [line.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:8.0],
-            [line.trailingAnchor constraintEqualToAnchor:band.trailingAnchor constant:-4.0],
+            [line.leadingAnchor constraintEqualToAnchor:label.trailingAnchor constant:12.0],
+            [line.trailingAnchor constraintEqualToAnchor:band.trailingAnchor constant:-12.0],
             [line.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
-            [line.heightAnchor constraintEqualToConstant:1.5],
+            [line.heightAnchor constraintEqualToConstant:2.0],
         ]];
     } else {
-        band.backgroundColor = [UIColor.tertiarySystemFillColor colorWithAlphaComponent:0.5];
-        band.layer.cornerRadius = 4.0;
-        label.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold];
-        label.textColor = UIColor.secondaryLabelColor;
+        band.backgroundColor = ApolloThemeSubredditListHeaderBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
+        label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+        // Native classic headers use opaque #666666 in light mode. UIKit's
+        // translucent secondaryLabel is lighter over the pale section band.
+        label.textColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
         [NSLayoutConstraint activateConstraints:@[
-            [label.leadingAnchor constraintEqualToAnchor:band.leadingAnchor constant:12.0],
+            [label.leadingAnchor constraintEqualToAnchor:band.leadingAnchor constant:22.0],
             [label.centerYAnchor constraintEqualToAnchor:band.centerYAnchor],
         ]];
     }
@@ -217,27 +320,74 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     UIView *row = [UIView new];
 
     UILabel *icon = [UILabel new];
+    icon.tag = 101;
     NSString *bareName = [block.title stringByReplacingOccurrencesOfString:@"u/" withString:@""];
     icon.text = bareName.length > 0 ? [bareName substringToIndex:1].uppercaseString : @"";
-    icon.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightBold];
+    icon.font = [UIFont systemFontOfSize:kApolloSectionsPreviewIconSize / 2.0 weight:UIFontWeightBold];
     icon.textColor = UIColor.whiteColor;
     icon.textAlignment = NSTextAlignmentCenter;
     icon.backgroundColor = block.circleColor;
-    icon.layer.cornerRadius = 11.0;
+    icon.layer.cornerRadius = kApolloSectionsPreviewIconSize / 2.0;
     icon.clipsToBounds = YES;
     icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.hidden = !block.showIcon;
     [row addSubview:icon];
+    NSString *subredditName = nil;
+    if ([block.key isEqualToString:@"row.apolloapp"]) subredditName = @"apolloapp";
+    else if ([block.key isEqualToString:@"row.modclub"]) subredditName = @"modclub";
+    else if ([block.key isEqualToString:@"row.ukulele"]) subredditName = @"ukulele";
+    else if ([block.key isEqualToString:@"row.multireddit"]) subredditName = @"apolloreborn";
+    BOOL userIcon = [block.key isEqualToString:@"row.username"];
+    if (block.showIcon && (subredditName || userIcon)) {
+        UIImageView *imageView = [UIImageView new];
+        imageView.translatesAutoresizingMaskIntoConstraints = NO;
+        imageView.contentMode = UIViewContentModeScaleAspectFill;
+        [icon addSubview:imageView];
+        [NSLayoutConstraint activateConstraints:@[
+            [imageView.leadingAnchor constraintEqualToAnchor:icon.leadingAnchor],
+            [imageView.trailingAnchor constraintEqualToAnchor:icon.trailingAnchor],
+            [imageView.topAnchor constraintEqualToAnchor:icon.topAnchor],
+            [imageView.bottomAnchor constraintEqualToAnchor:icon.bottomAnchor],
+        ]];
+        __weak UIImageView *weakImage = imageView;
+        __weak UILabel *weakIcon = icon;
+        void (^applyIcon)(UIImage *) = ^(UIImage *image) {
+            if (!image) return;
+            weakImage.image = image;
+            weakIcon.text = nil;
+            weakIcon.backgroundColor = UIColor.clearColor;
+        };
+        if (userIcon) {
+            ApolloUserProfileCache *cache = [ApolloUserProfileCache sharedCache];
+            // The request APIs deliver even cache hits asynchronously. Populate
+            // the image synchronously before the slide captures the new row.
+            ApolloUserProfileInfo *cachedInfo = [cache cachedInfoForUsername:@"Reddit"];
+            UIImage *cachedImage = [cache cachedImageForURL:cachedInfo.iconURL];
+            if (cachedImage) {
+                applyIcon(cachedImage);
+            } else {
+                [cache requestInfoForUsername:@"Reddit" completion:^(ApolloUserProfileInfo *info) {
+                    if (info.iconURL) [cache requestImageForURL:info.iconURL completion:applyIcon];
+                }];
+            }
+        } else {
+            ApolloLoadPreviewSubredditIcon(subredditName, applyIcon);
+        }
+    }
+
 
     UILabel *label = [UILabel new];
     label.text = block.title;
-    label.font = [UIFont systemFontOfSize:14.0];
-    label.textColor = UIColor.labelColor;
+    label.tag = 102;
+    label.font = [UIFont systemFontOfSize:17.0];
+    label.textColor = ApolloThemeSubredditListTextColor() ?: UIColor.labelColor;
     NSMutableArray<UIView *> *textViews = [NSMutableArray arrayWithObject:label];
     if (block.subtitle.length > 0) {
         UILabel *detail = [UILabel new];
+        detail.tag = 103;
         detail.text = block.subtitle;
-        detail.font = [UIFont systemFontOfSize:11.0];
-        detail.textColor = UIColor.secondaryLabelColor;
+        detail.font = [UIFont systemFontOfSize:13.0];
+        detail.textColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
         [textViews addObject:detail];
     }
     UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:textViews];
@@ -248,29 +398,33 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     [row addSubview:text];
 
     NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray arrayWithArray:@[
-        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:12.0],
+        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:22.0],
         [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-        [icon.widthAnchor constraintEqualToConstant:22.0],
-        [icon.heightAnchor constraintEqualToConstant:22.0],
-        [text.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:10.0],
+        [icon.widthAnchor constraintEqualToConstant:kApolloSectionsPreviewIconSize],
+        [icon.heightAnchor constraintEqualToConstant:kApolloSectionsPreviewIconSize],
+        block.showIcon ? [text.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:10.0]
+            : [text.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:22.0],
         [text.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
         [row.heightAnchor constraintEqualToConstant:block.height],
     ]];
     if (block.starred) {
-        UIImageView *star = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"star.fill"]];
+        // Apollo’s list uses its bundled 20 × 19 point star, not an SF Symbol.
+        UIImage *starImage = [[UIImage imageNamed:@"star"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        UIImageView *star = [[UIImageView alloc] initWithImage:starImage];
+        star.tag = 104;
         star.tintColor = [self apollo_accentColor];
         star.contentMode = UIViewContentModeScaleAspectFit;
         star.translatesAutoresizingMaskIntoConstraints = NO;
         [row addSubview:star];
         [constraints addObjectsFromArray:@[
-            [star.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-12.0],
+            [star.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-22.0],
             [star.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
-            [star.widthAnchor constraintEqualToConstant:14.0],
-            [star.heightAnchor constraintEqualToConstant:14.0],
+            [star.widthAnchor constraintEqualToConstant:20.0],
+            [star.heightAnchor constraintEqualToConstant:19.0],
             [text.trailingAnchor constraintLessThanOrEqualToAnchor:star.leadingAnchor constant:-8.0],
         ]];
     } else {
-        [constraints addObject:[text.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor constant:-12.0]];
+        [constraints addObject:[text.trailingAnchor constraintLessThanOrEqualToAnchor:row.trailingAnchor constant:-22.0]];
     }
     [NSLayoutConstraint activateConstraints:constraints];
     return row;
@@ -292,6 +446,22 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
         viewsByKey[block.key] = view;
         signaturesByKey[block.key] = block.signature;
     }
+    for (NSUInteger i = 0; i + 1 < state.blocks.count; i++) {
+        if (state.blocks.firstObject.modern ||
+            state.blocks[i].kind != ApolloSubredditSectionsPreviewBlockKindRow ||
+            state.blocks[i + 1].kind != ApolloSubredditSectionsPreviewBlockKindRow) continue;
+        UIView *row = blockViews[i];
+        UIView *separator = [UIView new];
+        separator.backgroundColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+        separator.translatesAutoresizingMaskIntoConstraints = NO;
+        [row addSubview:separator];
+        [NSLayoutConstraint activateConstraints:@[
+            [separator.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:18.0],
+            [separator.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+            [separator.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
+            [separator.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
+        ]];
+    }
     self.itemViewsByKey = viewsByKey;
     self.itemSignaturesByKey = signaturesByKey;
 
@@ -302,10 +472,11 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
-        [stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:10.0],
-        [stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-10.0],
-        [stack.topAnchor constraintEqualToAnchor:self.topAnchor constant:kApolloSectionsPreviewVerticalPadding],
-        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.bottomAnchor constant:-kApolloSectionsPreviewVerticalPadding],
+        [stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:self.topAnchor constant:kApolloSectionsPreviewTopPadding],
+        // Reserve the same bottom breathing room in the model and layout.
+        [stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-kApolloSectionsPreviewBottomPadding],
     ]];
 }
 
@@ -335,10 +506,40 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
 }
 @end
 
+// Native reorder chrome is disabled: the redesign's snapshot gesture below
+// owns the handle, row movement and card-shaped shadow.
+@interface ApolloSectionOrderCell : UITableViewCell
+@end
+@implementation ApolloSectionOrderCell
+- (void)setShowsReorderControl:(BOOL)showsReorderControl {
+    [super setShowsReorderControl:NO];
+}
+@end
+
 #pragma mark - The form (child)
 
-@interface ApolloSubredditSectionsFormViewController : ApolloSettingsFormViewController <UITableViewDragDelegate, UITableViewDropDelegate>
+@interface ApolloSubredditSectionsFormViewController : ApolloSettingsFormViewController <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) ApolloSubredditSectionsViewController *previewContainer;
+@property (nonatomic, strong) UILongPressGestureRecognizer *accountReorderGesture;
+@property (nonatomic, strong, nullable) UIView *accountReorderWrapper;
+@property (nonatomic, strong, nullable) UIView *accountReorderBackground;
+@property (nonatomic, strong, nullable) UIView *accountReorderSnapshot;
+@property (nonatomic, weak, nullable) UITableViewCell *accountReorderCell;
+@property (nonatomic, strong, nullable) NSArray<NSString *> *rowsBeforeAccountReorder;
+@property (nonatomic) NSInteger accountReorderOriginalRow;
+@property (nonatomic) NSInteger accountReorderCurrentRow;
+@property (nonatomic) CGFloat accountReorderTouchOffsetY;
+@property (nonatomic) CGRect accountReorderCardFrame;
+@property (nonatomic) CGFloat accountReorderCornerRadius;
+@property (nonatomic) CGPoint accountReorderLatestPoint;
+@property (nonatomic) NSInteger accountReorderDirection;
+@property (nonatomic) BOOL accountReorderActive;
+@property (nonatomic) BOOL accountReorderLanding;
+@property (nonatomic, strong) NSTimer *accountReorderScrollTimer;
+@property (nonatomic) BOOL accountReorderTransitioning;
+@property (nonatomic) BOOL accountReorderFinishPending;
+@property (nonatomic) BOOL accountReorderFinishCancelled;
+@property (nonatomic, strong, nullable) UISelectionFeedbackGenerator *accountReorderFeedback;
 @end
 
 @interface ApolloSubredditSectionsViewController () <UIGestureRecognizerDelegate>
@@ -380,6 +581,8 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
 @property (nonatomic, strong) UIViewPropertyAnimator *previewAnimator;
 @property (nonatomic) NSUInteger previewTransitionGeneration;
 @property (nonatomic) BOOL previewRefreshPending;
+@property (nonatomic, strong) ApolloSubredditSectionsPreviewState *previewTransitionFromState;
+@property (nonatomic, strong) ApolloSubredditSectionsPreviewState *previewTransitionToState;
 - (void)apollo_refreshPreviewAnimated:(BOOL)animated;
 - (void)apollo_formDidScroll:(UIScrollView *)scrollView;
 @end
@@ -393,22 +596,47 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
 @implementation ApolloSubredditSectionsFormViewController
 
+- (void)apollo_applyThemeToCell:(UITableViewCell *)cell {
+    [super apollo_applyThemeToCell:cell];
+    if ([cell isKindOfClass:ApolloSectionOrderCell.class]) {
+        cell.editingAccessoryView.tintColor = UIColor.tertiaryLabelColor;
+    }
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [self finishAccountReorderCancelled:YES];
+    [super viewWillDisappear:animated];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Drag & drop powers the Section Order rows' reordering (long-press a row,
-    // then drag). Scoped hard to that section by the drag delegate + drop
-    // proposal; every other row refuses to lift. This keeps UISwitch rows
-    // fully functional (a persistent editing mode would hide their
-    // accessoryViews).
-    self.tableView.dragInteractionEnabled = YES;
-    self.tableView.dragDelegate = self;
-    self.tableView.dropDelegate = self;
+    // Match the account-switcher redesign’s snapshot reorder interaction.
+    self.tableView.estimatedRowHeight = 0.0;
+    self.tableView.estimatedSectionHeaderHeight = 0.0;
+    self.tableView.estimatedSectionFooterHeight = 0.0;
+    [self.tableView setEditing:YES animated:NO];
+    self.accountReorderGesture = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:self action:@selector(handleAccountReorderGesture:)];
+    self.accountReorderGesture.minimumPressDuration = 0.16;
+    self.accountReorderGesture.cancelsTouchesInView = YES;
+    self.accountReorderGesture.delegate = self;
+    [self.tableView addGestureRecognizer:self.accountReorderGesture];
 }
 
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     __weak typeof(self) weakSelf = self;
 
     // --- Options: every toggle the preview demonstrates, together ---
+    ApolloSettingsRow *showIcons =
+        [ApolloSettingsRow switchRowWithID:@"sections.showIcons" title:@"Show Subreddit Icons"
+            isOn:^BOOL {
+                id value = [[NSUserDefaults standardUserDefaults] objectForKey:UDKeyShowSubredditIconsInSubredditList];
+                return value ? [value boolValue] : YES;
+            } onToggle:^(UISwitch *sender) {
+                [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyShowSubredditIconsInSubredditList];
+                [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSubredditListIconsChangedNotification object:nil];
+                [weakSelf.previewContainer apollo_refreshPreviewAnimated:YES];
+            }];
     ApolloSettingsRow *separateFollowing =
         [ApolloSettingsRow switchRowWithID:@"sections.separateFollowing"
                                      title:@"Separate Followed Users"
@@ -432,8 +660,8 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     modernDividers.visible = ^BOOL { return sSubredditListEnhancements; };
     ApolloSettingsSection *optionsSection =
         [ApolloSettingsSection sectionWithTitle:@"Options"
-                                         footer:@"Followed users get their own Following section, reorderable from the list's Edit mode. Multireddit rows show a description or their subreddits. Enhancements add accent-colored dividers — the preview shows what each option changes."
-                                           rows:@[ separateFollowing, hideMultiredditDescriptions, enhancements, modernDividers ]];
+                                         footer:@"Subreddit List Enhancements make the alphabet index and favorite stars easier to tap, and improve spacing around icons and the index."
+                                           rows:@[ showIcons, separateFollowing, hideMultiredditDescriptions, enhancements, modernDividers ]];
 
     // --- Section order (drag to reorder) ---
     NSMutableArray<ApolloSettingsRow *> *orderRows = [NSMutableArray arrayWithCapacity:4];
@@ -446,28 +674,31 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     }
     ApolloSettingsSection *orderSection =
         [ApolloSettingsSection sectionWithTitle:@"Section Order"
-                                         footer:@"Touch and hold a section, then drag it into the order you want the subreddit list to use. Home, Popular, All and Moderator Posts stay on top; the alphabetical list always comes last."
+                                         footer:@"Drag the handles to reorder sections. Feed shortcuts stay at the top, and alphabetical subreddits stay at the bottom."
                                            rows:orderRows];
 
     return @[ optionsSection, orderSection ];
 }
 
 - (ApolloSettingsRow *)orderRowForToken:(NSString *)token {
+    __weak typeof(self) weakSelf = self;
     NSString *rowID = [@"order." stringByAppendingString:token];
     ApolloSettingsRow *row =
         [ApolloSettingsRow customRowWithID:rowID
                                       cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *r) {
         static NSString *reuseID = @"Cell_SectionOrder";
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        ApolloSectionOrderCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
+            cell = [[ApolloSectionOrderCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuseID];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            UIImageView *grip = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.horizontal.3"]];
-            grip.tintColor = UIColor.tertiaryLabelColor;
-            grip.contentMode = UIViewContentModeScaleAspectFit;
-            cell.accessoryView = grip;
-            [grip sizeToFit];
         }
+        UIImageView *handle = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"line.horizontal.3"]];
+        handle.tintColor = UIColor.tertiaryLabelColor;
+        handle.contentMode = UIViewContentModeCenter;
+        handle.frame = CGRectMake(0, 0, 28, 28);
+        cell.accessoryView = handle;
+        cell.showsReorderControl = NO;
+        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
         cell.textLabel.text = ApolloSubredditSectionDisplayName(token);
         return cell;
     }
@@ -546,7 +777,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    return [self indexPathIsOrderRow:indexPath];
+    return NO;
 }
 
 - (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath {
@@ -566,19 +797,351 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
         if (![stored containsObject:token]) [stored addObject:token];
     }
     [[NSUserDefaults standardUserDefaults] setObject:stored forKey:UDKeySubredditSectionOrder];
+    // Reordering already changed UIKit's index paths. Its next request for a
+    // reused cell must read the same order as the preview and preferences.
+    [self refreshFormModelAfterRowMove];
     ApolloLog(@"[SubredditSections] order -> %@", [stored componentsJoinedByString:@", "]);
 
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSubredditSectionsChangedNotification object:nil];
 
-    // Re-sync the form model with the moved rows (UIKit already animated the
-    // move; rebuilding on the next runloop turn keeps the drop animation
-    // intact) and slide the preview's bands into the new order.
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf rebuildSectionContainingRowID:[@"order." stringByAppendingString:ApolloSubredditSectionTokenFavorites]
-                               withRowAnimation:UITableViewRowAnimationNone];
-        [weakSelf.previewContainer apollo_refreshPreviewAnimated:YES];
-    });
+    // Keep the preview synchronized with each animated position change.
+    [self.previewContainer apollo_refreshPreviewAnimated:YES];
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer != self.accountReorderGesture || !self.tableView.isEditing ||
+        self.accountReorderActive || self.accountReorderLanding) return NO;
+    CGPoint point = [gestureRecognizer locationInView:self.tableView];
+    NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
+    UITableViewCell *cell = indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+    if (!cell || ![self indexPathIsOrderRow:indexPath]) return NO;
+    CGPoint cellPoint = [gestureRecognizer locationInView:cell];
+    BOOL rightToLeft = cell.effectiveUserInterfaceLayoutDirection ==
+        UIUserInterfaceLayoutDirectionRightToLeft;
+    return rightToLeft ? cellPoint.x <= 52.0
+                       : cellPoint.x >= CGRectGetWidth(cell.bounds) - 52.0;
+}
+
+- (void)updateAccountReorderSnapshotCorners {
+    UIView *wrapper = self.accountReorderWrapper;
+    UIView *background = self.accountReorderBackground;
+    UIView *snapshot = self.accountReorderSnapshot;
+    if (!wrapper || !background || !snapshot) return;
+    NSInteger row = self.accountReorderCurrentRow;
+    NSInteger last = (NSInteger)[self visibleOrderTokens].count - 1;
+    UIRectCorner corners = 0;
+    if (row == 0) {
+        corners |= UIRectCornerTopLeft | UIRectCornerTopRight;
+    }
+    if (row == last) {
+        corners |= UIRectCornerBottomLeft | UIRectCornerBottomRight;
+    }
+
+    CGRect cardFrame = self.accountReorderCardFrame;
+    CGFloat radius = self.accountReorderCornerRadius;
+    UIBezierPath *cardPath = corners
+        ? [UIBezierPath bezierPathWithRoundedRect:cardFrame
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius, radius)]
+        : [UIBezierPath bezierPathWithRect:cardFrame];
+    CAShapeLayer *snapshotMask = [CAShapeLayer layer];
+    snapshotMask.frame = snapshot.bounds;
+    snapshotMask.path = cardPath.CGPath;
+
+    CGRect localBackgroundBounds = background.bounds;
+    UIBezierPath *backgroundPath = corners
+        ? [UIBezierPath bezierPathWithRoundedRect:localBackgroundBounds
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius, radius)]
+        : [UIBezierPath bezierPathWithRect:localBackgroundBounds];
+    CAShapeLayer *backgroundMask = [CAShapeLayer layer];
+    backgroundMask.frame = localBackgroundBounds;
+    backgroundMask.path = backgroundPath.CGPath;
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    snapshot.layer.mask = snapshotMask;
+    background.layer.mask = backgroundMask;
+    wrapper.layer.shadowPath = cardPath.CGPath;
+    [CATransaction commit];
+}
+
+// Scroll the actual visible list viewport, excluding the pinned preview and
+// navigation/tab bars. The lifted row stays attached to the finger in the host.
+- (void)scrollAccountReorderAtEdge {
+    if (!self.accountReorderActive || self.accountReorderFinishPending) return;
+    UIView *host = self.previewContainer.view;
+    UITableView *table = self.tableView;
+    CGRect viewport = CGRectIntersection([table convertRect:table.bounds toView:host],
+                                        host.safeAreaLayoutGuide.layoutFrame);
+    CGFloat top = CGRectGetMinY(viewport);
+    CGFloat bottom = CGRectGetMaxY(viewport);
+    if (self.previewContainer.previewPinned) {
+        CGRect preview = [self.previewContainer.previewHost
+            convertRect:self.previewContainer.previewHost.bounds toView:host];
+        top = MAX(top, CGRectGetMaxY(preview));
+    }
+    CGFloat edge = MIN(48.0, MAX(0.0, (bottom - top) / 3.0));
+    if (edge <= 0.0) return;
+    CGFloat y = self.accountReorderLatestPoint.y;
+    CGFloat strength = y < top + edge ? -MIN(1.0, (top + edge - y) / edge)
+        : y > bottom - edge ? MIN(1.0, (y - bottom + edge) / edge) : 0.0;
+    CGFloat minimum = -table.adjustedContentInset.top;
+    CGFloat maximum = MAX(minimum, table.contentSize.height - table.bounds.size.height
+                                   + table.adjustedContentInset.bottom);
+    CGFloat offset = MAX(minimum, MIN(maximum, table.contentOffset.y + strength * 4.0));
+    if (fabs(offset - table.contentOffset.y) < 0.01) return;
+    self.accountReorderDirection = offset > table.contentOffset.y ? 1 : -1;
+    [table setContentOffset:CGPointMake(table.contentOffset.x, offset) animated:NO];
+    [self evaluateAccountReorderDestination];
+}
+
+- (void)finishAccountReorderCancelled:(BOOL)cancelled {
+    [self.accountReorderScrollTimer invalidate];
+    self.accountReorderScrollTimer = nil;
+    if (!self.accountReorderActive) return;
+    if (self.accountReorderTransitioning) {
+        self.accountReorderFinishPending = YES;
+        self.accountReorderFinishCancelled = cancelled;
+        return;
+    }
+
+    NSInteger destination = self.accountReorderCurrentRow;
+    if (cancelled) {
+        [[NSUserDefaults standardUserDefaults] setObject:self.rowsBeforeAccountReorder forKey:UDKeySubredditSectionOrder];
+        [self refreshFormModelAfterRowMove];
+        [self.tableView reloadData];
+        [self.previewContainer apollo_refreshPreviewAnimated:YES];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ApolloSubredditSectionsChangedNotification object:nil];
+        destination = self.accountReorderOriginalRow;
+        self.accountReorderCurrentRow = destination;
+        [self updateAccountReorderSnapshotCorners];
+    }
+
+    NSIndexPath *destinationPath = [NSIndexPath indexPathForRow:destination inSection:[self orderSectionIndex]];
+    [self.tableView layoutIfNeeded];
+    UITableViewCell *landingCell = [self.tableView cellForRowAtIndexPath:destinationPath];
+    CGRect tableFrame = landingCell ? [landingCell convertRect:landingCell.bounds toView:self.tableView]
+        : [self.tableView rectForRowAtIndexPath:destinationPath];
+    CGRect destinationFrame = [self.tableView convertRect:tableFrame toView:self.previewContainer.view];
+    UIView *wrapper = self.accountReorderWrapper;
+    UITableViewCell *destinationCell = [self.tableView cellForRowAtIndexPath:destinationPath];
+    UITableViewCell *draggedCell = self.accountReorderCell;
+    destinationCell.hidden = YES;
+    self.accountReorderLanding = YES;
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.18
+                          delay:0.0
+                        options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        wrapper.transform = CGAffineTransformIdentity;
+        wrapper.frame = destinationFrame;
+    } completion:^(__unused BOOL finished) {
+        destinationCell.hidden = NO;
+        draggedCell.hidden = NO;
+        [wrapper removeFromSuperview];
+        self.accountReorderLanding = NO;
+    }];
+
+    self.accountReorderWrapper = nil;
+    self.accountReorderBackground = nil;
+    self.accountReorderSnapshot = nil;
+    self.accountReorderCell = nil;
+    self.rowsBeforeAccountReorder = nil;
+    self.accountReorderFeedback = nil;
+    self.accountReorderActive = NO;
+    self.accountReorderFinishPending = NO;
+}
+
+- (void)evaluateAccountReorderDestination {
+    if (!self.accountReorderActive || self.accountReorderTransitioning) return;
+    UIView *wrapper = self.accountReorderWrapper;
+    CGRect dragFrame = [self.previewContainer.view convertRect:wrapper.frame toView:self.tableView];
+    NSInteger current = self.accountReorderCurrentRow;
+    NSInteger destination = current;
+    NSInteger last = (NSInteger)[self visibleOrderTokens].count - 1;
+
+    // Resolve the furthest crossed row in one pass. The previous version
+    // queued one table animation per row, so a quick two-row movement visibly
+    // lagged behind the floating cell while waiting for the first completion.
+    for (NSInteger row = current + 1; self.accountReorderDirection > 0 && row <= last; row++) {
+        CGRect candidate = [self.tableView rectForRowAtIndexPath:
+            [NSIndexPath indexPathForRow:row inSection:[self orderSectionIndex]]];
+        CGFloat boundary = CGRectGetMinY(candidate) + CGRectGetHeight(candidate) * 0.30;
+        if (CGRectGetMaxY(dragFrame) < boundary) break;
+        destination = row;
+    }
+    if (destination == current && self.accountReorderDirection < 0) {
+        for (NSInteger row = current - 1; row >= 0; row--) {
+            CGRect candidate = [self.tableView rectForRowAtIndexPath:
+                [NSIndexPath indexPathForRow:row inSection:[self orderSectionIndex]]];
+            CGFloat boundary = CGRectGetMaxY(candidate) - CGRectGetHeight(candidate) * 0.30;
+            if (CGRectGetMinY(dragFrame) > boundary) break;
+            destination = row;
+        }
+    }
+    if (destination == current) return;
+
+    [self tableView:self.tableView
+        moveRowAtIndexPath:[NSIndexPath indexPathForRow:current inSection:[self orderSectionIndex]]
+               toIndexPath:[NSIndexPath indexPathForRow:destination inSection:[self orderSectionIndex]]];
+    self.accountReorderCurrentRow = destination;
+    [self updateAccountReorderSnapshotCorners];
+    self.accountReorderTransitioning = YES;
+    [self.accountReorderFeedback selectionChanged];
+    [self.accountReorderFeedback prepare];
+
+    NSIndexPath *from = [NSIndexPath indexPathForRow:current inSection:[self orderSectionIndex]];
+    NSIndexPath *to = [NSIndexPath indexPathForRow:destination inSection:[self orderSectionIndex]];
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.25
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction |
+                                UIViewAnimationOptionCurveEaseOut
+                     animations:^{
+        [self.tableView performBatchUpdates:^{
+            [self.tableView moveRowAtIndexPath:from toIndexPath:to];
+        } completion:nil];
+    } completion:^(__unused BOOL finished) {
+        self.accountReorderTransitioning = NO;
+        if (self.accountReorderFinishPending) {
+            [self finishAccountReorderCancelled:self.accountReorderFinishCancelled];
+        } else {
+            [self evaluateAccountReorderDestination];
+        }
+    }];
+}
+
+- (void)handleAccountReorderGesture:(UILongPressGestureRecognizer *)gestureRecognizer {
+    CGPoint tablePoint = [gestureRecognizer locationInView:self.tableView];
+    switch (gestureRecognizer.state) {
+        case UIGestureRecognizerStateBegan: {
+            NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:tablePoint];
+            UITableViewCell *cell = indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+            if (!cell) return;
+            UIView *snapshot = [cell snapshotViewAfterScreenUpdates:NO];
+            if (!snapshot) return;
+
+            CGRect frame = [cell convertRect:cell.bounds toView:self.previewContainer.view];
+            UIView *wrapper = [[UIView alloc] initWithFrame:frame];
+            wrapper.backgroundColor = UIColor.clearColor;
+            wrapper.layer.shadowColor = UIColor.blackColor.CGColor;
+            wrapper.layer.shadowOpacity = 0.18;
+            wrapper.layer.shadowRadius = 8.0;
+            wrapper.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+            UIView *cellBackground = cell.backgroundView;
+            CGRect cardFrame = cellBackground
+                ? [cellBackground convertRect:cellBackground.bounds toView:cell]
+                : cell.bounds;
+            if (CGRectIsEmpty(cardFrame) || !CGRectContainsRect(cell.bounds, cardFrame)) {
+                cardFrame = cell.bounds;
+            }
+            CGFloat cornerRadius = cellBackground.layer.cornerRadius;
+            if (cornerRadius <= 0.0) {
+                NSIndexPath *edgePath = [NSIndexPath indexPathForRow:0 inSection:[self orderSectionIndex]];
+                UITableViewCell *edgeCell = [self.tableView cellForRowAtIndexPath:edgePath];
+                cornerRadius = edgeCell.backgroundView.layer.cornerRadius;
+            }
+            if (cornerRadius <= 0.0) cornerRadius = 20.0;
+
+            // A snapshot preserves the source row's transparent rounded
+            // pixels. Fill beneath it so a top/bottom source can become a
+            // square middle row, then mask both layers to the destination's
+            // actual inset-grouped card geometry.
+            // Capture a tiny blank patch from the row's rendered card and
+            // stretch it beneath the snapshot. On device, Apollo can render
+            // the card through private UIKit layers whose reported
+            // backgroundColor differs from the pixels on screen; sampling the
+            // rendered surface keeps this temporary morph fill exact in every
+            // stock/custom theme.
+            CGRect sampleRect = CGRectMake(CGRectGetMaxX(cardFrame) - 8.0,
+                                           CGRectGetMidY(cardFrame) - 1.0,
+                                           2.0, 2.0);
+            UIView *background = [cell resizableSnapshotViewFromRect:sampleRect
+                                                   afterScreenUpdates:NO
+                                                        withCapInsets:UIEdgeInsetsZero];
+            if (!background) {
+                background = [[UIView alloc] initWithFrame:cardFrame];
+                background.backgroundColor = ApolloThemeCardBackgroundColor()
+                    ?: cellBackground.backgroundColor
+                    ?: UIColor.secondarySystemGroupedBackgroundColor;
+            }
+            background.frame = cardFrame;
+            [wrapper addSubview:background];
+            snapshot.frame = wrapper.bounds;
+            snapshot.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [wrapper addSubview:snapshot];
+            [self.previewContainer.view addSubview:wrapper];
+
+            CGPoint viewPoint = [gestureRecognizer locationInView:self.previewContainer.view];
+            self.accountReorderWrapper = wrapper;
+            self.accountReorderBackground = background;
+            self.accountReorderSnapshot = snapshot;
+            self.accountReorderCell = cell;
+            self.rowsBeforeAccountReorder = ApolloSubredditSectionsResolvedOrder();
+            self.accountReorderOriginalRow = indexPath.row;
+            self.accountReorderCurrentRow = indexPath.row;
+            self.accountReorderTouchOffsetY = CGRectGetMidY(frame) - viewPoint.y;
+            self.accountReorderCardFrame = cardFrame;
+            self.accountReorderCornerRadius = cornerRadius;
+            self.accountReorderLatestPoint = viewPoint;
+            self.accountReorderDirection = 0;
+            self.accountReorderActive = YES;
+            self.accountReorderFeedback = [UISelectionFeedbackGenerator new];
+            [self.accountReorderFeedback prepare];
+            [self.accountReorderFeedback selectionChanged];
+            __weak typeof(self) weakSelf = self;
+            self.accountReorderScrollTimer = [NSTimer timerWithTimeInterval:1.0 / 60.0 repeats:YES
+                block:^(__unused NSTimer *timer) { [weakSelf scrollAccountReorderAtEdge]; }];
+            [[NSRunLoop mainRunLoop] addTimer:self.accountReorderScrollTimer forMode:NSRunLoopCommonModes];
+            cell.hidden = YES;
+            [self updateAccountReorderSnapshotCorners];
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            if (!self.accountReorderActive) return;
+            CGPoint viewPoint = [gestureRecognizer locationInView:self.previewContainer.view];
+            CGFloat delta = viewPoint.y - self.accountReorderLatestPoint.y;
+            if (fabs(delta) > 0.1) self.accountReorderDirection = delta > 0 ? 1 : -1;
+            self.accountReorderLatestPoint = viewPoint;
+            CGPoint center = self.accountReorderWrapper.center;
+            center.y = viewPoint.y + self.accountReorderTouchOffsetY;
+            self.accountReorderWrapper.center = center;
+            [self evaluateAccountReorderDestination];
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+            [self finishAccountReorderCancelled:NO];
+            break;
+        case UIGestureRecognizerStateCancelled:
+        case UIGestureRecognizerStateFailed:
+            [self finishAccountReorderCancelled:YES];
+            break;
+        default:
+            break;
+    }
+}
+
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self indexPathIsOrderRow:indexPath];
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return UITableViewCellEditingStyleNone;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    return NO;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    // The declarative form owns the cells. Keep its switches visible while
+    // the table exposes native reorder handles only for the order rows.
+    cell.editingAccessoryView = cell.accessoryView;
+    cell.hidden = self.accountReorderActive && [self indexPathIsOrderRow:indexPath]
+        && indexPath.row == self.accountReorderCurrentRow;
+    return cell;
 }
 
 - (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath toProposedIndexPath:(NSIndexPath *)proposedDestinationIndexPath {
@@ -590,28 +1153,6 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     return [NSIndexPath indexPathForRow:row inSection:orderSection];
 }
 
-- (NSArray<UIDragItem *> *)tableView:(UITableView *)tableView itemsForBeginningDragSession:(id<UIDragSession>)session atIndexPath:(NSIndexPath *)indexPath {
-    ApolloLog(@"[SubredditSections] drag begin asked for %ld/%ld (order row: %d)",
-              (long)indexPath.section, (long)indexPath.row, [self indexPathIsOrderRow:indexPath]);
-    if (![self indexPathIsOrderRow:indexPath]) return @[];
-    UIDragItem *item = [[UIDragItem alloc] initWithItemProvider:[NSItemProvider new]];
-    item.localObject = indexPath;
-    return @[ item ];
-}
-
-- (UITableViewDropProposal *)tableView:(UITableView *)tableView dropSessionDidUpdate:(id<UIDropSession>)session withDestinationIndexPath:(NSIndexPath *)destinationIndexPath {
-    if (session.localDragSession && [self indexPathIsOrderRow:destinationIndexPath]) {
-        return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationMove
-                                                               intent:UITableViewDropIntentInsertAtDestinationIndexPath];
-    }
-    return [[UITableViewDropProposal alloc] initWithDropOperation:UIDropOperationCancel];
-}
-
-- (void)tableView:(UITableView *)tableView performDropWithCoordinator:(id<UITableViewDropCoordinator>)coordinator {
-    // Local same-table reorders with a .move/insertAtDestination proposal are
-    // committed by UIKit through tableView:moveRowAtIndexPath:toIndexPath:
-    // before this is called; nothing else can be dropped here.
-}
 
 @end
 
@@ -636,7 +1177,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Subreddit Sections";
+    self.title = @"Subreddit List";
     BOOL liquidGlass = IsLiquidGlass();
 
     ApolloSubredditSectionsPreviewHostView *previewHost = [ApolloSubredditSectionsPreviewHostView new];
@@ -648,7 +1189,8 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     if (liquidGlass) {
         titleLabel.text = @"Preview";
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
+        // Match the semibold inset-grouped section titles beneath the preview.
+        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
         titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
             scaledFontForFont:titleFont];
     } else {
@@ -835,7 +1377,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     self.view.backgroundColor = backgroundColor;
     self.previewHost.backgroundColor = backgroundColor;
     self.pinnedCoverView.backgroundColor = backgroundColor;
-    self.previewCardView.backgroundColor = ApolloThemeCardBackgroundColor()
+    self.previewCardView.backgroundColor = ApolloThemeSubredditListBackgroundColor()
         ?: UIColor.secondarySystemGroupedBackgroundColor;
     self.previewTitleLabel.textColor =
         ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
@@ -1188,7 +1730,17 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
 // replayed once the animation completes.
 - (void)apollo_refreshPreviewAnimated:(BOOL)animated {
     if (animated && self.previewAnimator.state == UIViewAnimatingStateActive) {
-        self.previewRefreshPending = YES;
+        ApolloSubredditSectionsPreviewState *requested = ApolloSubredditSectionsCurrentPreviewState();
+        BOOL atSource = ApolloPreviewStatesEqual(requested, self.previewTransitionFromState);
+        BOOL atTarget = ApolloPreviewStatesEqual(requested, self.previewTransitionToState);
+        if (atSource || atTarget) {
+            // Reverse the running timeline, preserving its current visual position.
+            self.previewRefreshPending = NO;
+            self.previewAnimator.reversed = atSource;
+        } else {
+            // Coalesce different controls/order changes into the latest state.
+            self.previewRefreshPending = YES;
+        }
         return;
     }
     [self apollo_finishPreviewTransition];
@@ -1201,6 +1753,8 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
         return;
     }
 
+    self.previewTransitionFromState = outgoing.previewState;
+    self.previewTransitionToState = state;
     [self.view layoutIfNeeded];
     [self apollo_addPreviewView:incoming height:state.previewHeight];
     [self.previewCardView layoutIfNeeded];
@@ -1212,6 +1766,9 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
     NSDictionary<NSString *, UIView *> *newItems = incoming.itemViewsByKey;
     NSMutableArray<UIView *> *departingItems = [NSMutableArray array]; // gone: scale-fade out in place
     NSMutableArray<UIView *> *restyledItems = [NSMutableArray array];  // old look of a survivor: fade out in place
+    NSMutableArray<UIView *> *slidingRows = [NSMutableArray array];
+    NSMutableArray<void (^)(void)> *slideAnimations = [NSMutableArray array];
+    NSMutableArray<UIView *> *slidingIncomingRows = [NSMutableArray array];
     for (NSString *key in newItems) {
         UIView *newItem = newItems[key];
         UIView *oldItem = oldItems[key];
@@ -1227,6 +1784,50 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
         BOOL sameLook = [outgoing.itemSignaturesByKey[key] isEqualToString:incoming.itemSignaturesByKey[key]];
         if (sameLook) {
             oldItem.alpha = 0.0; // the twin takes over from the very first frame
+        } else if ([key hasPrefix:@"row."]) {
+            // Animate each piece inside a resizing clip. This keeps names visible
+            // while icons slide sideways and descriptions slide below the row.
+            UIView *clip = [[UIView alloc] initWithFrame:oldFrame];
+            clip.clipsToBounds = YES;
+            [self.previewCardView addSubview:clip];
+            [slidingRows addObject:clip];
+            [slidingIncomingRows addObject:newItem];
+            [slideAnimations addObject:^{ clip.frame = newFrame; }];
+            for (NSInteger tag = 101; tag <= 104; tag++) {
+                UIView *oldPart = [oldItem viewWithTag:tag];
+                UIView *newPart = [newItem viewWithTag:tag];
+                BOOL hadPart = oldPart && !oldPart.hidden;
+                BOOL hasPart = newPart && !newPart.hidden;
+                if (!hadPart && !hasPart) continue;
+                UIView *source = hasPart ? newPart : oldPart;
+                // These are plain labels/images. Render their layers directly:
+                // snapshotViewAfterScreenUpdates:YES flushes the partially staged
+                // preview to the screen, exposing duplicate/missing rows for a frame.
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+                    initWithSize:source.bounds.size];
+                UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                    [source.layer renderInContext:context.CGContext];
+                }];
+                UIView *snapshot = [[UIImageView alloc] initWithImage:image];
+                CGRect start = hadPart ? [oldPart convertRect:oldPart.bounds toView:oldItem]
+                                       : [newPart convertRect:newPart.bounds toView:newItem];
+                CGRect end = hasPart ? [newPart convertRect:newPart.bounds toView:newItem] : start;
+                if (!hadPart) {
+                    if (tag == 101) start.origin.x = -CGRectGetWidth(start);
+                    else start.origin.y = CGRectGetHeight(oldFrame);
+                }
+                if (!hasPart) {
+                    if (tag == 101) end.origin.x = -CGRectGetWidth(end);
+                    else end.origin.y = CGRectGetHeight(newFrame);
+                }
+                snapshot.frame = start;
+                [clip addSubview:snapshot];
+                [slideAnimations addObject:^{ snapshot.frame = end; }];
+            }
+            oldItem.alpha = 0.0;
+            // Hidden arranged subviews collapse in UIStackView. Keep the real
+            // row in layout while its clipped snapshot supplies the visuals.
+            newItem.alpha = 0.0;
         } else {
             newItem.alpha = 0.0;
             [restyledItems addObject:oldItem];
@@ -1244,20 +1845,37 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
     __weak UIViewPropertyAnimator *weakAnimator = animator;
     [animator addAnimations:^{
         for (UIView *item in newItems.allValues) {
-            item.alpha = 1.0;
+            if (![slidingIncomingRows containsObject:item]) item.alpha = 1.0;
             item.transform = CGAffineTransformIdentity;
         }
         for (UIView *item in departingItems) {
             item.alpha = 0.0;
             item.transform = CGAffineTransformMakeScale(0.88, 0.88);
         }
+        for (void (^slide)(void) in slideAnimations) slide();
         for (UIView *item in restyledItems) item.alpha = 0.0;
         [weakSelf.view layoutIfNeeded];
         [weakSelf apollo_syncPreviewSlot];
     }];
     [animator addCompletion:^(__unused UIViewAnimatingPosition finalPosition) {
-        [outgoing removeFromSuperview];
-        incoming.alpha = 1.0;
+        for (UIView *row in slidingIncomingRows) row.alpha = 1.0;
+        for (UIView *clip in slidingRows) [clip removeFromSuperview];
+        if (finalPosition == UIViewAnimatingPositionStart) {
+            [incoming removeFromSuperview];
+            for (UIView *item in oldItems.allValues) {
+                item.alpha = 1.0;
+                item.transform = CGAffineTransformIdentity;
+            }
+            weakSelf.currentPreviewView = outgoing;
+            weakSelf.previewContentHeightConstraint.constant = outgoing.previewState.previewHeight;
+            [UIView performWithoutAnimation:^{
+                [weakSelf.view layoutIfNeeded];
+                [weakSelf apollo_syncPreviewSlot];
+            }];
+        } else {
+            [outgoing removeFromSuperview];
+            incoming.alpha = 1.0;
+        }
         if (weakSelf.previewTransitionGeneration == generation &&
             weakSelf.previewAnimator == weakAnimator) {
             weakSelf.previewAnimator = nil;
