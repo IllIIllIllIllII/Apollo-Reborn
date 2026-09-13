@@ -63,6 +63,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloLocalBackupsViewController.m \
     $(SRC_DIR)/settings/ApolloBackupActionsCell.m \
     $(SRC_DIR)/settings/ApolloThanksToViewController.m \
+    $(SRC_DIR)/settings/ApolloSpinnerViewController.m \
     $(SRC_DIR)/settings/ApolloBuyUsACoffeeViewController.m \
     $(SRC_DIR)/settings/ApolloWallpaperViewerViewController.m \
     $(SRC_DIR)/settings/ApolloWallpapersViewController.m \
@@ -162,6 +163,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloScrollEdgeEffect.xm \
     $(SRC_DIR)/ApolloProgressiveBlur.xm \
     $(SRC_DIR)/settings/ApolloSettings.xm \
+    $(SRC_DIR)/settings/ApolloSettingsTabMenu.xm \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
     $(SRC_DIR)/ApolloHiddenContentData.m \
@@ -302,7 +304,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/crash/ApolloCrashBugsnagNeutralize.xm \
     $(KSCRASH_FILES) \
     $(SSZIPARCHIVE_FILES)
-ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage Vision LinkPresentation SwiftUI UniformTypeIdentifiers Metal QuartzCore CoreMotion
+ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage Vision LinkPresentation SwiftUI UniformTypeIdentifiers Metal QuartzCore CoreMotion CoreHaptics
 ApolloReborn_LIBRARIES = z iconv
 # FoundationModels (Apple on-device AI) only ships in the iOS 26+ SDK. Weak-link
 # it so the dylib still loads on older OSes (the Swift bridge guards every call
