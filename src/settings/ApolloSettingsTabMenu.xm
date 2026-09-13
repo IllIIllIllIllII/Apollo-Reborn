@@ -2,7 +2,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
-#import "ApolloBackupRestore.h"
+#import "ApolloAutomaticBackupViewController.h"
 #import "ApolloReportViewController.h"
 #import "ApolloSpinnerViewController.h"
 
@@ -101,27 +101,7 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
     __weak UITabBarController *weakController = controller;
     [menu addAction:[UIAlertAction actionWithTitle:@"Backup Settings" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [weakController dismissViewControllerAnimated:YES completion:^{
-            UIViewController *selected = weakController.selectedViewController;
-            UIViewController *presenter = [selected isKindOfClass:UINavigationController.class]
-                ? ((UINavigationController *)selected).topViewController : selected;
-            if (!presenter || presenter.presentedViewController) return;
-
-            // Use the existing manual backup engine and open Files directly
-            // over the current page; this shortcut does not change tabs.
-            NSError *error = nil;
-            NSURL *archive = ApolloBackupRestoreCreateBackupZip(&error);
-            if (!archive) {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Backup Failed"
-                    message:error.localizedDescription ?: @"Could not create backup archive."
-                    preferredStyle:UIAlertControllerStyleAlert];
-                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                [presenter presentViewController:alert animated:YES completion:nil];
-                return;
-            }
-            UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-                initForExportingURLs:@[archive] asCopy:YES];
-            picker.modalPresentationStyle = UIModalPresentationFormSheet;
-            [presenter presentViewController:picker animated:YES completion:nil];
+            ApolloPushSettingsShortcut(weakController, [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
         }];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Feature Requests" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
