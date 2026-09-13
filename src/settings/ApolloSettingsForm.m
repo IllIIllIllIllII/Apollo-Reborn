@@ -324,7 +324,8 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
 - (void)refreshFormModelAfterRowMove {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
 }
 
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
