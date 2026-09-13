@@ -505,7 +505,7 @@ static UIImage *ApolloSpinnerArtwork(CGFloat scale, NSInteger icon, UIUserInterf
     self.engineRunning = YES;
     if (self.hapticPlayers.count == 3) return;
     NSMutableArray *players = [NSMutableArray array];
-    for (NSNumber *strength in @[@0.10, @0.15, @0.22]) {
+    for (NSNumber *strength in @[@0.18, @0.26, @0.36]) {
         CHHapticEventParameter *intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:strength.floatValue];
         CHHapticEventParameter *sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.45];
         CHHapticEvent *event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient parameters:@[intensity, sharpness] relativeTime:0];
