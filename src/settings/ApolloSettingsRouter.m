@@ -76,7 +76,7 @@ static void ApolloSettingsRouterEnsureRegistry(void) {
         add(@"profile-layout", @"Profile Layout", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloProfileLayoutViewController class]));
         add(@"interface", @"Interface", @"Apollo Reborn → Features", ApolloSettingsInsetGrouped([ApolloInterfaceSettingsViewController class]));
         add(@"notification-backend", @"Notification Backend", @"Apollo Reborn → Advanced", ApolloSettingsInsetGrouped([ApolloNotificationBackendViewController class]));
-        add(@"automatic-backups", @"Automatic Backups", @"Apollo Reborn → Data", ApolloSettingsInsetGrouped([ApolloAutomaticBackupViewController class]));
+        add(@"automatic-backups", @"Backup Settings", @"Apollo Reborn → Data", ApolloSettingsInsetGrouped([ApolloAutomaticBackupViewController class]));
         add(@"saved-categories", @"Saved Categories", @"General → Other", ApolloSettingsInsetGrouped([SavedCategoriesViewController class]));
         add(@"translation", @"Translation", @"General → Other", ApolloSettingsInsetGrouped([TranslationSettingsViewController class]));
         add(@"tag-filters", @"Tag Filters", @"Filters & Blocks", ApolloSettingsInsetGrouped([TagFiltersViewController class]));
