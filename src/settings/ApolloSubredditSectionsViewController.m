@@ -463,14 +463,20 @@ static void ApolloLoadPreviewSubredditIcon(NSString *name, void (^completion)(UI
         UIView *row = blockViews[i];
         UIView *separator = [UIView new];
         separator.tag = 105;
-        separator.backgroundColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+        UIColor *themeSeparator = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+        separator.backgroundColor = ApolloThemeRuntimeColor(ApolloThemeTokenSeparator)
+            ?: [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+                return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+                    ? [themeSeparator resolvedColorWithTraitCollection:traits]
+                    : [UIColor colorWithWhite:0.8 alpha:1.0];
+            }];
         separator.translatesAutoresizingMaskIntoConstraints = NO;
         [row addSubview:separator];
         [NSLayoutConstraint activateConstraints:@[
             [separator.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:18.0],
             [separator.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-state.separatorTrailingInset],
             [separator.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
-            [separator.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
+            [separator.heightAnchor constraintEqualToConstant:1.0],
         ]];
     }
     self.itemViewsByKey = viewsByKey;
