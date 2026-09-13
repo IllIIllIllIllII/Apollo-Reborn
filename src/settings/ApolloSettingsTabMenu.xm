@@ -162,17 +162,6 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
     ApolloLog(@"[SettingsTabMenu] Hold state=%ld", (long)gesture.state);
     if (gesture.state == UIGestureRecognizerStateBegan) {
         objc_setAssociatedObject(self.controller, &kApolloSettingsHoldConsumedTouch, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        // The hold now owns this touch. Cancel Glass's drag selection just as
-        // the account switcher does, so its pressed highlight cannot transfer
-        // to the previously selected tab when the lens returns on release.
-        Class selectionClass = NSClassFromString(@"_UIContinuousSelectionGestureRecognizer");
-        for (UIGestureRecognizer *selection in self.controller.tabBar.gestureRecognizers) {
-            if (selectionClass && [selection isKindOfClass:selectionClass] && selection.enabled) {
-                selection.enabled = NO;
-                selection.enabled = YES;
-                break;
-            }
-        }
         ApolloPresentSettingsTabMenu(self.controller);
     }
 }
