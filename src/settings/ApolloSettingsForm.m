@@ -189,7 +189,7 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
 
 - (void)rebuildForm {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleRows = [self computeVisibleRowsForSections:_sections];
     [self.tableView reloadData];
 }
 
@@ -205,9 +205,9 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     }
 }
 
-- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRows {
-    NSMutableArray *all = [NSMutableArray arrayWithCapacity:_sections.count];
-    for (ApolloSettingsSection *section in _sections) {
+- (NSArray<NSArray<ApolloSettingsRow *> *> *)computeVisibleRowsForSections:(NSArray<ApolloSettingsSection *> *)sections {
+    NSMutableArray *all = [NSMutableArray arrayWithCapacity:sections.count];
+    for (ApolloSettingsSection *section in sections) {
         NSMutableArray *visible = [NSMutableArray arrayWithCapacity:section.rows.count];
         for (ApolloSettingsRow *row in section.rows) {
             if (row.isVisible) [visible addObject:row];
@@ -233,7 +233,7 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 - (void)visibilityDidChange {
     if (!_visibleRows) return;
     NSArray<NSArray<ApolloSettingsRow *> *> *old = _visibleRows;
-    NSArray<NSArray<ApolloSettingsRow *> *> *new_ = [self computeVisibleRows];
+    NSArray<NSArray<ApolloSettingsRow *> *> *new_ = [self computeVisibleRowsForSections:_sections];
 
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *deletes = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSNumber *, NSMutableArray<NSIndexPath *> *> *inserts = [NSMutableDictionary dictionary];
@@ -281,12 +281,12 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
 - (void)refreshFormModelAfterRowMove {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleRows = [self computeVisibleRowsForSections:_sections];
 }
 
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
     _sections = [self buildForm] ?: @[];
-    _visibleRows = [self computeVisibleRows];
+    _visibleRows = [self computeVisibleRowsForSections:_sections];
     for (NSUInteger s = 0; s < _sections.count; s++) {
         for (ApolloSettingsRow *row in _sections[s].rows) {
             if ([row.rowID isEqualToString:rowID]) {
