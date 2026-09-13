@@ -20,6 +20,8 @@ FOUNDATION_EXPORT void ApolloInstallDownItemGeometryHooks(Class buttonClass, Cla
 @property (nonatomic, assign) CGFloat titleAlpha;
 @property (nonatomic, assign) CGFloat expansionProgress; // 0 = compact, 1 = expanded
 @property (nonatomic, readonly) CGRect expandedFrame;
+// Finish only the remaining glass settling when a touch targets visible tabs.
+@property (nonatomic, copy, nullable) void (^finishExpansionForInteraction)(void);
 
 - (CGSize)compactSize;
 - (BOOL)prepareNativeTabBar:(UITabBar *)tabBar;

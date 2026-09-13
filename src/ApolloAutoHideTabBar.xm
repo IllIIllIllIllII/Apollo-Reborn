@@ -617,6 +617,7 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
         [pill layoutIfNeeded];
     }
 
+    pill.finishExpansionForInteraction = nil;
     tabBar.userInteractionEnabled = NO;
     tabBar.accessibilityElementsHidden = YES;
     pill.userInteractionEnabled = YES;
@@ -651,6 +652,15 @@ static void ApolloSetDownPresentation(UITabBarController *tbc, BOOL compact,
             }
         }];
     };
+    if (!compact && canAnimate) {
+        pill.finishExpansionForInteraction = ^{
+            ApolloTabBarRuntimeState *current = ApolloRuntimeState(weakTBC, NO);
+            if (!current || current.presentationGeneration != generation) return;
+            [current.downAnimator invalidate];
+            finish();
+            ApolloLog(@"[AutoHideTabBarFix] Handed expanded Down bar touch to native tabs before spring settled");
+        };
+    }
     if (!canAnimate) {
         finish();
         return;

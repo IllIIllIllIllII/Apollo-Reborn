@@ -404,6 +404,7 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
 }
 
 - (void)restoreNativeTabBar {
+    self.finishExpansionForInteraction = nil;
     UIView *platter = self.nativePlatter;
     UITabBar *bar = self.nativeTabBar;
     if (platter) {
@@ -451,6 +452,23 @@ CGPoint ApolloCompactNativePlatterCenter(UIView *platter, CGPoint proposedCenter
     CGSize text = [self.titleLabel sizeThatFits:CGSizeMake(240.0, 44.0)];
     return CGSizeMake(MAX(96.0, ceil(text.width) + 36.0), MAX(32.0, ceil(text.height) + 14.0));
 }
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    // Icons reach their full geometry/opacity at 0.95, well before the glass
+    // spring ends. Hand this very touch to UIKit instead of consuming it as
+    // another request to expand the already-visible bar. The normal spring
+    // still runs to completion when the user is not interacting.
+    if (!self.hidden && self.userInteractionEnabled && self.alpha > 0.01 &&
+        self.expansionProgress >= 0.95 && self.finishExpansionForInteraction &&
+        [self pointInside:point withEvent:event]) {
+        UITabBar *bar = self.nativeTabBar;
+        CGPoint barPoint = [self convertPoint:point toView:bar];
+        void (^finish)(void) = self.finishExpansionForInteraction;
+        finish();
+        return [bar hitTest:barPoint withEvent:event];
+    }
+    return [super hitTest:point withEvent:event];
+}
+
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
     CGRect hitRect = CGRectInset(self.bounds, 0.0, -MAX(0.0, (44.0 - self.bounds.size.height) / 2.0));
     return CGRectContainsPoint(hitRect, point);
