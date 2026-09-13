@@ -52,6 +52,7 @@ typedef NS_ENUM(NSInteger, ApolloSubredditSectionsPreviewBlockKind) {
 
 // Native RedditListTableViewCell uses a 28 × 28 point subreddit icon.
 static const CGFloat kApolloSectionsPreviewIconSize = 28.0;
+static const CGFloat kApolloSectionsPreviewAccessoryInset = 22.0;
 static const CGFloat kApolloSectionsPreviewBandHeight = 22.0;
 static const CGFloat kApolloSectionsPreviewRowHeight = 30.0;
 static const CGFloat kApolloSectionsPreviewDetailRowHeight = 48.0;
@@ -107,6 +108,7 @@ static ApolloSubredditSectionsPreviewBlock *ApolloSectionsPreviewRow(NSString *k
 @interface ApolloSubredditSectionsPreviewState : NSObject
 @property (nonatomic, copy) NSArray<ApolloSubredditSectionsPreviewBlock *> *blocks;
 @property (nonatomic) CGFloat previewHeight;
+@property (nonatomic) CGFloat separatorTrailingInset;
 @end
 
 @implementation ApolloSubredditSectionsPreviewState
@@ -178,6 +180,14 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
     ApolloSubredditSectionsPreviewState *state = [ApolloSubredditSectionsPreviewState new];
     state.blocks = blocks;
     state.previewHeight = height;
+    state.separatorTrailingInset = sSubredditListEnhancements ? kApolloSectionsPreviewAccessoryInset : 0.0;
+    if (!separate && !modern) {
+        for (ApolloSubredditSectionsPreviewBlock *block in blocks) {
+            if ([block.key isEqualToString:@"row.ukulele"]) {
+                block.signature = [block.signature stringByAppendingFormat:@"|separator:%g", state.separatorTrailingInset];
+            }
+        }
+    }
     return state;
 }
 
@@ -417,7 +427,7 @@ static void ApolloLoadPreviewSubredditIcon(NSString *name, void (^completion)(UI
         star.translatesAutoresizingMaskIntoConstraints = NO;
         [row addSubview:star];
         [constraints addObjectsFromArray:@[
-            [star.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-22.0],
+            [star.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-kApolloSectionsPreviewAccessoryInset],
             [star.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
             [star.widthAnchor constraintEqualToConstant:20.0],
             [star.heightAnchor constraintEqualToConstant:19.0],
@@ -452,12 +462,13 @@ static void ApolloLoadPreviewSubredditIcon(NSString *name, void (^completion)(UI
             state.blocks[i + 1].kind != ApolloSubredditSectionsPreviewBlockKindRow) continue;
         UIView *row = blockViews[i];
         UIView *separator = [UIView new];
+        separator.tag = 105;
         separator.backgroundColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
         separator.translatesAutoresizingMaskIntoConstraints = NO;
         [row addSubview:separator];
         [NSLayoutConstraint activateConstraints:@[
             [separator.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:18.0],
-            [separator.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+            [separator.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-state.separatorTrailingInset],
             [separator.bottomAnchor constraintEqualToAnchor:row.bottomAnchor],
             [separator.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
         ]];
@@ -1793,7 +1804,7 @@ static UIView *ApolloSubredditSectionsSpacerHeader(CGFloat width, CGFloat height
             [slidingRows addObject:clip];
             [slidingIncomingRows addObject:newItem];
             [slideAnimations addObject:^{ clip.frame = newFrame; }];
-            for (NSInteger tag = 101; tag <= 104; tag++) {
+            for (NSInteger tag = 101; tag <= 105; tag++) {
                 UIView *oldPart = [oldItem viewWithTag:tag];
                 UIView *newPart = [newItem viewWithTag:tag];
                 BOOL hadPart = oldPart && !oldPart.hidden;
