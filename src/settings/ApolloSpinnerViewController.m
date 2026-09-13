@@ -4,6 +4,7 @@
 #import <QuartzCore/QuartzCore.h>
 #import "ApolloCommon.h"
 #import "ApolloThemeRuntime.h"
+#import "UserDefaultConstants.h"
 #import "settings/ApolloSpinnerArtwork.gen.h"
 
 // Keep the original icon geometry as vector paths, then rasterize once at the
@@ -69,6 +70,8 @@ static UIImage *ApolloSpinnerArtwork(CGFloat scale, NSInteger icon, UIUserInterf
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    NSInteger savedIcon = [NSUserDefaults.standardUserDefaults integerForKey:UDKeySpinnerSelectedIcon];
+    self.selectedIcon = savedIcon >= 0 && savedIcon < 3 ? savedIcon : 0;
     self.title = @"";
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemGroupedBackgroundColor;
@@ -170,6 +173,9 @@ static UIImage *ApolloSpinnerArtwork(CGFloat scale, NSInteger icon, UIUserInterf
             typeof(self) self = weakSelf;
             if (!self || self.selectedIcon == (NSInteger)index) return;
             self.selectedIcon = index;
+            [NSUserDefaults.standardUserDefaults setInteger:index forKey:UDKeySpinnerSelectedIcon];
+            UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+            [feedback impactOccurredWithIntensity:0.65];
             // Swapping the image preserves the active spin and its endpoint.
             self.artwork.image = ApolloSpinnerArtwork(self.traitCollection.displayScale, index, self.traitCollection.userInterfaceStyle);
             [self updateIconMenu];
@@ -231,8 +237,9 @@ static UIImage *ApolloSpinnerArtwork(CGFloat scale, NSInteger icon, UIUserInterf
                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
                     animations:^{ self.artworkContainer.transform = CGAffineTransformMakeScale(scale, scale); }
                     completion:nil];
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [feedback impactOccurred];
     [self prepareHaptics];
-    [self playHaptic];
 }
 
 - (void)releaseGrab {
@@ -498,7 +505,7 @@ static UIImage *ApolloSpinnerArtwork(CGFloat scale, NSInteger icon, UIUserInterf
     self.engineRunning = YES;
     if (self.hapticPlayers.count == 3) return;
     NSMutableArray *players = [NSMutableArray array];
-    for (NSNumber *strength in @[@0.25, @0.4, @0.55]) {
+    for (NSNumber *strength in @[@0.08, @0.12, @0.18]) {
         CHHapticEventParameter *intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:strength.floatValue];
         CHHapticEventParameter *sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.45];
         CHHapticEvent *event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient parameters:@[intensity, sharpness] relativeTime:0];

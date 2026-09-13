@@ -1,4 +1,6 @@
 // UserDefaults keys
+// Last spinner artwork: 0 Apollo (default), 1 Helios, 2 Stanley.
+static NSString *const UDKeySpinnerSelectedIcon = @"SpinnerSelectedIcon";
 static NSString *const UDKeyRedditClientId = @"RedditApiClientId";
 // Reddit OAuth client secret. Empty for installed-app credentials; required
 // when the self-hosted notification backend stores per-account creds and
