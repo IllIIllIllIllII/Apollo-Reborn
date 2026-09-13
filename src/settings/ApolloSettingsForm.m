@@ -279,6 +279,11 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
 // the table's counts desync and the next batch update throws. If other sections
 // may have changed, use -rebuildForm or follow with -visibilityDidChange.
 // Falls back to a full reload when the row ID isn't found in the rebuilt model.
+- (void)refreshFormModelAfterRowMove {
+    _sections = [self buildForm] ?: @[];
+    _visibleRows = [self computeVisibleRows];
+}
+
 - (void)rebuildSectionContainingRowID:(NSString *)rowID withRowAnimation:(UITableViewRowAnimation)animation {
     _sections = [self buildForm] ?: @[];
     _visibleRows = [self computeVisibleRows];

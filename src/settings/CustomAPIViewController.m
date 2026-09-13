@@ -2430,19 +2430,19 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
-    // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
+    // Pushes the dedicated Subreddit List screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
     ApolloSettingsRow *subredditSections =
         [self hubDisclosureRowWithID:@"sub.sections"
-                                title:@"Subreddit Sections"
+                                title:@"Subreddit List"
                              subtitle:^NSString * { return [weakSelf subredditSectionsSummaryText]; }
                                  push:^UIViewController * {
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
     return [ApolloSettingsSection sectionWithTitle:nil
-                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit Sections arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
+                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit List arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
                                               rows:@[ feedShortcuts, subredditSections, subredditLayout ]];
 }
 
@@ -2507,7 +2507,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // Only the Rows layout has room for a subtitle under each shortcut, so
     // the descriptions switch rides along with the layout picker (it hides
     // with any other layout). Hide Multireddit Descriptions lives on the
-    // Subreddit Sections screen beside its preview.
+    // Subreddit List screen beside its preview.
     ApolloSettingsRow *hideFeedDescriptions =
         [ApolloSettingsRow switchRowWithID:@"sub.hideFeedDescriptions"
                                      title:@"Hide Feed Descriptions"
@@ -4073,7 +4073,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 
 // Subreddit List Enhancements, Modern Subreddit Dividers and Hide Multireddit
-// Descriptions live on the Subreddit Sections screen now
+// Descriptions live on the Subreddit List screen now
 // (ApolloSubredditSectionsViewController), beside the live preview that shows
 // what they change.
 
@@ -4518,7 +4518,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Refresh the Subreddit Sections summary after returning from that screen
+    // Refresh the Subreddit List summary after returning from that screen
     // (the order / Following toggle may have just changed).
     [self reloadRowWithID:@"sub.sections"];
     // Account changes can select a different alphabetical-sorting preference.
@@ -4608,7 +4608,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     if (liquidGlass) {
         titleLabel.text = @"Preview";
-        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
+        // Match the semibold inset-grouped section titles beneath the preview.
+        UIFont *titleFont = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
         titleLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
             scaledFontForFont:titleFont];
     } else {
