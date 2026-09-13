@@ -16,6 +16,7 @@ static void ApolloSettingsMenuHaptic(void) {
 // until the next tab touch (or an explicit shortcut), since Glass can deliver
 // its selection callback after the hold recognizer has already ended.
 static char kApolloSettingsHoldConsumedTouch;
+static char kApolloSettingsMenuBackdrop;
 static void ApolloClearConsumedSettingsTouch(UITabBarController *controller) {
     if (controller) objc_setAssociatedObject(controller, &kApolloSettingsHoldConsumedTouch, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -101,6 +102,8 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
     UIView *tab = ApolloSettingsTabView(controller);
     UIAlertController *menu = [UIAlertController alertControllerWithTitle:nil message:nil
         preferredStyle:UIAlertControllerStyleActionSheet];
+    // Mark only our menu; other alerts keep their native presentation.
+    objc_setAssociatedObject(menu, &kApolloSettingsMenuBackdrop, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     __weak UITabBarController *weakController = controller;
     [menu addAction:[UIAlertAction actionWithTitle:@"Backup Settings" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         ApolloSettingsMenuHaptic();
@@ -198,5 +201,38 @@ static char kApolloSettingsTabHold;
         return NO;
     }
     return %orig(controller, viewController);
+}
+%end
+
+// Glass action-sheet popovers have a transparent backdrop. Match the account
+// switcher's 40% black scrim without changing UIKit's outside-tap handling.
+%hook UIAlertController
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (!IsLiquidGlass() || !objc_getAssociatedObject(self, &kApolloSettingsMenuBackdrop)) return;
+    UIView *container = self.presentationController.containerView;
+    if (!container) return;
+    UIView *backdrop = [[UIView alloc] initWithFrame:container.bounds];
+    backdrop.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    backdrop.userInteractionEnabled = NO;
+    backdrop.backgroundColor = [UIColor colorWithWhite:0 alpha:0.4];
+    backdrop.alpha = 0;
+    [container insertSubview:backdrop atIndex:0];
+    objc_setAssociatedObject(self, &kApolloSettingsMenuBackdrop, backdrop, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (![self.transitionCoordinator animateAlongsideTransition:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+        backdrop.alpha = 1;
+    } completion:nil]) backdrop.alpha = 1;
+}
+- (void)viewWillDisappear:(BOOL)animated {
+    %orig;
+    id value = objc_getAssociatedObject(self, &kApolloSettingsMenuBackdrop);
+    if (![value isKindOfClass:UIView.class]) return;
+    UIView *backdrop = value;
+    if (![self.transitionCoordinator animateAlongsideTransition:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+        backdrop.alpha = 0;
+    } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        if (context.isCancelled) backdrop.alpha = 1;
+        else [backdrop removeFromSuperview];
+    }]) [backdrop removeFromSuperview];
 }
 %end
