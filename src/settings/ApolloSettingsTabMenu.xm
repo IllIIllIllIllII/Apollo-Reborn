@@ -6,6 +6,12 @@
 #import "ApolloReportViewController.h"
 #import "ApolloSpinnerViewController.h"
 
+// Match the account switcher's medium impact for deliberate menu actions.
+static void ApolloSettingsMenuHaptic(void) {
+    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [feedback impactOccurred];
+}
+
 // A recognized hold owns that touch through its release. Keep this marker
 // until the next tab touch (or an explicit shortcut), since Glass can deliver
 // its selection callback after the hold recognizer has already ended.
@@ -14,47 +20,44 @@ static void ApolloClearConsumedSettingsTouch(UITabBarController *controller) {
     if (controller) objc_setAssociatedObject(controller, &kApolloSettingsHoldConsumedTouch, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Liquid Glass replaces the legacy tab buttons. Locate the live controls
-// through the tab bar hierarchy, using the controller order for their identity.
-static void ApolloCollectTabButtons(UIView *view, NSMutableArray<UIView *> *buttons) {
-    if (view.hidden || view.alpha <= 0.01) return;
-    NSString *name = NSStringFromClass(view.class);
-    if ([view isKindOfClass:UIControl.class] &&
-        ([name containsString:@"TabButton"] || [name containsString:@"TabBarButton"])) {
-        if (!view.hidden && view.alpha > 0.01) [buttons addObject:view];
-        return;
+// Identify the native item rather than waiting for Glass's normal and lens
+// copies to finish animating into matching positions after the bar expands.
+static id ApolloSettingsObjectForSelector(id object, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    return [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
+}
+
+static UIView *ApolloFindSettingsItemView(UIView *view, UITabBarItem *settingsItem) {
+    if (view.hidden || view.alpha <= 0.01) return nil;
+    id item = ApolloSettingsObjectForSelector(view, @"item");
+    if (item == settingsItem || ApolloSettingsObjectForSelector(item, @"_linkedTabBarItem") == settingsItem) return view;
+    for (UIView *child in view.subviews) {
+        UIView *match = ApolloFindSettingsItemView(child, settingsItem);
+        if (match) return match;
     }
-    for (UIView *child in view.subviews) ApolloCollectTabButtons(child, buttons);
+    return nil;
 }
 
 static UIView *ApolloSettingsTabView(UITabBarController *controller) {
-    NSUInteger index = NSNotFound;
-    for (NSUInteger i = 0; i < controller.viewControllers.count; i++) {
-        UIViewController *child = controller.viewControllers[i];
+    UITabBarItem *settingsItem = nil;
+    for (UIViewController *child in controller.viewControllers) {
         UIViewController *root = [child isKindOfClass:UINavigationController.class]
             ? ((UINavigationController *)child).viewControllers.firstObject : child;
-        if ([NSStringFromClass(root.class) containsString:@"SettingsViewController"]) { index = i; break; }
+        if ([NSStringFromClass(root.class) containsString:@"SettingsViewController"]) {
+            NSUInteger index = [controller.viewControllers indexOfObjectIdenticalTo:child];
+            settingsItem = index < controller.tabBar.items.count ? controller.tabBar.items[index] : child.tabBarItem;
+            break;
+        }
     }
-    if (index == NSNotFound) return nil;
-    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
-    ApolloCollectTabButtons(controller.tabBar, buttons);
-    [buttons sortUsingComparator:^NSComparisonResult(UIView *a, UIView *b) {
-        CGFloat ax = [a convertPoint:CGPointMake(CGRectGetMidX(a.bounds), CGRectGetMidY(a.bounds)) toView:controller.tabBar].x;
-        CGFloat bx = [b convertPoint:CGPointMake(CGRectGetMidX(b.bounds), CGRectGetMidY(b.bounds)) toView:controller.tabBar].x;
-        return ax < bx ? NSOrderedAscending : ax > bx ? NSOrderedDescending : NSOrderedSame;
-    }];
-    // Glass renders a second set of buttons inside its selection lens.
-    // Collapse those copies by their shared on-screen item position.
-    NSMutableArray<UIView *> *items = [NSMutableArray array];
-    CGFloat previousX = -CGFLOAT_MAX;
-    for (UIView *button in buttons) {
-        CGFloat x = [button convertPoint:CGPointMake(CGRectGetMidX(button.bounds), CGRectGetMidY(button.bounds)) toView:controller.tabBar].x;
-        if (fabs(x - previousX) > 2) { [items addObject:button]; previousX = x; }
-    }
-    buttons = items;
-    if (buttons.count != controller.viewControllers.count) return nil;
-    if (controller.tabBar.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft) index = buttons.count - 1 - index;
-    return buttons[index];
+    if (!settingsItem) return nil;
+    UIView *button = ApolloSettingsObjectForSelector(settingsItem, @"_tabBarButton");
+    if ([button isKindOfClass:UIView.class] && [button isDescendantOfView:controller.tabBar] &&
+        !button.hidden && button.alpha > 0.01) return button;
+    Ivar viewIvar = class_getInstanceVariable(settingsItem.class, "_view");
+    UIView *itemView = viewIvar ? object_getIvar(settingsItem, viewIvar) : nil;
+    if ([itemView isKindOfClass:UIView.class] && [itemView isDescendantOfView:controller.tabBar] &&
+        !itemView.hidden && itemView.alpha > 0.01) return itemView;
+    return ApolloFindSettingsItemView(controller.tabBar, settingsItem);
 }
 
 static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewController *screen) {
@@ -100,11 +103,13 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak UITabBarController *weakController = controller;
     [menu addAction:[UIAlertAction actionWithTitle:@"Backup Settings" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        ApolloSettingsMenuHaptic();
         [weakController dismissViewControllerAnimated:YES completion:^{
             ApolloPushSettingsShortcut(weakController, [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
         }];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Feature Requests" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        ApolloSettingsMenuHaptic();
         // Present after the sheet has dismissed, using the same browser as About.
         [weakController dismissViewControllerAnimated:YES completion:^{
             UIViewController *selected = weakController.selectedViewController;
@@ -114,11 +119,13 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
         }];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Bug Reports" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        ApolloSettingsMenuHaptic();
         [weakController dismissViewControllerAnimated:YES completion:^{
             ApolloPushSettingsShortcut(weakController, [[ApolloReportViewController alloc] init]);
         }];
     }]];
     [menu addAction:[UIAlertAction actionWithTitle:@"Spinner" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        ApolloSettingsMenuHaptic();
         [weakController dismissViewControllerAnimated:YES completion:^{
             // Intentionally not a settings route: only this hold menu opens it.
             ApolloPushSettingsShortcut(weakController, [[ApolloSpinnerViewController alloc] init]);
@@ -127,6 +134,7 @@ static void ApolloPresentSettingsTabMenu(UITabBarController *controller) {
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     menu.popoverPresentationController.sourceView = tab ?: controller.tabBar;
     menu.popoverPresentationController.sourceRect = (tab ?: controller.tabBar).bounds;
+    ApolloSettingsMenuHaptic();
     [controller presentViewController:menu animated:YES completion:nil];
     ApolloLog(@"[SettingsTabMenu] Presented shortcuts");
 }
