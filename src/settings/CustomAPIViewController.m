@@ -1061,6 +1061,40 @@ typedef NS_ENUM(NSInteger, Tag) {
     }];
 }
 
+// Compact disclosure row for settings hubs where the current value belongs on
+// the trailing edge instead of wrapping beneath the navigation title.
+- (ApolloSettingsRow *)hubValueDisclosureRowWithID:(NSString *)rowID
+                                             title:(NSString *)title
+                                             value:(NSString * (^)(void))value
+                                              push:(UIViewController * (^)(void))makeVC {
+    __weak typeof(self) weakSelf = self;
+    NSString *reuseID = [@"Cell_HubValue_" stringByAppendingString:rowID];
+    return [ApolloSettingsRow customRowWithID:rowID
+                                         cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:reuseID];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+            cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        }
+        cell.textLabel.text = title;
+        cell.detailTextLabel.text = value ? value() : nil;
+        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+        return cell;
+    }
+                                     onSelect:^{
+        UIViewController *vc = makeVC();
+        if (!vc) return;
+        if (weakSelf.navigationController) {
+            [weakSelf.navigationController pushViewController:vc animated:YES];
+        } else {
+            UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:vc];
+            [weakSelf presentViewController:navigation animated:YES completion:nil];
+        }
+    }];
+}
+
 - (ApolloSettingsSection *)buildSetupSection {
     ApolloSettingsRow *apiKeys =
         [self hubDisclosureRowWithID:@"setup.apiKeys"
@@ -2411,22 +2445,22 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     __weak typeof(self) weakSelf = self;
 
     ApolloSettingsRow *feedShortcuts =
-        [self hubDisclosureRowWithID:@"sub.feedShortcuts"
-                               title:@"Feed Shortcuts"
-                            subtitle:^NSString * {
+        [self hubValueDisclosureRowWithID:@"sub.feedShortcuts"
+                                    title:@"Feed Shortcuts"
+                                    value:^NSString * {
             return [NSString stringWithFormat:@"%@ · %@",
                     [weakSelf subredditFeedIconStyleText],
                     [weakSelf subredditFeedLayoutText]];
         }
-                                push:^UIViewController * {
+                                     push:^UIViewController * {
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
     ApolloSettingsRow *subredditLayout =
-        [self hubDisclosureRowWithID:@"sub.layout"
-                                title:@"Subreddit Layout"
-                             subtitle:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
-                                 push:^UIViewController * {
+        [self hubValueDisclosureRowWithID:@"sub.layout"
+                                    title:@"Subreddit Layout"
+                                    value:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
+                                     push:^UIViewController * {
             return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
@@ -2434,10 +2468,10 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
     ApolloSettingsRow *subredditSections =
-        [self hubDisclosureRowWithID:@"sub.sections"
-                                title:@"Subreddit Sections"
-                             subtitle:^NSString * { return [weakSelf subredditSectionsSummaryText]; }
-                                 push:^UIViewController * {
+        [self hubValueDisclosureRowWithID:@"sub.sections"
+                                    title:@"Subreddit Sections"
+                                    value:nil
+                                     push:^UIViewController * {
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
@@ -2586,16 +2620,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-- (NSString *)subredditSectionsSummaryText {
-    BOOL separate = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySeparateFollowedUsers];
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    for (NSString *token in ApolloSubredditSectionsResolvedOrder()) {
-        if (!separate && [token isEqualToString:ApolloSubredditSectionTokenFollowing]) continue;
-        [parts addObject:ApolloSubredditSectionDisplayName(token)];
-    }
-    return [parts componentsJoinedByString:@" · "];
-}
-
 - (ApolloSettingsSection *)buildSubredditsFavoritesSection {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *perAccountFavorites =
@@ -2620,20 +2644,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 
 - (NSString *)subredditLayoutSummaryText {
     if (!sShowSubredditHeaders) return @"Native";
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sSubredditHeaderImmersive ? @"Immersive" : @"Compact"];
-    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-    if (!sSubredditShowBanner) [hidden addObject:@"Banner"];
-    if (!sSubredditShowJoinButton) [hidden addObject:@"Join Button"];
-    if (!sSubredditShowUserFlairButton) [hidden addObject:@"User Flair Button"];
-    if (!sSubredditShowSidebarButton) [hidden addObject:@"Sidebar Button"];
-    if (!sSubredditShowDisplayName) [hidden addObject:@"Subreddit Name"];
-    if (!sSubredditShowSubtitle) [hidden addObject:@"Subtitle"];
-    if (!sSubredditShowDescription) [hidden addObject:@"Description"];
-    if (hidden.count > 0) {
-        [parts addObject:[NSString stringWithFormat:@"%@ off", [hidden componentsJoinedByString:@", "]]];
-    }
-    return [parts componentsJoinedByString:@" · "];
+    return sSubredditHeaderImmersive ? @"Immersive" : @"Compact";
 }
 
 - (ApolloSettingsSection *)buildSubredditsSourcesSection {
