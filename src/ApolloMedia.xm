@@ -36,10 +36,9 @@ static NSString *const StreamableRegexPatternWithQueryString = @"^(?:(?:https?:)
 static const void *kApolloRouteIconRepairLoggedKey = &kApolloRouteIconRepairLoggedKey;
 static const void *kApolloRouteButtonStyleLoggedKey = &kApolloRouteButtonStyleLoggedKey;
 
-// Apollo 1.15.11's media presenter starts with opaque black, while the account
-// switcher's DarkOverlayPresentationController uses black at 0.4 (0x1006c5954).
-// Keep opacity in the color so Apollo's existing alpha animations still use
-// their full 0...1 range, including the spring back after a cancelled drag.
+// The presentation layer owns the entire background fade. Its solid black
+// color hides the feed at rest, while view alpha supplies the smooth opening,
+// drag, dismissal, and cancelled-drag transitions.
 static UIView *ApolloMediaPresentationView(id owner, const char *name) {
     Ivar ivar = class_getInstanceVariable([owner class], name);
     id value = ivar ? object_getIvar(owner, ivar) : nil;
@@ -74,7 +73,7 @@ static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
 
 - (void)presentationTransitionWillBegin {
     UIView *dim = ApolloMediaPresentationView(self, "dimmingView");
-    dim.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.4];
+    dim.backgroundColor = UIColor.blackColor;
     %orig;
 }
 
