@@ -2435,14 +2435,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
     ApolloSettingsRow *subredditSections =
         [self hubDisclosureRowWithID:@"sub.sections"
-                                title:@"Subreddit List"
+                                title:@"Subreddit Sections"
                              subtitle:^NSString * { return [weakSelf subredditSectionsSummaryText]; }
                                  push:^UIViewController * {
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
     return [ApolloSettingsSection sectionWithTitle:nil
-                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit List arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
+                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit Sections arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
                                               rows:@[ feedShortcuts, subredditSections, subredditLayout ]];
 }
 
