@@ -1134,10 +1134,10 @@ typedef NS_ENUM(NSInteger, Tag) {
             return [[ApolloSubredditsSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
     ApolloSettingsRow *profileLayout =
-        [self hubDisclosureRowWithID:@"feat.profileLayout"
-                               title:@"Profile Layout"
-                            subtitle:^NSString * { return [weakSelf profileLayoutSummaryText]; }
-                                push:^UIViewController * {
+        [self hubValueDisclosureRowWithID:@"feat.profileLayout"
+                                    title:@"Profile Layout"
+                                    value:^NSString * { return [weakSelf profileLayoutSummaryText]; }
+                                     push:^UIViewController * {
             return [[ApolloProfileLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
     ApolloSettingsRow *interface_ =
@@ -1751,10 +1751,10 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf textPostThumbnailsSwitchToggled:sender]; }];
 
     ApolloSettingsRow *infoRow =
-        [self hubDisclosureRowWithID:@"feat.infoRow"
-                               title:@"Info Row"
-                            subtitle:^NSString * { return [weakSelf infoRowSummaryText]; }
-                                push:^UIViewController * {
+        [self hubValueDisclosureRowWithID:@"feat.infoRow"
+                                    title:@"Info Row"
+                                    value:^NSString * { return [weakSelf infoRowSummaryText]; }
+                                     push:^UIViewController * {
             return [[InfoRowSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
@@ -2061,22 +2061,21 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             if (!cell) {
                 // Match the standard disclosure-row behavior used by API setup and
                 // other navigable settings: UIKit owns the chevron and the full row.
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
                                               reuseIdentifier:@"Cell_ApolloAI"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
             cell.textLabel.text = @"Apollo AI";
-            NSString *activeProviderName = @"On-device AI";
-            if ([sAISummaryProvider isEqualToString:@"openrouter"]) activeProviderName = @"OpenRouter AI";
-            else if ([sAISummaryProvider isEqualToString:@"gemini"]) activeProviderName = @"Gemini AI";
-            else if ([sAISummaryProvider isEqualToString:@"custom"]) activeProviderName = @"Custom cloud AI";
-            cell.detailTextLabel.text = sEnableAISummaries
-                ? [NSString stringWithFormat:@"%@ enabled", activeProviderName]
-                : @"On-device or cloud summaries and generation settings";
+            NSString *activeProviderName = @"On-device";
+            if ([sAISummaryProvider isEqualToString:@"openrouter"]) activeProviderName = @"OpenRouter";
+            else if ([sAISummaryProvider isEqualToString:@"gemini"]) activeProviderName = @"Gemini";
+            else if ([sAISummaryProvider isEqualToString:@"custom"]) activeProviderName = @"Custom";
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ · %@",
+                                         sEnableAISummaries ? @"On" : @"Off",
+                                         activeProviderName];
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2095,7 +2094,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_InlineMedia"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_InlineMedia"];
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_InlineMedia"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
@@ -2117,8 +2116,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             }
             cell.detailTextLabel.text = detail;
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2147,7 +2145,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_LinkPreviews"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_LinkPreviews"];
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_LinkPreviews"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
@@ -2160,8 +2158,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                          [weakSelf linkPreviewModeTextForMode:sLinkPreviewCommentsMode],
                                          colorText];
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2178,15 +2175,14 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       cell:^UITableViewCell *(UITableView *tableView, __unused ApolloSettingsRow *row) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell_Polls"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"Cell_Polls"];
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"Cell_Polls"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.selectionStyle = UITableViewCellSelectionStyleDefault;
             }
             cell.textLabel.text = @"Polls";
             cell.detailTextLabel.text = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPollsEnabled] ? @"On" : @"Off";
             cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-            cell.detailTextLabel.numberOfLines = 0;
-            cell.detailTextLabel.lineBreakMode = NSLineBreakByWordWrapping;
+            cell.detailTextLabel.numberOfLines = 1;
             [weakSelf apollo_applyPrimaryTextColorToCell:cell];
             return cell;
         }
@@ -2427,14 +2423,6 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         case 1:  [parts addObject:@"Circle"]; break;
         case 2:  [parts addObject:@"Square"]; break;
         default: [parts addObject:@"Full"]; break;
-    }
-    NSInteger hiddenCount = (!sProfileShowBanner ? 1 : 0)
-        + (!sProfileShowStatCards ? 1 : 0)
-        + (!sProfileShowSocialLinks ? 1 : 0)
-        + (!sBadgeBookEnabled ? 1 : 0)
-        + (!sProfileShowActions ? 1 : 0);
-    if (hiddenCount > 0) {
-        [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
     }
     return [parts componentsJoinedByString:@" · "];
 }
