@@ -46,6 +46,30 @@ static UIView *ApolloMediaPresentationView(id owner, const char *name) {
     return [value isKindOfClass:UIView.class] ? value : nil;
 }
 
+// Only the viewer's plain UIView wrapper uses this subclass; no extra ivars
+// and no global UIView hook. Apollo paints it black when loading media
+// (0x10034a064) and again after a cancelled pan (0x10036053c). That opaque
+// fill covers the presenter's animated dimming layer and causes a brightness
+// jump when the opening animation hands over to the real viewer. Keep the
+// wrapper transparent for its lifetime so cancellation cannot bring it back.
+@interface ApolloMediaTransparentWrapperView : UIView
+@end
+
+@implementation ApolloMediaTransparentWrapperView
+- (void)setBackgroundColor:(UIColor *)color {
+    [super setBackgroundColor:UIColor.clearColor];
+}
+@end
+
+static void ApolloMediaPrepareTransparentWrapper(UIViewController *viewer) {
+    UIView *wrapper = ApolloMediaPresentationView(viewer, "wrapperView");
+    if (object_getClass(wrapper) != UIView.class) return;
+    object_setClass(wrapper, ApolloMediaTransparentWrapperView.class);
+    wrapper.opaque = NO;
+    wrapper.backgroundColor = UIColor.clearColor;
+    ApolloLogDebug(@"[MediaBackdrop] transparent media wrapper installed");
+}
+
 %hook _TtC6Apollo33MediaViewerPresentationController
 
 - (void)presentationTransitionWillBegin {
@@ -115,6 +139,11 @@ static UIView *ApolloMediaPresentationView(id owner, const char *name) {
 %end
 
 %hook _TtC6Apollo21MediaViewerController
+
+- (void)viewDidLoad {
+    %orig;
+    ApolloMediaPrepareTransparentWrapper((UIViewController *)self);
+}
 
 - (void)scrollViewPanned:(UIPanGestureRecognizer *)recognizer {
     %orig;
