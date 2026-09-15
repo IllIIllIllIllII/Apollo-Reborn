@@ -105,7 +105,8 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)identifier {
     if ((self = [super initWithStyle:style reuseIdentifier:identifier])) {
         self.authorLabel = [UILabel new];
-        self.authorLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        self.authorLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
+            scaledFontForFont:[UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular]];
         self.authorLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         self.authorLabel.numberOfLines = 1;
         [self.authorLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
@@ -119,7 +120,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
         self.avatarView = [UIImageView new];
         self.avatarView.contentMode = UIViewContentModeScaleAspectFill;
         self.avatarView.clipsToBounds = YES;
-        self.avatarView.layer.cornerRadius = 9.0;
+        self.avatarView.layer.cornerRadius = 12.0;
         ApolloHiddenContextLabel *flair = [ApolloHiddenContextLabel new];
         flair.textInsets = UIEdgeInsetsMake(1, 5, 1, 5);
         flair.layer.cornerRadius = 4;
@@ -145,6 +146,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
         identity.axis = UILayoutConstraintAxisHorizontal;
         identity.alignment = UIStackViewAlignmentCenter;
         identity.spacing = 6;
+        [identity setCustomSpacing:8 afterView:self.authorLabel];
         UIStackView *status = [[UIStackView alloc] initWithArrangedSubviews:@[self.statusLeadingSpacer, self.reasonAttributionLabel, self.reasonLabel, self.dateLabel]];
         status.axis = UILayoutConstraintAxisHorizontal;
         status.alignment = UIStackViewAlignmentCenter;
@@ -153,10 +155,10 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
         self.headerStack.axis = UILayoutConstraintAxisHorizontal;
         self.headerStack.alignment = UIStackViewAlignmentCenter;
         self.headerStack.spacing = 6;
-        NSLayoutConstraint *avatarWidth = [self.avatarView.widthAnchor constraintEqualToConstant:18];
+        NSLayoutConstraint *avatarWidth = [self.avatarView.widthAnchor constraintEqualToConstant:24];
         avatarWidth.priority = UILayoutPriorityRequired;
         avatarWidth.active = YES;
-        [self.avatarView.heightAnchor constraintEqualToConstant:18].active = YES;
+        [self.avatarView.heightAnchor constraintEqualToConstant:24].active = YES;
         self.bodyLabel = [UILabel new];
         self.bodyLabel.numberOfLines = 0;
         self.bodyLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
@@ -243,7 +245,14 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     self.contextLabel.backgroundColor = contextColor;
     self.bodyLabel.textColor = ApolloThemeSubredditListTextColor() ?: UIColor.labelColor;
     self.authorLabel.textColor = self.bodyLabel.textColor;
-    self.dateLabel.textColor = UIColor.secondaryLabelColor;
+    UIColor *metadataColor = ApolloThemeSubredditListSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+    self.dateLabel.textColor = metadataColor;
+    self.voteKindLabel.textColor = metadataColor;
+    if (self.voteKindLabel.attributedText.length) {
+        NSMutableAttributedString *text = [self.voteKindLabel.attributedText mutableCopy];
+        [text addAttribute:NSForegroundColorAttributeName value:metadataColor range:NSMakeRange(0, text.length)];
+        self.voteKindLabel.attributedText = text;
+    }
 }
 - (void)apollo_updateHeaderLayout {
     BOOL accessibility = UIContentSizeCategoryIsAccessibilityCategory(self.traitCollection.preferredContentSizeCategory);
@@ -334,8 +343,8 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     NSString *kindLabel = item.kind == ApolloHiddenContentKindComment ? @"Comment" : @"Post";
     NSInteger score = item.score.integerValue;
     NSString *voteText = score < 0
-        ? [NSString stringWithFormat:@"↓%lu", (unsigned long)labs((long)score)]
-        : [NSString stringWithFormat:@"↑%ld", (long)score];
+        ? [NSString stringWithFormat:@"↓ %lu", (unsigned long)labs((long)score)]
+        : [NSString stringWithFormat:@"↑ %ld", (long)score];
     self.authorLabel.text = author;
     self.authorLabel.accessibilityLabel = author;
     NSString *voteKindText = item.score
@@ -343,7 +352,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
         : kindLabel;
     NSMutableAttributedString *attributedVoteKind = [[NSMutableAttributedString alloc] initWithString:voteKindText attributes:@{
         NSFontAttributeName: self.voteKindLabel.font,
-        NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+        NSForegroundColorAttributeName: self.dateLabel.textColor ?: UIColor.secondaryLabelColor,
     }];
     NSRange kindRange = [voteKindText rangeOfString:kindLabel options:NSBackwardsSearch];
     if (kindRange.location != NSNotFound) {
@@ -395,7 +404,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     paragraph.paragraphSpacing = 8;
     NSMutableAttributedString *preview = [[NSMutableAttributedString alloc] initWithString:context attributes:@{
         NSFontAttributeName: self.contextLabel.font,
-        NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+        NSForegroundColorAttributeName: self.dateLabel.textColor ?: UIColor.secondaryLabelColor,
     }];
     if (contextTitle.length && subreddit.length) {
         [preview addAttribute:NSParagraphStyleAttributeName value:paragraph range:NSMakeRange(0, contextTitle.length + 1)];
@@ -410,7 +419,7 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     // Read the shared preference whenever a row is configured, including
     // when returning from settings. Compact Full avatars keep a circular crop.
     NSInteger avatarStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyProfileAvatarStyle];
-    self.avatarView.layer.cornerRadius = avatarStyle == 2 ? 18.0 * 0.24 : 9.0;
+    self.avatarView.layer.cornerRadius = avatarStyle == 2 ? 24.0 * 0.24 : 12.0;
     self.avatarView.hidden = ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     self.avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
     self.avatarView.tintColor = ApolloThemeAccentColor() ?: self.tintColor;
