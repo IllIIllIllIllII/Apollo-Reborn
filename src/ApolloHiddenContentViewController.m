@@ -436,17 +436,17 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     }
     self.mediaImageViews = imageViews;
     [self.mediaScrollView setContentOffset:CGPointZero animated:NO];
-    CGFloat availableWidth = CGRectGetWidth(self.contentView.bounds) - 24;
-    if (availableWidth <= 0) availableWidth = CGRectGetWidth(UIScreen.mainScreen.bounds) - 24;
+    // Derive media height from the final laid-out feed width, not a reused
+    // cell's creation-time bounds. A fixed height computed during configure
+    // could leave side gutters until navigation forced another layout pass.
+    // Do not cap portrait height: fit the full image to the feed width.
     CGFloat ratio = item.previewAspectRatio;
-    // Match the visual weight of media in Apollo's regular feed. The previous
-    // 320-point ceiling made portrait images look like small previews; keep
-    // the archived aspect ratio and cap only exceptionally tall media to a
-    // screen-aware feed height. Unknown dimensions get a square feed frame.
-    CGFloat maximumFeedHeight = MIN(availableWidth * 1.5, CGRectGetHeight(UIScreen.mainScreen.bounds) * 0.72);
-    self.previewHeight.constant = ratio >= 0.1 && ratio <= 10.0
-        ? MAX(120, MIN(maximumFeedHeight, availableWidth / ratio))
-        : MIN(availableWidth, maximumFeedHeight);
+    if (!isfinite(ratio) || ratio < 0.1 || ratio > 10.0) ratio = 1.0;
+    self.previewHeight.active = NO;
+    self.previewHeight = [self.mediaContainerView.heightAnchor
+        constraintEqualToAnchor:self.mediaContainerView.widthAnchor multiplier:1.0 / ratio];
+    self.previewHeight.priority = UILayoutPriorityRequired - 1;
+    self.previewHeight.active = YES;
     self.mediaLabel.text = mediaURLs.count > 1 ? [NSString stringWithFormat:@"1 / %lu", (unsigned long)mediaURLs.count] : @"Loading image…";
     self.mediaLabel.hidden = NO;
     self.mediaContainerView.hidden = mediaURLs.count == 0;
