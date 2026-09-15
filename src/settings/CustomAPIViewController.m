@@ -909,6 +909,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"interface.hideBarsOnScroll"];
     [self reloadRowWithID:@"interface.hideTopBarToo"];
     [self reloadRowWithID:@"interface.tabBarScrollBehavior"];
+    [self reloadRowWithID:@"interface.avatarShape"];
     // Refresh the Profile Layout summary after returning from that screen
     // (Density/Avatar/band switches may have just changed).
     [self reloadRowWithID:@"feat.profileLayout"];
@@ -1935,8 +1936,23 @@ typedef NS_ENUM(NSInteger, Tag) {
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf userAvatarsSwitchToggled:sender]; }];
 
+    ApolloSettingsRow *avatarShape =
+        [ApolloSettingsRow valueRowWithID:@"interface.avatarShape"
+                                    title:@"Profile Picture Shape"
+                                   detail:^NSString * { return [weakSelf profilePictureShapeText]; }
+                                 onSelect:^{
+            [weakSelf presentProfilePictureShapePickerFromSourceView:
+                [weakSelf cellForRowID:@"interface.avatarShape"]];
+        }];
+    avatarShape.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
+
+    // "Color Flairs" now rides Appearance → Flair (native injection) —
+    // -flairColorsSwitchToggled: below stays as the shared toggle handler.
+
     return [ApolloSettingsSection sectionWithTitle:@"Display"
-        footer:@"Show profile pictures beside usernames throughout Apollo." rows:@[userAvatars]];
+        footer:@"Show profile pictures beside usernames throughout Apollo." rows:@[ userAvatars, avatarShape ]];
 }
 
 - (ApolloSettingsSection *)buildInterfaceHeaderSection {
@@ -2478,6 +2494,34 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [parts addObject:[NSString stringWithFormat:@"%ld hidden", (long)hiddenCount]];
     }
     return [parts componentsJoinedByString:@" · "];
+}
+
+- (NSString *)profilePictureShapeText {
+    switch (sProfileAvatarStyle) {
+        case 1:  return @"Circle";
+        case 2:  return @"Square";
+        default: return @"Full";
+    }
+}
+
+- (void)presentProfilePictureShapePickerFromSourceView:(UIView *)sourceView {
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPicker(self, sourceView, @"Profile Picture Shape",
+                                @[@"Full", @"Circle", @"Square"],
+                                sProfileAvatarStyle, ^(NSInteger pickedIndex) {
+        if (pickedIndex < 0 || pickedIndex > 2) return;
+        sProfileAvatarStyle = pickedIndex;
+        [[NSUserDefaults standardUserDefaults] setInteger:pickedIndex
+                                                   forKey:UDKeyProfileAvatarStyle];
+        [weakSelf reloadRowWithID:@"interface.avatarShape"];
+        [weakSelf reloadRowWithID:@"feat.profileLayout"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloUserAvatarsToggleChangedNotification"
+                          object:@"ApolloProfileAvatarStyleChanged"];
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"ApolloProfileTabAvatarIconChangedNotification"
+                          object:nil];
+    });
 }
 
 // Subreddits group screen (ApolloSubredditsSettingsViewController), two
