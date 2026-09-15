@@ -407,7 +407,10 @@ static NSString *ApolloHiddenContentPillLabelText(ApolloHiddenContentReason reas
     self.contextLabel.attributedText = preview;
     self.contextLabel.hidden = context.length == 0;
     self.contextLabel.alpha = 1.0;
-    self.avatarView.layer.cornerRadius = 9.0;
+    // Read the shared preference whenever a row is configured, including
+    // when returning from settings. Compact Full avatars keep a circular crop.
+    NSInteger avatarStyle = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyProfileAvatarStyle];
+    self.avatarView.layer.cornerRadius = avatarStyle == 2 ? 18.0 * 0.24 : 9.0;
     self.avatarView.hidden = ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyShowUserAvatars];
     self.avatarView.image = [UIImage systemImageNamed:@"person.crop.circle.fill"];
     self.avatarView.tintColor = ApolloThemeAccentColor() ?: self.tintColor;
