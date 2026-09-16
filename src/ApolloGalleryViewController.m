@@ -9,7 +9,6 @@
 #import "ApolloTagFilters.h"
 #import "ApolloThemeRuntime.h"
 #import "TagFiltersViewController.h"
-#import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
 #import <AVFoundation/AVFoundation.h>
