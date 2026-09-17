@@ -141,17 +141,15 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
     transitionShield.accessibilityElementsHidden = YES;
     [window addSubview:transitionShield];
     if (switchingTabs) {
-        // Prepare the destination while Settings is offscreen, then reveal it
-        // directly. The Settings root never flashes behind the incoming page.
-        if (destination != screen) [nav popToViewController:destination animated:NO];
-        else [nav pushViewController:destination animated:NO];
-        [UIView transitionWithView:controller.view duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.2
-            options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
-                controller.selectedViewController = nav;
-            } completion:^(__unused BOOL finished) {
-                [transitionShield removeFromSuperview];
-            }];
-        return;
+        // Select the owning stack and start its normal navigation transition
+        // in the same run-loop turn. UIKit owns the page animation, just as
+        // when a shortcut is opened while Settings is already selected.
+        controller.selectedViewController = nav;
+        [nav.view layoutIfNeeded];
+        if (nav.topViewController == destination) {
+            [transitionShield removeFromSuperview];
+            return;
+        }
     }
     if (destination != screen) {
         [nav popToViewController:destination animated:YES];
