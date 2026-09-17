@@ -1,3 +1,5 @@
+#import "ApolloSettingsShortcutsViewController.h"
+#import "ApolloSettingsRouter.h"
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -199,22 +201,11 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     UITraitCollection *traits = controller.traitCollection;
     if (self.menuImages && ![traits hasDifferentColorAppearanceComparedToTraitCollection:self.imageTraits]
         && traits.displayScale == self.imageTraits.displayScale) return;
-    UIImage *backupTile = ApolloSettingsIconTileImage(@"square.and.arrow.up.fill", UIColor.systemBlueColor, controller.traitCollection);
-    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(36, 36)];
-    UIImage *backupImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [backupTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIImage *categoriesTile = ApolloSettingsIconTileImage(@"apollo.saved-categories", UIColor.systemGreenColor, controller.traitCollection);
-    UIImage *categoriesImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [categoriesTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    UIImage *themeTile = ApolloSettingsIconTileImage(@"paintbrush.fill", ApolloThemeManagerIconColor(), controller.traitCollection);
-    UIImage *themeImage = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
-        [themeTile drawInRect:CGRectMake(0, 0, 36, 36)];
-    }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-    self.menuImages = @{@"backup": backupImage, @"categories": categoriesImage, @"themes": themeImage,
-        @"requests": ApolloEmojiSettingsIcon(@"💡", UIColor.systemYellowColor, 36),
-        @"bugs": ApolloEmojiSettingsIcon(@"🐛", UIColor.systemRedColor, 36)};
+    NSMutableDictionary *images = [NSMutableDictionary dictionary];
+    for (NSString *identifier in ApolloSettingsShortcutCatalog()) {
+        images[identifier] = ApolloSettingsShortcutImage(identifier, traits, 36);
+    }
+    self.menuImages = images;
     self.imageTraits = traits;
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
@@ -229,7 +220,8 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     return YES;
 }
 - (void)held:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController) return;
+    if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController
+        || ApolloSettingsShortcutIDs().count == 0) return;
     UIView *tab = ApolloSettingsTabView(self.controller);
     UIWindow *window = tab.window;
     if (!window) return;
@@ -267,49 +259,24 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     [self prepareMenuImages];
     NSDictionary<NSString *, UIImage *> *images = self.menuImages;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggested) {
-        UIAction *backup = [UIAction actionWithTitle:@"Backup Settings"
-            image:images[@"backup"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloAutomaticBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
-                };
-            }];
-        UIAction *requests = [UIAction actionWithTitle:@"Feature Requests"
-            image:images[@"requests"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    UIViewController *selected = weakController.selectedViewController;
-                    UIViewController *presenter = [selected isKindOfClass:UINavigationController.class]
-                        ? ((UINavigationController *)selected).topViewController : selected;
-                    if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
-                };
-            }];
-        UIAction *bugs = [UIAction actionWithTitle:@"Bug Reports"
-            image:images[@"bugs"]
-            identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloReportViewController alloc] init]);
-                };
-            }];
-        UIAction *categories = [UIAction actionWithTitle:@"Saved Categories"
-            image:images[@"categories"] identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[SavedCategoriesViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]);
-                };
-            }];
-        UIAction *themes = [UIAction actionWithTitle:@"Theme Manager"
-            image:images[@"themes"] identifier:nil handler:^(__unused UIAction *action) {
-                ApolloSettingsMenuHaptic();
-                weakSelf.pendingAction = ^{
-                    ApolloPushSettingsShortcut(weakController, [[ApolloThemeManagerViewController alloc] init]);
-                };
-            }];
         NSMutableArray<UIMenu *> *groups = [NSMutableArray array];
-        for (UIAction *action in @[themes, categories, backup, requests, bugs]) {
+        for (NSString *identifier in ApolloSettingsShortcutIDs()) {
+            UIAction *action = [UIAction actionWithTitle:ApolloSettingsShortcutTitle(identifier)
+                image:images[identifier] identifier:nil handler:^(__unused UIAction *action) {
+                    ApolloSettingsMenuHaptic();
+                    weakSelf.pendingAction = ^{
+                        if ([identifier isEqualToString:@"feature-requests"]) {
+                            UIViewController *selected = weakController.selectedViewController;
+                            UIViewController *presenter = [selected isKindOfClass:UINavigationController.class]
+                                ? ((UINavigationController *)selected).topViewController : selected;
+                            if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
+                        } else {
+                            UIViewController *screen = [identifier isEqualToString:@"bug-reports"]
+                                ? [[ApolloReportViewController alloc] init] : ApolloSettingsRouteInstantiate(identifier);
+                            if (screen) ApolloPushSettingsShortcut(weakController, screen);
+                        }
+                    };
+                }];
             UIMenu *group = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                 options:UIMenuOptionsDisplayInline children:@[action]];
             if (@available(iOS 16.0, *)) group.preferredElementSize = UIMenuElementSizeLarge;

@@ -415,6 +415,10 @@ static void ApolloSFAddPath(NSMutableDictionary<NSNumber *, NSMutableArray<NSInd
     return indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
 }
 
+- (ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath {
+    return [self apollo_sf_rowAtIndexPath:indexPath];
+}
+
 - (ApolloSettingsRow *)apollo_sf_rowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section < 0 || (NSUInteger)indexPath.section >= _visibleRows.count) return nil;
     NSArray<ApolloSettingsRow *> *rows = _visibleRows[(NSUInteger)indexPath.section];

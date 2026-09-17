@@ -128,6 +128,8 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 - (nullable UITableViewCell *)cellForRowID:(NSString *)rowID;
 
 - (nullable ApolloSettingsRow *)rowWithID:(NSString *)rowID;
+// Resolve native editing callbacks against the form's current snapshot.
+- (nullable ApolloSettingsRow *)rowAtIndexPath:(NSIndexPath *)indexPath;
 - (nullable NSIndexPath *)indexPathForRowID:(NSString *)rowID;
 
 // Rebuild the whole model (drops and re-requests -buildForm) and reloadData.
