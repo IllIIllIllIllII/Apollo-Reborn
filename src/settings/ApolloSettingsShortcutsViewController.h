@@ -1,7 +1,7 @@
 #import "ApolloSettingsForm.h"
 
 __BEGIN_DECLS
-static const NSUInteger ApolloSettingsShortcutLimit = 8;
+static const NSUInteger ApolloSettingsShortcutLimit = 15;
 UIImage *ApolloSettingsNativeShortcutImage(NSString *title);
 UIViewController *ApolloSettingsNativeShortcutScreen(NSString *title);
 NSArray<NSString *> *ApolloSettingsShortcutIDs(void);

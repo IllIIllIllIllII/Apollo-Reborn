@@ -198,6 +198,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
 @property (nonatomic) BOOL animatingDismissal;
 @property (nonatomic, strong) UIView *dismissSurface;
 @property (nonatomic, strong) UIView *menuContainer;
+@property (nonatomic, strong) UIView *menuLayoutContainer;
 @property (nonatomic, strong) UIButton *editButton;
 @property (nonatomic, strong) CADisplayLink *editPositionLink;
 @end
@@ -272,6 +273,13 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     self.menuContainer.userInteractionEnabled = YES;
     self.menuContainer.accessibilityViewIsModal = YES;
     [container addSubview:self.menuContainer];
+    // Keep a full 44pt customization button above even a scrolling 15-row
+    // menu. UIKit sizes its platter within this inset host; the outer view
+    // still owns our existing entrance/dismissal and the button.
+    CGFloat menuTop = container.safeAreaInsets.top + 52;
+    self.menuLayoutContainer = [[ApolloSettingsMenuContainer alloc] initWithFrame:CGRectMake(0, menuTop,
+        self.menuContainer.bounds.size.width, MAX(1, self.menuContainer.bounds.size.height - menuTop))];
+    [self.menuContainer addSubview:self.menuLayoutContainer];
     self.anchor = [[UIView alloc] initWithFrame:CGRectMake(CGRectGetMidX(sourceFrame) - 0.5,
         CGRectGetMidY(sourceFrame) - 0.5, 1.0, 1.0)];
     self.anchor.userInteractionEnabled = YES;
@@ -352,7 +360,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     if ([style respondsToSelector:overlap]) ((void (*)(id, SEL, BOOL))objc_msgSend)(style, overlap, NO);
     SEL containerSetter = NSSelectorFromString(@"setContainerView:");
     if ([style respondsToSelector:containerSetter]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(style, containerSetter, self.menuContainer);
+        ((void (*)(id, SEL, id))objc_msgSend)(style, containerSetter, self.menuLayoutContainer);
     }
     return style;
 }
@@ -474,6 +482,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     menuContainer.accessibilityViewIsModal = NO;
     self.backdrop = nil;
     self.menuContainer = nil;
+    self.menuLayoutContainer = nil;
     self.anchor = nil;
     self.interaction = nil;
     self.animatingDismissal = NO;

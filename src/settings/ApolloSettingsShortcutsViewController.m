@@ -4,17 +4,19 @@
 #import "UserDefaultConstants.h"
 
 NSArray<NSString *> *ApolloSettingsShortcutCatalog(void) {
-    return @[@"theme-manager", @"saved-categories", @"automatic-backups", @"feature-requests", @"bug-reports",
-        @"tag-filters", @"translation", @"picture-in-picture", @"apollo-ai", @"open-in-app",
-        @"media", @"rich-link-previews", @"crash-reports", @"reborn", @"buy-coffee", @"appearance", @"app-icon",
-        @"posts-feeds", @"comments", @"subreddits", @"profile-layout", @"interface", @"gestures", @"filters",
-        @"pixel-pals", @"accounts-api-keys", @"general"];
+    // Fixed discovery order mirrors Settings and the Reborn hub. Included
+    // shortcuts use their separately persisted user order instead.
+    return @[@"reborn", @"accounts-api-keys", @"posts-feeds", @"comments", @"media",
+        @"subreddits", @"profile-layout", @"interface", @"rich-link-previews", @"apollo-ai",
+        @"theme-manager", @"open-in-app", @"picture-in-picture", @"translation", @"saved-categories", @"tag-filters",
+        @"automatic-backups", @"crash-reports", @"feature-requests", @"bug-reports",
+        @"buy-coffee", @"general", @"pixel-pals", @"appearance", @"app-icon", @"filters", @"gestures"];
 }
 
 NSArray<NSString *> *ApolloSettingsShortcutIDs(void) {
     id saved = [[NSUserDefaults standardUserDefaults] objectForKey:UDKeySettingsTabShortcuts];
     if (![saved isKindOfClass:NSArray.class]) {
-        return @[@"theme-manager", @"saved-categories", @"automatic-backups", @"feature-requests", @"bug-reports"];
+        return @[@"theme-manager", @"automatic-backups", @"feature-requests", @"bug-reports", @"buy-coffee"];
     }
     NSMutableArray *valid = [NSMutableArray array];
     for (id entry in saved) {
@@ -94,10 +96,11 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
             style:UIBarButtonItemStyleDone target:self action:@selector(toggleEditing)];
         if (@available(iOS 26.0, *)) button.style = UIBarButtonItemStyleProminent;
         button.accessibilityLabel = @"Done editing shortcuts";
+        button.tintColor = UIColor.systemBlueColor;
     } else {
         button = [[UIBarButtonItem alloc] initWithTitle:@"Edit" style:UIBarButtonItemStylePlain target:self action:@selector(toggleEditing)];
     }
-    // Inherit the navigation bar tint so Edit and Done follow the active theme.
+    // Edit inherits the theme; the completion checkmark matches Subreddits.
     self.navigationItem.rightBarButtonItem = button;
 }
 
@@ -123,7 +126,16 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
         row.enabled = ^BOOL { return [weakSelf.included containsObject:identifier] || weakSelf.included.count < ApolloSettingsShortcutLimit; };
         row.configure = ^(UITableViewCell *cell) {
             cell.imageView.image = ApolloSettingsShortcutImage(identifier, weakSelf.traitCollection, 29);
-            cell.showsReorderControl = [weakSelf.included containsObject:identifier];
+            BOOL included = [weakSelf.included containsObject:identifier];
+            BOOL available = included || weakSelf.included.count < ApolloSettingsShortcutLimit;
+            cell.showsReorderControl = included;
+            // UILabel's enabled flag does not consistently dim an explicitly
+            // themed textColor after reuse. Dim the entire content uniformly,
+            // and reset both states each time a row is configured.
+            cell.textLabel.enabled = YES;
+            cell.contentView.alpha = available ? 1.0 : 0.4;
+            if (available) cell.accessibilityTraits &= ~UIAccessibilityTraitNotEnabled;
+            else cell.accessibilityTraits |= UIAccessibilityTraitNotEnabled;
         };
         NSMutableArray *rows = [self.included containsObject:identifier] ? includedRows : availableRows;
         [rows addObject:row];

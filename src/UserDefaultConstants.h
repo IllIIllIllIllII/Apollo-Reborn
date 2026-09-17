@@ -1,4 +1,4 @@
-// Ordered Settings hold-menu route IDs. Missing value uses the original five;
+// Ordered Settings hold-menu route IDs. Missing value uses the default five;
 // an empty array intentionally disables the menu. Included in settings backups.
 static NSString *const UDKeySettingsTabShortcuts = @"SettingsTabShortcuts";
 
