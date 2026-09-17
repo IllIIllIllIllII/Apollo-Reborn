@@ -284,8 +284,7 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     return YES;
 }
 - (void)held:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController
-        || ApolloSettingsShortcutIDs().count == 0) return;
+    if (gesture.state != UIGestureRecognizerStateBegan || self.anchor || self.controller.presentedViewController) return;
     UIView *tab = ApolloSettingsTabView(self.controller);
     UIWindow *window = tab.window;
     if (!window) return;
@@ -356,6 +355,16 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
                 options:UIMenuOptionsDisplayInline children:@[action]];
             if (@available(iOS 16.0, *)) group.preferredElementSize = UIMenuElementSizeLarge;
             [groups addObject:group];
+        }
+        if (groups.count == 0) {
+            // UIKit will not present an empty context menu. Keep a passive
+            // empty state so the existing customize button and dismissal
+            // lifecycle remain available even after the last shortcut is removed.
+            UIAction *empty = [UIAction actionWithTitle:@"No Shortcuts Enabled" image:nil identifier:nil
+                handler:^(__unused UIAction *action) {}];
+            empty.attributes = UIMenuElementAttributesDisabled;
+            [groups addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                options:UIMenuOptionsDisplayInline children:@[empty]]];
         }
         UIMenu *menu = [UIMenu menuWithTitle:@"" children:groups];
         if (@available(iOS 16.0, *)) menu.preferredElementSize = UIMenuElementSizeLarge;
