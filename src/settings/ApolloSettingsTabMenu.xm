@@ -105,15 +105,23 @@ static UIView *ApolloSettingsTabView(UITabBarController *controller) {
     return ApolloFindSettingsItemView(controller.tabBar, settingsItem);
 }
 
+// All shortcut destinations belong to one stack, regardless of the tab
+// where the menu was opened. This also gives the editor a single owner.
+static UINavigationController *ApolloSettingsShortcutNavigation(UITabBarController *controller) {
+    for (UIViewController *child in controller.viewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        UINavigationController *nav = (UINavigationController *)child;
+        if ([nav.viewControllers.firstObject isKindOfClass:NSClassFromString(@"_TtC6Apollo22SettingsViewController")]) return nav;
+    }
+    return nil;
+}
+
 static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewController *screen) {
     if (!controller) return;
     ApolloClearConsumedSettingsTouch(controller);
-    // Push from the visible page so UIKit can perform its normal transition
-    // without first revealing the Settings root underneath the destination.
-    UIViewController *selected = controller.selectedViewController;
-    UINavigationController *nav = [selected isKindOfClass:UINavigationController.class]
-        ? (UINavigationController *)selected : selected.navigationController;
-    if (!nav) return;
+    UINavigationController *nav = ApolloSettingsShortcutNavigation(controller);
+    if (!nav || !screen) return;
+    BOOL switchingTabs = controller.selectedViewController != nav;
 
     // Reuse a destination already in this navigation stack.
     UIViewController *destination = screen;
@@ -124,7 +132,7 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
         }
     }
     objc_setAssociatedObject(destination, &kApolloSettingsShortcutRoot, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (nav.topViewController == destination) return;
+    if (nav.topViewController == destination && !switchingTabs) return;
     // Disabling the tab bar alone lets hit testing fall through to the page.
     // Consume touches at the window until the navigation transition finishes.
     UIWindow *window = controller.view.window;
@@ -132,8 +140,21 @@ static void ApolloPushSettingsShortcut(UITabBarController *controller, UIViewCon
     transitionShield.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     transitionShield.accessibilityElementsHidden = YES;
     [window addSubview:transitionShield];
+    if (switchingTabs) {
+        // Prepare the destination while Settings is offscreen, then reveal it
+        // directly. The Settings root never flashes behind the incoming page.
+        if (destination != screen) [nav popToViewController:destination animated:NO];
+        else [nav pushViewController:destination animated:NO];
+        [UIView transitionWithView:controller.view duration:UIAccessibilityIsReduceMotionEnabled() ? 0 : 0.2
+            options:UIViewAnimationOptionTransitionCrossDissolve animations:^{
+                controller.selectedViewController = nav;
+            } completion:^(__unused BOOL finished) {
+                [transitionShield removeFromSuperview];
+            }];
+        return;
+    }
     if (destination != screen) {
-        if (nav.topViewController != destination) [nav popToViewController:destination animated:YES];
+        [nav popToViewController:destination animated:YES];
     } else {
         [nav pushViewController:destination animated:YES];
     }
@@ -318,9 +339,11 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
                     ApolloSettingsMenuHaptic();
                     weakSelf.pendingAction = ^{
                         if ([identifier isEqualToString:@"feature-requests"]) {
-                            UIViewController *selected = weakController.selectedViewController;
-                            UIViewController *presenter = [selected isKindOfClass:UINavigationController.class]
-                                ? ((UINavigationController *)selected).topViewController : selected;
+                            UINavigationController *nav = ApolloSettingsShortcutNavigation(weakController);
+                            if (!nav) return;
+                            ApolloClearConsumedSettingsTouch(weakController);
+                            weakController.selectedViewController = nav;
+                            UIViewController *presenter = nav.topViewController;
                             if (presenter) ApolloPresentWebURLFromViewController(presenter, [NSURL URLWithString:@"https://apolloreborn.fider.io/"]);
                         } else {
                             UIViewController *screen = [identifier isEqualToString:@"bug-reports"]
