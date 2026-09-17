@@ -907,8 +907,17 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     [self.contentTabs addTarget:self action:@selector(apollo_contentTabChanged) forControlEvents:UIControlEventValueChanged];
     // Use Apollo's shared navigation-title presentation and glass lifecycle.
     // The shared owner handles Hard/Soft/Blur/Automatic, scrolling and pushes.
-    self.navigationItem.titleView = self.contentTabs;
     [self apollo_applyTabTheme];
+    // Give navigation's first fitting/snapshot pass the finished control size.
+    // A zero-frame title otherwise starts with a clipped intrinsic-width pill
+    // before the explicit segment widths are laid out during the push.
+    [self.contentTabs sizeToFit];
+    CGRect tabsFrame = self.contentTabs.frame;
+    tabsFrame.size.width = 200;
+    self.contentTabs.frame = tabsFrame;
+    [self.contentTabs setNeedsLayout];
+    [self.contentTabs layoutIfNeeded];
+    self.navigationItem.titleView = self.contentTabs;
     for (UITableViewController *controller in self.tabControllers) {
         UITableView *table = controller.tableView;
         [table registerClass:[ApolloHiddenContentCell class] forCellReuseIdentifier:@"Cell"];
