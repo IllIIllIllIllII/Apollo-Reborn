@@ -159,8 +159,8 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
         NSMutableArray *rows = [self.included containsObject:identifier] ? includedRows : availableRows;
         [rows addObject:row];
     }
-    return @[[ApolloSettingsSection sectionWithTitle:@"Included" footer:[NSString stringWithFormat:@"%lu of %lu shortcuts enabled. Press and hold the Settings tab to open them. Changes are saved automatically.", (unsigned long)self.included.count, (unsigned long)ApolloSettingsShortcutLimit] rows:includedRows],
-        [ApolloSettingsSection sectionWithTitle:@"Available" footer:@"Tap Edit to add, remove, or reorder shortcuts." rows:availableRows]];
+    return @[[ApolloSettingsSection sectionWithTitle:@"Enabled Shortcuts" footer:[NSString stringWithFormat:@"%lu of %lu shortcuts enabled. Press and hold the Settings tab to open them. Changes are saved automatically.", (unsigned long)self.included.count, (unsigned long)ApolloSettingsShortcutLimit] rows:includedRows],
+        [ApolloSettingsSection sectionWithTitle:@"Available Shortcuts" footer:@"Tap Edit to add, remove, or reorder shortcuts." rows:availableRows]];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
