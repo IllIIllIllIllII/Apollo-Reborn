@@ -6,7 +6,9 @@
 NSArray<NSString *> *ApolloSettingsShortcutCatalog(void) {
     return @[@"theme-manager", @"saved-categories", @"automatic-backups", @"feature-requests", @"bug-reports",
         @"tag-filters", @"translation", @"picture-in-picture", @"apollo-ai", @"open-in-app",
-        @"inline-media", @"rich-link-previews", @"crash-reports"];
+        @"media", @"rich-link-previews", @"crash-reports", @"reborn", @"buy-coffee", @"appearance", @"app-icon",
+        @"posts-feeds", @"comments", @"subreddits", @"profile-layout", @"interface", @"gestures", @"filters",
+        @"pixel-pals", @"accounts-api-keys", @"general"];
 }
 
 NSArray<NSString *> *ApolloSettingsShortcutIDs(void) {
@@ -15,9 +17,10 @@ NSArray<NSString *> *ApolloSettingsShortcutIDs(void) {
         return @[@"theme-manager", @"saved-categories", @"automatic-backups", @"feature-requests", @"bug-reports"];
     }
     NSMutableArray *valid = [NSMutableArray array];
-    for (id identifier in saved) {
+    for (id entry in saved) {
+        id identifier = [entry isEqual:@"inline-media"] ? @"media" : entry;
         if ([identifier isKindOfClass:NSString.class] && [ApolloSettingsShortcutCatalog() containsObject:identifier]
-            && ![valid containsObject:identifier]) [valid addObject:identifier];
+            && valid.count < ApolloSettingsShortcutLimit && ![valid containsObject:identifier]) [valid addObject:identifier];
     }
     return valid;
 }
@@ -26,27 +29,42 @@ NSString *ApolloSettingsShortcutTitle(NSString *identifier) {
     if ([identifier isEqualToString:@"feature-requests"]) return @"Feature Requests";
     if ([identifier isEqualToString:@"bug-reports"]) return @"Bug Reports";
     if ([identifier isEqualToString:@"automatic-backups"]) return @"Backup Settings";
-    return ApolloSettingsRouteTitle(identifier);
+    NSDictionary *nativeTitles = @{@"buy-coffee": @"Buy Us a Coffee", @"appearance": @"Appearance",
+        @"app-icon": @"App Icon", @"gestures": @"Gestures", @"filters": @"Filters & Blocks",
+        @"pixel-pals": @"Pixel Pals", @"general": @"General"};
+    return nativeTitles[identifier] ?: ApolloSettingsRouteTitle(identifier);
 }
 
 UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *traits, CGFloat size) {
     __block UIImage *image;
     [traits performAsCurrentTraitCollection:^{
-        if ([identifier isEqualToString:@"feature-requests"] || [identifier isEqualToString:@"bug-reports"]) {
+        if ([@[@"reborn", @"buy-coffee", @"appearance", @"app-icon", @"gestures", @"filters", @"pixel-pals", @"general"] containsObject:identifier]) {
+            UIImage *native = ApolloSettingsNativeShortcutImage(ApolloSettingsShortcutTitle(identifier));
+            if (native) image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)] imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                [native drawInRect:CGRectMake(0, 0, size, size)];
+            }];
+        } else if ([identifier isEqualToString:@"feature-requests"] || [identifier isEqualToString:@"bug-reports"]) {
             BOOL requests = [identifier isEqualToString:@"feature-requests"];
             image = ApolloEmojiSettingsIcon(requests ? @"💡" : @"🐛", requests ? UIColor.systemYellowColor : UIColor.systemRedColor, size);
         } else {
             NSDictionary *symbols = @{@"theme-manager": @"paintbrush.fill", @"saved-categories": @"apollo.saved-categories",
                 @"automatic-backups": @"square.and.arrow.up.fill", @"tag-filters": @"tag.fill", @"translation": @"character.bubble.fill",
                 @"picture-in-picture": @"pip.fill", @"apollo-ai": @"sparkles", @"open-in-app": @"arrow.up.forward.app.fill",
-                @"inline-media": @"play.rectangle.fill", @"rich-link-previews": @"link", @"crash-reports": @"bandage"};
+                @"media": @"play.rectangle.fill", @"posts-feeds": @"newspaper.fill", @"comments": @"text.bubble.fill",
+                @"subreddits": @"person.3.fill", @"profile-layout": @"person.crop.circle.fill", @"interface": @"slider.horizontal.3", @"accounts-api-keys": @"key.fill", @"rich-link-previews": @"link", @"crash-reports": @"bandage"};
             UIColor *color = UIColor.systemBlueColor;
             if ([identifier isEqualToString:@"theme-manager"]) color = ApolloThemeManagerIconColor();
             else if ([identifier isEqualToString:@"saved-categories"]) color = UIColor.systemGreenColor;
             else if ([identifier isEqualToString:@"picture-in-picture"]) color = UIColor.systemPurpleColor;
             else if ([identifier isEqualToString:@"translation"]) color = UIColor.systemTealColor;
             else if ([identifier isEqualToString:@"apollo-ai"]) color = UIColor.systemIndigoColor;
-            else if ([identifier isEqualToString:@"inline-media"]) color = UIColor.systemPinkColor;
+            else if ([identifier isEqualToString:@"media"]) color = UIColor.systemPinkColor;
+            else if ([identifier isEqualToString:@"posts-feeds"]) color = UIColor.systemOrangeColor;
+            else if ([identifier isEqualToString:@"comments"]) color = UIColor.systemGreenColor;
+            else if ([identifier isEqualToString:@"subreddits"]) color = UIColor.systemRedColor;
+            else if ([identifier isEqualToString:@"profile-layout"]) color = UIColor.systemTealColor;
+            else if ([identifier isEqualToString:@"interface"]) color = UIColor.systemPurpleColor;
+            else if ([identifier isEqualToString:@"accounts-api-keys"]) color = UIColor.systemGrayColor;
             else if ([identifier isEqualToString:@"tag-filters"] || [identifier isEqualToString:@"crash-reports"]) color = UIColor.systemOrangeColor;
             UIImage *tile = ApolloSettingsIconTileImage(symbols[identifier], color, traits);
             image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size)] imageWithActions:^(UIGraphicsImageRendererContext *context) {
@@ -102,6 +120,7 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
     }
     for (NSString *identifier in ordered) {
         ApolloSettingsRow *row = [ApolloSettingsRow valueRowWithID:identifier title:ApolloSettingsShortcutTitle(identifier) detail:nil onSelect:nil];
+        row.enabled = ^BOOL { return [weakSelf.included containsObject:identifier] || weakSelf.included.count < ApolloSettingsShortcutLimit; };
         row.configure = ^(UITableViewCell *cell) {
             cell.imageView.image = ApolloSettingsShortcutImage(identifier, weakSelf.traitCollection, 29);
             cell.showsReorderControl = [weakSelf.included containsObject:identifier];
@@ -109,12 +128,13 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
         NSMutableArray *rows = [self.included containsObject:identifier] ? includedRows : availableRows;
         [rows addObject:row];
     }
-    return @[[ApolloSettingsSection sectionWithTitle:@"Included" footer:@"Press and hold the Settings tab to open these shortcuts. Changes are saved automatically. Remove all shortcuts to disable the menu." rows:includedRows],
+    return @[[ApolloSettingsSection sectionWithTitle:@"Included" footer:[NSString stringWithFormat:@"%lu of %lu shortcuts enabled. Press and hold the Settings tab to open them. Changes are saved automatically.", (unsigned long)self.included.count, (unsigned long)ApolloSettingsShortcutLimit] rows:includedRows],
         [ApolloSettingsSection sectionWithTitle:@"Available" footer:@"Tap Edit to add, remove, or reorder shortcuts." rows:availableRows]];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
-    return [self rowAtIndexPath:indexPath] != nil;
+    NSString *identifier = [self rowAtIndexPath:indexPath].rowID;
+    return identifier && ([self.included containsObject:identifier] || self.included.count < ApolloSettingsShortcutLimit);
 }
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
     return [self.included containsObject:[self rowAtIndexPath:indexPath].rowID] ? UITableViewCellEditingStyleDelete : UITableViewCellEditingStyleInsert;
@@ -124,7 +144,7 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
 }
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)indexPath {
     NSString *identifier = [self rowAtIndexPath:indexPath].rowID;
-    if (!identifier) return;
+    if (!identifier || (style == UITableViewCellEditingStyleInsert && self.included.count >= ApolloSettingsShortcutLimit)) return;
     if (style == UITableViewCellEditingStyleDelete) [self.included removeObject:identifier];
     else if (style == UITableViewCellEditingStyleInsert && ![self.included containsObject:identifier]) [self.included addObject:identifier];
     [self save];
@@ -149,11 +169,8 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
     [self.included removeObject:identifier];
     [self.included insertObject:identifier atIndex:index];
     [self save];
-    // Let UIKit finish the delete confirmation / reorder transaction before
-    // replacing its snapshot. Keep the editor active for the next change.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self rebuildForm];
-        [self.tableView setEditing:self.editing animated:NO];
-    });
+    // UIKit already moved the visible row. Reloading here destroys its drop
+    // animation and recalculates estimated heights, jumping the scroll offset.
+    [self refreshFormAfterRowMove];
 }
 @end

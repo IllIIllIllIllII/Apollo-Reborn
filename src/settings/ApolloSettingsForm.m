@@ -224,6 +224,12 @@ static const void *kApolloSFSwitchRowKey = &kApolloSFSwitchRowKey;
     [self rebuildForm];
 }
 
+- (void)refreshFormAfterRowMove {
+    _sections = [self buildForm] ?: @[];
+    _visibleSections = [self computeVisibleSections];
+    _visibleRows = [self computeVisibleRowsForSections:_visibleSections];
+}
+
 - (void)rebuildForm {
     _sections = [self buildForm] ?: @[];
     _visibleSections = [self computeVisibleSections];
