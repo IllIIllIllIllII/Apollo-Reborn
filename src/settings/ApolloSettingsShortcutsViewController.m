@@ -87,6 +87,25 @@ UIImage *ApolloSettingsShortcutImage(NSString *identifier, UITraitCollection *tr
     [super viewDidLoad];
     self.title = @"Shortcuts";
     [self updateEditButton];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(appIconChanged:)
+        name:@"com.christianselig.ChangedAppIcon" object:nil];
+}
+
+- (void)appIconChanged:(NSNotification *)notification {
+    // Apollo refreshes its native App Icon row from the same notification.
+    // Wait one queue turn so the shortcut reads the updated native artwork.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self reloadRowWithID:@"app-icon"];
+    });
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadRowWithID:@"app-icon"];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)updateEditButton {

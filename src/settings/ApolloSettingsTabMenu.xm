@@ -234,7 +234,17 @@ static UIView *ApolloSettingsMenuList(UIView *view) {
     UITabBarController *controller = self.controller;
     UITraitCollection *traits = controller.traitCollection;
     if (self.menuImages && ![traits hasDifferentColorAppearanceComparedToTraitCollection:self.imageTraits]
-        && traits.displayScale == self.imageTraits.displayScale) return;
+        && traits.displayScale == self.imageTraits.displayScale) {
+        // Unlike the other tiles, App Icon is user-selected artwork. Read the
+        // native row again on every presentation instead of freezing it in
+        // the appearance cache for the lifetime of the tab controller.
+        NSMutableDictionary *images = [self.menuImages mutableCopy];
+        UIImage *currentIcon = ApolloSettingsShortcutImage(@"app-icon", traits, 36);
+        if (currentIcon) images[@"app-icon"] = currentIcon;
+        else [images removeObjectForKey:@"app-icon"];
+        self.menuImages = images;
+        return;
+    }
     NSMutableDictionary *images = [NSMutableDictionary dictionary];
     for (NSString *identifier in ApolloSettingsShortcutCatalog()) {
         UIImage *image = ApolloSettingsShortcutImage(identifier, traits, 36);
