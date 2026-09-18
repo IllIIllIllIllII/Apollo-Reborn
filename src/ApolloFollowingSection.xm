@@ -440,6 +440,67 @@ static void ApolloFollowingInvalidateMap(UIViewController *listVC) {
     if (listVC) objc_setAssociatedObject(listVC, &kApolloFollowingMapKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
+// The confirmation UI speaks visible coordinates. Keep its animation request
+// here, alongside the owner of the native/visible map and table mutations.
+static char kApolloRemovalRequest;
+static __thread __unsafe_unretained UITableView *sApolloVisibleRemovalTable;
+
+void ApolloFollowingAnimateNextRemoval(UITableView *table, NSIndexPath *path) {
+    if (!table || !path || path.section >= table.numberOfSections ||
+        path.row >= [table numberOfRowsInSection:path.section]) return;
+    NSMutableArray *counts = [NSMutableArray new];
+    for (NSInteger section = 0; section < table.numberOfSections; section++) {
+        [counts addObject:@([table numberOfRowsInSection:section])];
+    }
+    objc_setAssociatedObject(table, &kApolloRemovalRequest,
+        @{ @"path": path, @"counts": counts, @"time": @(NSProcessInfo.processInfo.systemUptime) },
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
+    NSDictionary *request = objc_getAssociatedObject(table, &kApolloRemovalRequest);
+    if (!request) return NO;
+    objc_setAssociatedObject(table, &kApolloRemovalRequest, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (NSProcessInfo.processInfo.systemUptime - [request[@"time"] doubleValue] > 5.0 || !table.window) return NO;
+    NSIndexPath *path = request[@"path"];
+    NSArray *before = request[@"counts"];
+    // UIKit must still be presenting the captured model. Never manufacture a
+    // deletion from a stale path after an intervening update or account switch.
+    if (table.numberOfSections != (NSInteger)before.count) return NO;
+    for (NSInteger section = 0; section < (NSInteger)before.count; section++) {
+        if ([table numberOfRowsInSection:section] != [before[section] integerValue]) return NO;
+    }
+    id<UITableViewDataSource> source = table.dataSource;
+    NSInteger sections = [source respondsToSelector:@selector(numberOfSectionsInTableView:)] ? [source numberOfSectionsInTableView:table] : 1;
+    BOOL removeSection = sections == (NSInteger)before.count - 1 && [before[path.section] integerValue] == 1;
+    if (!removeSection && sections != (NSInteger)before.count) return NO;
+    for (NSInteger section = 0; section < sections; section++) {
+        NSInteger oldSection = removeSection && section >= path.section ? section + 1 : section;
+        NSInteger expected = [before[oldSection] integerValue];
+        if (!removeSection && section == path.section) expected--;
+        if ([source tableView:table numberOfRowsInSection:section] != expected) return NO;
+    }
+    UITableView *previous = sApolloVisibleRemovalTable;
+    sApolloVisibleRemovalTable = table;
+    @try {
+        [table performBatchUpdates:^{
+            if (removeSection) {
+                [table deleteSections:[NSIndexSet indexSetWithIndex:path.section] withRowAnimation:UITableViewRowAnimationFade];
+            } else {
+                [table deleteRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationFade];
+            }
+        } completion:^(BOOL finished) {
+            // Apollo also refreshes duplicate rows' favorite stars and section
+            // chrome. Reconcile them after the gap has closed, not mid-animation.
+            if (!objc_getAssociatedObject(table, &kApolloRemovalRequest)) [table reloadData];
+        }];
+    } @finally {
+        sApolloVisibleRemovalTable = previous;
+    }
+    ApolloLog(@"[ListEditing] native fade/collapse removal section=%d", removeSection);
+    return YES;
+}
+
 #pragma mark - Translation primitives
 
 // visible section -> native section (or synthetic marker / NSNotFound).
@@ -1044,6 +1105,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
     if (ApolloFollowingTableIsList((UITableView *)self)) {
         // Invalidate BEFORE %orig so the re-query sees a fresh mapping.
         ApolloFollowingInvalidateMap((UIViewController *)((UITableView *)self).dataSource);
+        if (ApolloFollowingApplyRemovalAnimation((UITableView *)self)) return;
     }
     %orig;
 }
@@ -1119,6 +1181,10 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 // the same answer ApolloSubredditIndexPolish's off-by-one correction produces,
 // so the two hooks converge in either install order.
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
+    if (sApolloVisibleRemovalTable == (UITableView *)self) {
+        %orig;
+        return;
+    }
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     // No caller gate here (unlike the lookup hooks above): row mutations on
     // this table only ever ORIGINATE in Apollo's model-space code — UIKit

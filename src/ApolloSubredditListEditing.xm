@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloFollowingSection.h"
 
 // Keep the native edit controls and data-source actions, but present their
 // confirmation in place. UIKit's swipe confirmation translates the entire cell
@@ -67,9 +68,6 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 @property(nonatomic, weak) UITableViewCell *cell;
 @property(nonatomic, strong) UIView *panel;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
-@property(nonatomic, weak) UIView *reorderControl;
-@property(nonatomic) CGAffineTransform reorderTransform;
-@property(nonatomic) CGFloat contentRightMargin;
 - (void)dismiss;
 - (void)close;
 - (void)confirm;
@@ -77,12 +75,6 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 
 @implementation ApolloListEditConfirmation
 - (void)dismiss {
-    if (self.cell) {
-        UIEdgeInsets margins = self.cell.contentView.layoutMargins;
-        margins.right = self.contentRightMargin;
-        self.cell.contentView.layoutMargins = margins;
-        self.reorderControl.transform = self.reorderTransform;
-    }
     objc_setAssociatedObject(self.cell, &kCellConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (self.panel) ApolloLog(@"[ListEditing] dismiss");
     [self.panel removeFromSuperview];
@@ -90,22 +82,16 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     [self.table.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
     self.panel = nil;
     self.cell = nil;
-    self.reorderControl = nil;
     self.outsideTap = nil;
 }
 - (void)close {
     UIView *panel = self.panel;
     UITableViewCell *cell = self.cell;
     if (!panel || !cell) { [self dismiss]; return; }
-    UIEdgeInsets margins = cell.contentView.layoutMargins;
-    margins.right = self.contentRightMargin;
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
                      animations:^{
-        cell.contentView.layoutMargins = margins;
-        [cell layoutIfNeeded];
-        self.reorderControl.transform = self.reorderTransform;
         panel.subviews.firstObject.transform = CGAffineTransformMakeTranslation(CGRectGetWidth(panel.bounds), 0.0);
     } completion:^(BOOL finished) {
         // A reload, reuse or another minus tap may have replaced this panel.
@@ -131,6 +117,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     // Resolve the visible path at tap time. The Following/hidden-section hooks
     // translate it to Apollo's model; never retain an index across row changes.
     if (table.editing && path && [table.dataSource respondsToSelector:@selector(tableView:commitEditingStyle:forRowAtIndexPath:)]) {
+        ApolloFollowingAnimateNextRemoval(table, path);
         [table.dataSource tableView:table commitEditingStyle:UITableViewCellEditingStyleDelete forRowAtIndexPath:path];
     }
 }
@@ -169,12 +156,16 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.accessibilityIdentifier = @"ApolloListEditConfirmation";
     [button addTarget:state action:@selector(confirm) forControlEvents:UIControlEventTouchUpInside];
     UIView *panel = [UIView new];
-    // Clip only the incoming action, not the row. The original cell and
-    // content backgrounds remain visible throughout the reveal.
+    // Slide an opaque row-colored backing with the button, covering the
+    // stationary star/grip even around the button's rounded corners.
     panel.clipsToBounds = YES;
+    UIView *surface = [UIView new];
+    surface.backgroundColor = cell.contentView.backgroundColor ?: cell.backgroundColor;
+    surface.translatesAutoresizingMaskIntoConstraints = NO;
+    [panel addSubview:surface];
     panel.translatesAutoresizingMaskIntoConstraints = NO;
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    [panel addSubview:button];
+    [surface addSubview:button];
     [cell addSubview:panel];
     // Match the native swipe button: Footnote text, 12 points on each side,
     // four-point vertical insets and a continuous 16-point corner radius.
@@ -188,10 +179,14 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
         [panel.topAnchor constraintEqualToAnchor:cell.topAnchor],
         [panel.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor],
         [panel.widthAnchor constraintEqualToConstant:width + 8.0],
-        [button.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor constant:4.0],
-        [button.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor constant:-4.0],
-        [button.centerYAnchor constraintEqualToAnchor:panel.centerYAnchor],
-        [button.heightAnchor constraintEqualToAnchor:panel.heightAnchor constant:-8.0]
+        [surface.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor],
+        [surface.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor],
+        [surface.topAnchor constraintEqualToAnchor:panel.topAnchor],
+        [surface.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor],
+        [button.leadingAnchor constraintEqualToAnchor:surface.leadingAnchor constant:4.0],
+        [button.trailingAnchor constraintEqualToAnchor:surface.trailingAnchor constant:-4.0],
+        [button.centerYAnchor constraintEqualToAnchor:surface.centerYAnchor],
+        [button.heightAnchor constraintEqualToAnchor:surface.heightAnchor constant:-8.0]
     ]];
     ApolloLog(@"[ListEditing] showing confirmation %@", title);
     state.cell = cell;
@@ -203,28 +198,13 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
     [cell layoutIfNeeded];
-    state.contentRightMargin = cell.contentView.layoutMargins.right;
-    for (UIView *view in cell.subviews) {
-        if ([NSStringFromClass(view.class) isEqualToString:@"UITableViewCellReorderControl"]) {
-            state.reorderControl = view;
-            state.reorderTransform = view.transform;
-            break;
-        }
-    }
-    CGFloat reveal = width + 8.0;
-    button.transform = CGAffineTransformMakeTranslation(reveal, 0.0);
-    UIEdgeInsets margins = cell.contentView.layoutMargins;
-    margins.right += reveal;
-    // Only the trailing edge contracts: icon and text-leading constraints are
-    // untouched. Text truncates to make room for the moving star and grip.
+    surface.transform = CGAffineTransformMakeTranslation(width + 8.0, 0.0);
+    // Only the overlay moves. Keep every underlying row view and margin intact.
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
                      animations:^{
-        cell.contentView.layoutMargins = margins;
-        [cell layoutIfNeeded];
-        state.reorderControl.transform = CGAffineTransformTranslate(state.reorderTransform, -reveal, 0.0);
-        button.transform = CGAffineTransformIdentity;
+        surface.transform = CGAffineTransformIdentity;
     } completion:nil];
     return YES;
 }
