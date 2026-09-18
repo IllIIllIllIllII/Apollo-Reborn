@@ -12,8 +12,9 @@
 // color. We observe the source URL during row configuration, tag successful PIN
 // images, and carry that identity through the native UIGraphicsImageRenderer.
 // Only a tagged bitmap assigned to a row bound to that URL enters this cache.
-// Placeholders, failed downloads, and late callbacks for a different row cannot
-// poison it. No Swift layouts, instruction addresses, or extra requests needed.
+// Placeholders, failed downloads, and unmatched images cannot enter it.
+// Cache observation never vetoes a native image assignment. No Swift layouts,
+// instruction addresses, or extra requests needed.
 
 @interface ApolloIconCacheList : UIViewController @end
 @interface ApolloIconCacheCell : UITableViewCell @end
@@ -22,15 +23,11 @@
 static char kSourceURL, kRenderedURL, kBinding;
 static NSCache<NSString *, UIImage *> *sImages;
 static NSCache<NSString *, NSNumber *> *sListURLs;
-static NSUInteger sHits, sMisses, sStores, sRejected;
-static NSUInteger sGeneration;
+static NSUInteger sHits, sMisses, sStores, sUnmatched;
 
 @interface ApolloListIconBinding : NSObject
 @property(nonatomic, copy) NSString *url;
 @property(nonatomic, copy) NSString *key;
-@property(nonatomic, strong) UIImage *placeholder;
-@property(nonatomic, strong) UIImage *ready;
-@property(nonatomic) NSUInteger generation;
 @end
 @implementation ApolloListIconBinding @end
 
@@ -71,7 +68,6 @@ void ApolloSubredditListIconCacheClear(void) {
         dispatch_async(dispatch_get_main_queue(), ^{ ApolloSubredditListIconCacheClear(); });
         return;
     }
-    sGeneration++;
     [sImages removeAllObjects];
     ApolloLog(@"[ListIconCache] cleared rendered icons");
 }
@@ -80,7 +76,7 @@ void ApolloSubredditListIconCacheClear(void) {
 // Read-only counters for the injected simulator regression harness.
 extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
     return @{ @"hits": @(sHits), @"misses": @(sMisses),
-              @"stores": @(sStores), @"rejected": @(sRejected) };
+              @"stores": @(sStores), @"unmatched": @(sUnmatched) };
 }
 #endif
 
@@ -111,13 +107,11 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
     binding.key = [NSString stringWithFormat:@"%@\n%@\n%ld/%g", label.text.lowercaseString,
                    scope.url, (long)view.traitCollection.userInterfaceStyle,
                    view.traitCollection.displayScale];
-    binding.placeholder = view.image;
-    binding.generation = sGeneration;
-    binding.ready = [sImages objectForKey:binding.key];
+    UIImage *ready = [sImages objectForKey:binding.key];
     objc_setAssociatedObject(view, &kBinding, binding, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (binding.ready) {
+    if (ready) {
         sHits++;
-        view.image = binding.ready;
+        view.image = ready;
     } else {
         sMisses++;
     }
@@ -206,25 +200,21 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
     if (!sRowScope && [NSThread isMainThread]) {
         ApolloListIconBinding *binding = objc_getAssociatedObject(self, &kBinding);
         if (binding && !ApolloMultiredditHasCustomListIcon(self)) {
-            if (binding.generation != sGeneration) {
-                binding.ready = nil;
-                binding.generation = sGeneration;
-            }
             NSString *url = objc_getAssociatedObject(image, &kRenderedURL);
             if ([url isEqualToString:binding.url]) {
-                binding.ready = image;
                 CGImageRef bitmap = image.CGImage;
                 NSUInteger cost = bitmap ? CGImageGetBytesPerRow(bitmap) * CGImageGetHeight(bitmap) : 0;
                 [sImages setObject:image forKey:binding.key cost:cost];
                 sStores++;
             } else if (url) {
-                // An old account/row's callback still carries the OLD URL even
-                // if its captured index path now points at this reused cell.
-                sRejected++;
+                sUnmatched++;
             }
-            // Never replace a ready icon with a late placeholder. The baseline
-            // also keeps a mismatched callback out of a still-loading row.
-            if (binding.ready || url) image = binding.ready ?: binding.placeholder;
+            // A URL tag is evidence for caching, not authority to reject an
+            // image. PIN may share image objects across requests, and other
+            // hooks may transform them. Replacing an unmatched result with the
+            // initial placeholder can strand rows on blank circles.
+            // Always preserve native assignments (including nil and untagged
+            // images); only the synchronous warm-cache display above is ours.
         }
     }
     %orig(image);

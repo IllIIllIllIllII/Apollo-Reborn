@@ -32,9 +32,13 @@ to the resulting bitmap. The image-view assignment caches only a bitmap whose
 URL matches the current row binding. This preserves the native crop, color,
 and pixels without copying its Swift rendering implementation.
 
-Late tagged images for a different URL are rejected. Placeholders never enter
-the cache or replace a ready image. `prepareForReuse` clears the binding, and
-configuration scopes prevent the previous row's binding affecting a new row.
+Only matching tagged images enter the cache. All native image assignments,
+including untagged images and nil, pass through unchanged. URL tags are cache
+metadata, not a reliable gate for native updates: shared PIN image objects and
+other hooks can make those tags incomplete or outdated. The original guard
+replaced unmatched updates with the initial placeholder and could strand rows
+on blank circles. `prepareForReuse` clears the binding, and configuration scopes
+prevent the previous row's binding affecting a new row.
 Custom multireddit icons retain precedence regardless of hook order. Memory
 warnings and **Clear Tweak Caches** clear the ready-image cache.
 
@@ -55,12 +59,14 @@ message in `apollofix` logs before testing. Simulator builds expose read-only
 5. Verify custom multireddit art and expanded child rows separately.
 6. Clear tweak caches, then reload. Cold rows should become warm again.
 7. In a simulator probe, configure warm rows synchronously and compare PNG
-   bytes with their settled images. Assign one row's tagged bitmap to another:
-   the second row must keep its own image. Assign nil: keep the ready icon.
-   Call `prepareForReuse`: the old binding must no longer enforce its image.
+   bytes with their settled images. Assign a bitmap with an unmatched URL tag:
+   it must display normally without entering that row's cache. Untagged images
+   and nil must also pass through. Call `prepareForReuse` and verify that image
+   assignments remain unaffected.
 
 Local iOS 26.5 testing verified byte-identical warm images, top/bottom scrolling,
-list reloads, hidden icons, explicit clearing/re-warming, nil-image retention,
-and rejection of mismatched callbacks followed by successful cell reuse.
+list reloads, hidden icons, explicit clearing/re-warming, native image assignments,
+and cell reuse. The regression follow-up additionally checks that unmatched
+URL tags, untagged native images, and nil all pass through unchanged.
 The test account has only one signed-in account, so a live two-account switch
 remains a device/manual check.
