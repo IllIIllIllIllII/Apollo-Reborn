@@ -485,9 +485,9 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
     @try {
         [table performBatchUpdates:^{
             if (removeSection) {
-                [table deleteSections:[NSIndexSet indexSetWithIndex:path.section] withRowAnimation:UITableViewRowAnimationFade];
+                [table deleteSections:[NSIndexSet indexSetWithIndex:path.section] withRowAnimation:UITableViewRowAnimationLeft];
             } else {
-                [table deleteRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationFade];
+                [table deleteRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationLeft];
             }
         } completion:^(BOOL finished) {
             // Apollo also refreshes duplicate rows' favorite stars and section
@@ -497,7 +497,7 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
     } @finally {
         sApolloVisibleRemovalTable = previous;
     }
-    ApolloLog(@"[ListEditing] native fade/collapse removal section=%d", removeSection);
+    ApolloLog(@"[ListEditing] native slide-out removal section=%d", removeSection);
     return YES;
 }
 
