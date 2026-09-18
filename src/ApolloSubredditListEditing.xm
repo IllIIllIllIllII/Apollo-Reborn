@@ -5,7 +5,7 @@
 // Keep the native edit controls and data-source actions, but present their
 // confirmation in place. UIKit's swipe confirmation translates the entire cell
 // and temporarily clears its fill on newer iOS versions.
-static char kListConfirmation, kCellConfirmation;
+static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities;
 
 static UITableView *ApolloEditingTable(UIView *view) {
     for (UIView *v = view; v; v = v.superview) {
@@ -19,17 +19,70 @@ static BOOL ApolloEditingIsList(UITableView *table) {
     return cls && [(id)table.dataSource isKindOfClass:cls];
 }
 
+static id ApolloEditingIvar(id object, const char *name) {
+    Ivar ivar = object ? class_getInstanceVariable([object class], name) : NULL;
+    return ivar ? object_getIvar(object, ivar) : nil;
+}
+
+// UIKit's inherited margins can reflect either the pre-edit or edited content
+// width on reused cells. Apollo anchors its star stack to that margin, so the
+// two values produce two different star columns. Use one explicit editing
+// inset, restoring the original value outside editing. Do this at lifecycle
+// entry points, never by driving geometry from layoutSubviews.
+static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
+    UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
+    if (![star isKindOfClass:UIButton.class]) return;
+    NSNumber *original = objc_getAssociatedObject(cell, &kEditingRightMargin);
+    NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
+    UIEdgeInsets margins = cell.contentView.layoutMargins;
+    if (editing && ApolloEditingIsList(ApolloEditingTable(cell))) {
+        // The star and text otherwise share the same hugging priority. A
+        // reused stack can give spare width to the button instead of its text,
+        // centering the glyph inside a wider button and shifting that star.
+        if (!priorities) {
+            priorities = @[@([star contentHuggingPriorityForAxis:UILayoutConstraintAxisHorizontal]),
+                           @([star contentCompressionResistancePriorityForAxis:UILayoutConstraintAxisHorizontal])];
+            objc_setAssociatedObject(cell, &kEditingStarPriorities, priorities, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [star setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [star setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        if (!original) objc_setAssociatedObject(cell, &kEditingRightMargin, @(margins.right), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!objc_getAssociatedObject(cell, &kCellConfirmation)) margins.right = 23.0;
+    } else if (original) {
+        margins.right = original.doubleValue;
+        if (priorities.count == 2) {
+            [star setContentHuggingPriority:priorities[0].floatValue forAxis:UILayoutConstraintAxisHorizontal];
+            [star setContentCompressionResistancePriority:priorities[1].floatValue forAxis:UILayoutConstraintAxisHorizontal];
+            objc_setAssociatedObject(cell, &kEditingStarPriorities, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        objc_setAssociatedObject(cell, &kEditingRightMargin, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        return;
+    }
+    cell.contentView.layoutMargins = margins;
+}
+
 @interface ApolloListEditConfirmation : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UITableView *table;
 @property(nonatomic, weak) UITableViewCell *cell;
 @property(nonatomic, strong) UIView *panel;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
+@property(nonatomic, weak) UIView *reorderControl;
+@property(nonatomic) CGAffineTransform reorderTransform;
+@property(nonatomic) CGFloat contentRightMargin;
 - (void)dismiss;
+- (void)close;
 - (void)confirm;
 @end
 
 @implementation ApolloListEditConfirmation
 - (void)dismiss {
+    if (self.cell) {
+        UIEdgeInsets margins = self.cell.contentView.layoutMargins;
+        margins.right = self.contentRightMargin;
+        self.cell.contentView.layoutMargins = margins;
+        self.reorderControl.transform = self.reorderTransform;
+    }
     objc_setAssociatedObject(self.cell, &kCellConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (self.panel) ApolloLog(@"[ListEditing] dismiss");
     [self.panel removeFromSuperview];
@@ -37,7 +90,27 @@ static BOOL ApolloEditingIsList(UITableView *table) {
     [self.table.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
     self.panel = nil;
     self.cell = nil;
+    self.reorderControl = nil;
     self.outsideTap = nil;
+}
+- (void)close {
+    UIView *panel = self.panel;
+    UITableViewCell *cell = self.cell;
+    if (!panel || !cell) { [self dismiss]; return; }
+    UIEdgeInsets margins = cell.contentView.layoutMargins;
+    margins.right = self.contentRightMargin;
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                     animations:^{
+        cell.contentView.layoutMargins = margins;
+        [cell layoutIfNeeded];
+        self.reorderControl.transform = self.reorderTransform;
+        panel.subviews.firstObject.transform = CGAffineTransformMakeTranslation(CGRectGetWidth(panel.bounds), 0.0);
+    } completion:^(BOOL finished) {
+        // A reload, reuse or another minus tap may have replaced this panel.
+        if (self.panel == panel) [self dismiss];
+    }];
 }
 - (void)scrolled:(UIPanGestureRecognizer *)gesture {
     if (gesture.state == UIGestureRecognizerStateBegan) [self dismiss];
@@ -74,8 +147,8 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     if (!path) return NO;
     ApolloListEditConfirmation *state = objc_getAssociatedObject(table, &kListConfirmation);
     BOOL sameCell = state.cell == cell;
+    if (sameCell) { [state close]; return YES; }
     [state dismiss];
-    if (sameCell) return YES;
     if (!state) {
         state = [ApolloListEditConfirmation new];
         state.table = table;
@@ -96,9 +169,9 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.accessibilityIdentifier = @"ApolloListEditConfirmation";
     [button addTarget:state action:@selector(confirm) forControlEvents:UIControlEventTouchUpInside];
     UIView *panel = [UIView new];
-    // The row keeps its own background. This small backing only covers the
-    // trailing star/reorder grip underneath the confirmation button.
-    panel.backgroundColor = cell.contentView.backgroundColor ?: cell.backgroundColor;
+    // Clip only the incoming action, not the row. The original cell and
+    // content backgrounds remain visible throughout the reveal.
+    panel.clipsToBounds = YES;
     panel.translatesAutoresizingMaskIntoConstraints = NO;
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [panel addSubview:button];
@@ -124,13 +197,35 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     state.cell = cell;
     objc_setAssociatedObject(cell, &kCellConfirmation, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     state.panel = panel;
-    state.outsideTap = [[UITapGestureRecognizer alloc] initWithTarget:state action:@selector(dismiss)];
+    state.outsideTap = [[UITapGestureRecognizer alloc] initWithTarget:state action:@selector(close)];
     state.outsideTap.cancelsTouchesInView = NO;
     state.outsideTap.delegate = state;
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
-    panel.alpha = 0.0;
-    [UIView animateWithDuration:0.2 animations:^{ panel.alpha = 1.0; }];
+    [cell layoutIfNeeded];
+    state.contentRightMargin = cell.contentView.layoutMargins.right;
+    for (UIView *view in cell.subviews) {
+        if ([NSStringFromClass(view.class) isEqualToString:@"UITableViewCellReorderControl"]) {
+            state.reorderControl = view;
+            state.reorderTransform = view.transform;
+            break;
+        }
+    }
+    CGFloat reveal = width + 8.0;
+    button.transform = CGAffineTransformMakeTranslation(reveal, 0.0);
+    UIEdgeInsets margins = cell.contentView.layoutMargins;
+    margins.right += reveal;
+    // Only the trailing edge contracts: icon and text-leading constraints are
+    // untouched. Text truncates to make room for the moving star and grip.
+    [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                     animations:^{
+        cell.contentView.layoutMargins = margins;
+        [cell layoutIfNeeded];
+        state.reorderControl.transform = CGAffineTransformTranslate(state.reorderTransform, -reveal, 0.0);
+        button.transform = CGAffineTransformIdentity;
+    } completion:nil];
     return YES;
 }
 
@@ -158,9 +253,18 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 %end
 
 %hook UITableViewCell
+- (void)setEditing:(BOOL)editing animated:(BOOL)animated {
+    ApolloEditingAlignStar(self, editing);
+    %orig;
+}
+- (void)didMoveToSuperview {
+    %orig;
+    ApolloEditingAlignStar(self, self.editing);
+}
 - (void)prepareForReuse {
     ApolloListEditConfirmation *state = objc_getAssociatedObject(self, &kCellConfirmation);
     if (state.cell == self) [state dismiss];
+    ApolloEditingAlignStar(self, NO);
     %orig;
 }
 %end
@@ -173,6 +277,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 - (void)prepareForReuse {
     ApolloListEditConfirmation *state = objc_getAssociatedObject(self, &kCellConfirmation);
     if (state.cell == self) [state dismiss];
+    ApolloEditingAlignStar(self, NO);
     %orig;
 }
 %end
