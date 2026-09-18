@@ -11,6 +11,7 @@
 #import "UserDefaultConstants.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloSubredditListIconCache.h"
 
 // MARK: - Multireddit Rename & Descriptions
 //
@@ -127,6 +128,10 @@ static char kApolloMultiEditPickerTargetKey;
 // moment later; the UIImageView setImage: hook below re-asserts the custom
 // icon on every attempt to replace it while the tag is present.
 static char kApolloMultiEditIconEnforceKey;
+
+BOOL ApolloMultiredditHasCustomListIcon(UIImageView *view) {
+    return [(NSString *)objc_getAssociatedObject(view, &kApolloMultiEditIconEnforceKey) length] > 0;
+}
 
 // The RDKMultireddit a MULTIREDDITS row was built from, bound to the cell in
 // cellForRow. display_name is user-editable and not unique, so it can never be

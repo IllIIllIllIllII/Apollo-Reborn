@@ -33,6 +33,7 @@
 #import "settings/ApolloProfileLayoutViewController.h"
 #import "ApolloSubredditCustomBannerCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloSubredditListIconCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloBannedProfile.h"
 #import "ApolloProfileSocialLinks.h"
@@ -4455,6 +4456,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         // previews, so they go with them.
         [[ApolloLinkPreviewShapeMemory sharedMemory] reset];
         [[ApolloSubredditInfoCache sharedCache] clearAllCaches];
+        ApolloSubredditListIconCacheClear();
         ApolloBadgeBookInvalidate(nil);   // per-user earned/trophy state, memory + disk
         ApolloBannedProfileClearDismissedOverlays();
         // Re-broadcast the avatars-toggle notification so visible profile headers reload immediately.
