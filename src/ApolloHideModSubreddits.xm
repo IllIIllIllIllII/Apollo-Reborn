@@ -529,14 +529,28 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 // moderatedSubreddits property through the scoped getter.
 - (void)setEditing:(BOOL)editing animated:(BOOL)animated {
     BOOL wasEditing = [(UIViewController *)self isEditing];
-    %orig;
-    if (wasEditing == editing) return;
+    if (wasEditing == editing) {
+        %orig;
+        return;
+    }
 
+    // Rebuild the filtered model BEFORE UIKit starts the edit animation.
+    // Reloading afterwards replaces the animating cells with already-edited
+    // cells, making every red circle pop into place.
     sShowHiddenForEditing = editing;
-    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
-
     UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
-    [tableView reloadData];
+    if (ApolloHideModHiddenList().count) {
+        [tableView reloadData];
+        [tableView layoutIfNeeded];
+    }
+    %orig;
+    for (UITableViewCell *cell in tableView.visibleCells) {
+        NSIndexPath *path = [tableView indexPathForCell:cell];
+        BOOL moderator = [ApolloHideModSectionTitle(self, tableView, path.section) isEqualToString:@"MODERATOR"];
+        NSString *name = moderator ? ApolloHideModLeftmostLabelText(cell.contentView) : nil;
+        ApolloHideModDecorateCell((UIViewController *)self, cell, moderator, editing, name);
+    }
+    ApolloLog(@"[HideModSubs] setEditing=%d hiddenCount=%lu", (int)editing, (unsigned long)ApolloHideModHiddenList().count);
 }
 
 %new
