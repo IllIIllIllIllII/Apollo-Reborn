@@ -200,6 +200,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloAppleTranslateSheet.swift \
     $(SRC_DIR)/ApolloAppleTranslateSheet.xm \
     $(SRC_DIR)/ApolloVideoUnmute.xm \
+    $(SRC_DIR)/ApolloFeedAutoplay.xm \
     $(SRC_DIR)/ApolloFeedVideoScrubber.xm \
     $(SRC_DIR)/ApolloInlineVideoTimeObserver.xm \
     $(SRC_DIR)/ApolloForwardSwipeExpiry.xm \

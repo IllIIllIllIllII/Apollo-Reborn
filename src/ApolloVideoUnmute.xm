@@ -1788,6 +1788,10 @@ AVPlayer *ApolloVideoUnmute_GetPlayerFromVideoNode(id videoNode) {
     return GetPlayerFromVideoNode(videoNode);
 }
 
+BOOL ApolloVideoUnmute_IsPresentedFullscreenPlayer(AVPlayer *player) {
+    return PlayerIsPresentedFullscreen(player);
+}
+
 void ApolloVideoUnmute_SyncMuteButtonIcon(id richMediaNode, BOOL isMuted) {
     SyncMuteButtonIcon(richMediaNode, isMuted);
 }
