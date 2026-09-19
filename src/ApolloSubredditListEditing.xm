@@ -72,6 +72,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 @property(nonatomic) CGAffineTransform starTransform;
 @property(nonatomic) UIEdgeInsets contentMargins;
 @property(nonatomic) BOOL closing;
+@property(nonatomic, strong) NSMutableArray<NSArray *> *reorderControls;
 - (void)dismiss;
 - (void)close;
 - (void)confirm;
@@ -79,6 +80,12 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 
 @implementation ApolloListEditConfirmation
 - (void)dismiss {
+    // Keep the covered grip inert for the entire outgoing slide too. Restore
+    // its original interaction state on every close/reload/reuse path.
+    for (NSArray *entry in self.reorderControls) {
+        ((UIView *)entry[0]).userInteractionEnabled = [entry[1] boolValue];
+    }
+    self.reorderControls = nil;
     if (self.cell) {
         self.cell.contentView.layoutMargins = self.contentMargins;
         [self.cell layoutIfNeeded];
@@ -225,6 +232,22 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
     [cell layoutIfNeeded];
+    // UIKit's reorder control has its own tracking/gesture handling and can
+    // steal a press even though the confirmation is drawn over it. Disable
+    // the underlying control rather than relying on visual stacking alone.
+    state.reorderControls = [NSMutableArray new];
+    NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithArray:cell.subviews];
+    while (pending.count) {
+        UIView *view = pending.lastObject;
+        [pending removeLastObject];
+        if ([NSStringFromClass(view.class) containsString:@"ReorderControl"]) {
+            [state.reorderControls addObject:@[view, @(view.userInteractionEnabled)]];
+            view.userInteractionEnabled = NO;
+        } else {
+            [pending addObjectsFromArray:view.subviews];
+        }
+    }
+    [cell bringSubviewToFront:panel];
     state.star = ApolloEditingIvar(cell, "accessoryButton");
     state.starTransform = state.star.transform;
     state.contentMargins = cell.contentView.layoutMargins;
