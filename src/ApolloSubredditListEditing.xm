@@ -68,6 +68,10 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 @property(nonatomic, weak) UITableViewCell *cell;
 @property(nonatomic, strong) UIView *panel;
 @property(nonatomic, strong) UITapGestureRecognizer *outsideTap;
+@property(nonatomic, weak) UIView *star;
+@property(nonatomic) CGAffineTransform starTransform;
+@property(nonatomic) UIEdgeInsets contentMargins;
+@property(nonatomic) BOOL closing;
 - (void)dismiss;
 - (void)close;
 - (void)confirm;
@@ -75,6 +79,12 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 
 @implementation ApolloListEditConfirmation
 - (void)dismiss {
+    if (self.cell) {
+        self.cell.contentView.layoutMargins = self.contentMargins;
+        [self.cell layoutIfNeeded];
+    }
+    self.star.transform = self.starTransform;
+    self.star = nil;
     objc_setAssociatedObject(self.cell, &kCellConfirmation, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (self.panel) ApolloLog(@"[ListEditing] dismiss");
     [self.panel removeFromSuperview];
@@ -88,10 +98,19 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     UIView *panel = self.panel;
     UITableViewCell *cell = self.cell;
     if (!panel || !cell) { [self dismiss]; return; }
+    if (self.closing) return;
+    self.closing = YES;
+    // A closing confirmation no longer owns taps. Its cell and animation
+    // completion retain it until the outgoing slide finishes.
+    panel.userInteractionEnabled = NO;
+    [self.table removeGestureRecognizer:self.outsideTap];
+    [self.table.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
                           delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction
                      animations:^{
+        cell.contentView.layoutMargins = self.contentMargins;
+        [cell layoutIfNeeded];
         panel.subviews.firstObject.transform = CGAffineTransformMakeTranslation(CGRectGetWidth(panel.bounds), 0.0);
     } completion:^(BOOL finished) {
         // A reload, reuse or another minus tap may have replaced this panel.
@@ -105,6 +124,10 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     for (UIView *view = touch.view; view; view = view.superview) {
         if ([NSStringFromClass(view.class) isEqualToString:@"UITableViewCellEditControl"]) return NO;
     }
+    // The moving surface can be visually under the finger before UIKit's
+    // hit-test view catches up. Never classify a tap inside the confirmation
+    // panel as an outside dismissal, even if it landed on the backing cell.
+    if (self.panel && CGRectContainsPoint(self.panel.bounds, [touch locationInView:self.panel])) return NO;
     return ![touch.view isDescendantOfView:self.panel];
 }
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
@@ -113,6 +136,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 - (void)confirm {
     UITableView *table = self.table;
     NSIndexPath *path = [table indexPathForCell:self.cell];
+    ApolloLog(@"[ListEditing] confirmation tapped editing=%d validRow=%d", table.editing, path != nil);
     [self dismiss];
     // Resolve the visible path at tap time. The Following/hidden-section hooks
     // translate it to Apollo's model; never retain an index across row changes.
@@ -135,12 +159,15 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     ApolloListEditConfirmation *state = objc_getAssociatedObject(table, &kListConfirmation);
     BOOL sameCell = state.cell == cell;
     if (sameCell) { [state close]; return YES; }
-    [state dismiss];
-    if (!state) {
-        state = [ApolloListEditConfirmation new];
-        state.table = table;
-        objc_setAssociatedObject(table, &kListConfirmation, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
+    [state close];
+    // Each row owns its outgoing animation. Reusing the old state here would
+    // remove its panel immediately or let its completion tear down the new one.
+    // If this row is still closing from an earlier tap, clean up that state
+    // before installing another confirmation on the same cell.
+    [(ApolloListEditConfirmation *)objc_getAssociatedObject(cell, &kCellConfirmation) dismiss];
+    state = [ApolloListEditConfirmation new];
+    state.table = table;
+    objc_setAssociatedObject(table, &kListConfirmation, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSString *title = nil;
     if ([table.delegate respondsToSelector:@selector(tableView:titleForDeleteConfirmationButtonForRowAtIndexPath:)]) {
         title = [table.delegate tableView:table titleForDeleteConfirmationButtonForRowAtIndexPath:path];
@@ -198,12 +225,23 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
     [cell layoutIfNeeded];
+    state.star = ApolloEditingIvar(cell, "accessoryButton");
+    state.starTransform = state.star.transform;
+    state.contentMargins = cell.contentView.layoutMargins;
+    CGRect starFrame = [state.star convertRect:state.star.bounds toView:cell];
+    CGFloat starNudge = state.star ? MAX(16.0, CGRectGetMaxX(starFrame) - CGRectGetMinX(panel.frame) + 8.0) : 0.0;
     surface.transform = CGAffineTransformMakeTranslation(width + 8.0, 0.0);
-    // Only the overlay moves. Keep every underlying row view and margin intact.
+    // Narrow the native text/star stack instead of translating the star over
+    // the label. Its leading edge stays anchored and UILabel tail-truncates
+    // naturally; the reorder grip lives outside this content margin.
+    UIEdgeInsets confirmationMargins = state.contentMargins;
+    confirmationMargins.right += starNudge;
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
                           delay:0.0
-                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction
                      animations:^{
+        cell.contentView.layoutMargins = confirmationMargins;
+        [cell layoutIfNeeded];
         surface.transform = CGAffineTransformIdentity;
     } completion:nil];
     return YES;

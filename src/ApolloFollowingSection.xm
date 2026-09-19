@@ -445,6 +445,31 @@ static void ApolloFollowingInvalidateMap(UIViewController *listVC) {
 static char kApolloRemovalRequest;
 static __thread __unsafe_unretained UITableView *sApolloVisibleRemovalTable;
 
+static char kApolloRemovalTransition;
+
+@interface ApolloListRemovalTransition : NSObject
+@property(nonatomic, weak) UITableView *table;
+@property(nonatomic, strong) UIViewPropertyAnimator *animator;
+@property(nonatomic, strong) UIView *departing;
+@property(nonatomic, strong) NSMutableArray<NSArray *> *rows;
+@property(nonatomic) BOOL interactionEnabled;
+- (void)finish;
+@end
+@implementation ApolloListRemovalTransition
+- (void)finish {
+    if (self.animator.state == UIViewAnimatingStateActive) [self.animator stopAnimation:YES];
+    self.animator = nil;
+    for (NSArray *row in self.rows) {
+        UIView *view = row[0];
+        view.transform = [row[1] CGAffineTransformValue];
+        view.alpha = [row[2] doubleValue];
+    }
+    [self.departing removeFromSuperview];
+    self.table.userInteractionEnabled = self.interactionEnabled;
+    objc_setAssociatedObject(self.table, &kApolloRemovalTransition, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+@end
+
 void ApolloFollowingAnimateNextRemoval(UITableView *table, NSIndexPath *path) {
     if (!table || !path || path.section >= table.numberOfSections ||
         path.row >= [table numberOfRowsInSection:path.section]) return;
@@ -480,24 +505,105 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
         if (!removeSection && section == path.section) expected--;
         if ([source tableView:table numberOfRowsInSection:section] != expected) return NO;
     }
+    // Match the feed-shortcuts preview: unchanged rows spring into their new
+    // positions while the departing row scales to 88% and fades in place.
+    // Reconcile the real table without UIKit's separate deletion timeline, then
+    // animate presentation transforms only. Never mutate row geometry in layout.
+    NSMutableDictionary<NSIndexPath *, NSValue *> *oldFrames = [NSMutableDictionary new];
+    for (NSIndexPath *oldPath in table.indexPathsForVisibleRows) {
+        if ([oldPath isEqual:path]) continue;
+        NSInteger section = oldPath.section;
+        NSInteger row = oldPath.row;
+        if (removeSection && section > path.section) section--;
+        else if (!removeSection && section == path.section && row > path.row) row--;
+        oldFrames[[NSIndexPath indexPathForRow:row inSection:section]] = [NSValue valueWithCGRect:[table rectForRowAtIndexPath:oldPath]];
+    }
+    NSMutableDictionary<NSNumber *, NSValue *> *oldHeaders = [NSMutableDictionary new];
+    for (NSInteger section = 0; section < table.numberOfSections; section++) {
+        if (removeSection && section == path.section) continue;
+        NSInteger newSection = removeSection && section > path.section ? section - 1 : section;
+        oldHeaders[@(newSection)] = [NSValue valueWithCGRect:[table rectForHeaderInSection:section]];
+    }
+    UITableViewCell *removedCell = [table cellForRowAtIndexPath:path];
+    UIView *departing = [removedCell snapshotViewAfterScreenUpdates:NO];
+    CGRect departingFrame = [table rectForRowAtIndexPath:path];
+    CGPoint oldOffset = table.contentOffset;
     UITableView *previous = sApolloVisibleRemovalTable;
     sApolloVisibleRemovalTable = table;
     @try {
-        [table performBatchUpdates:^{
+        [UIView performWithoutAnimation:^{
             if (removeSection) {
-                [table deleteSections:[NSIndexSet indexSetWithIndex:path.section] withRowAnimation:UITableViewRowAnimationLeft];
+                [table deleteSections:[NSIndexSet indexSetWithIndex:path.section] withRowAnimation:UITableViewRowAnimationNone];
             } else {
-                [table deleteRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationLeft];
+                [table deleteRowsAtIndexPaths:@[path] withRowAnimation:UITableViewRowAnimationNone];
             }
-        } completion:^(BOOL finished) {
-            // Apollo also refreshes duplicate rows' favorite stars and section
-            // chrome. Reconcile them after the gap has closed, not mid-animation.
-            if (!objc_getAssociatedObject(table, &kApolloRemovalRequest)) [table reloadData];
+            [table layoutIfNeeded];
         }];
     } @finally {
         sApolloVisibleRemovalTable = previous;
     }
-    ApolloLog(@"[ListEditing] native slide-out removal section=%d", removeSection);
+    ApolloListRemovalTransition *transition = [ApolloListRemovalTransition new];
+    transition.table = table;
+    transition.rows = [NSMutableArray new];
+    transition.interactionEnabled = table.userInteractionEnabled;
+    transition.departing = departing;
+    table.userInteractionEnabled = NO;
+    CGFloat offsetDelta = table.contentOffset.y - oldOffset.y;
+    departingFrame.origin.y += offsetDelta;
+    departing.frame = departingFrame;
+    if (departing) [table addSubview:departing];
+    for (NSIndexPath *newPath in table.indexPathsForVisibleRows) {
+        UITableViewCell *cell = [table cellForRowAtIndexPath:newPath];
+        if (!cell) continue;
+        [transition.rows addObject:@[cell, [NSValue valueWithCGAffineTransform:cell.transform], @(cell.alpha)]];
+        NSValue *oldFrame = oldFrames[newPath];
+        if (oldFrame) {
+            CGFloat delta = CGRectGetMidY(oldFrame.CGRectValue) - CGRectGetMidY(cell.frame) + offsetDelta;
+            cell.transform = CGAffineTransformTranslate(cell.transform, 0.0, delta);
+        } else {
+            cell.alpha = 0.0;
+            cell.transform = CGAffineTransformScale(cell.transform, 0.88, 0.88);
+        }
+    }
+    for (NSInteger section = 0; section < table.numberOfSections; section++) {
+        UIView *header = [table headerViewForSection:section];
+        NSValue *oldFrame = oldHeaders[@(section)];
+        if (!header || !oldFrame) continue;
+        [transition.rows addObject:@[header, [NSValue valueWithCGAffineTransform:header.transform], @(header.alpha)]];
+        CGFloat delta = CGRectGetMidY(oldFrame.CGRectValue) - CGRectGetMidY([table rectForHeaderInSection:section]) + offsetDelta;
+        header.transform = CGAffineTransformTranslate(header.transform, 0.0, delta);
+    }
+    objc_setAssociatedObject(table, &kApolloRemovalTransition, transition, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UISpringTimingParameters *timing = [[UISpringTimingParameters alloc] initWithDampingRatio:0.88];
+    UIViewPropertyAnimator *animator = [[UIViewPropertyAnimator alloc] initWithDuration:0.34 timingParameters:timing];
+    transition.animator = animator;
+    [animator addAnimations:^{
+        for (NSArray *row in transition.rows) {
+            UIView *view = row[0];
+            view.transform = [row[1] CGAffineTransformValue];
+            view.alpha = [row[2] doubleValue];
+        }
+        departing.alpha = 0.0;
+        departing.transform = CGAffineTransformMakeScale(0.88, 0.88);
+    }];
+    [animator addCompletion:^(__unused UIViewAnimatingPosition position) {
+        transition.animator = nil;
+        [transition finish];
+        if (!objc_getAssociatedObject(table, &kApolloRemovalRequest)) [table reloadData];
+    }];
+    if (UIAccessibilityIsReduceMotionEnabled()) {
+        [transition finish];
+    } else {
+        // Apollo can commit inside a performWithoutAnimation block and issue
+        // several reloads in the same turn. Start after that scope unwinds so
+        // its disabled-animation state cannot collapse our spring to one frame.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (objc_getAssociatedObject(table, &kApolloRemovalTransition) == transition) {
+                [animator startAnimation];
+            }
+        });
+    }
+    ApolloLog(@"[ListEditing] preview spring removal duration=0.34 scale=0.88 damping=0.88");
     return YES;
 }
 
@@ -1101,6 +1207,13 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 %hook UITableView
 
 - (void)reloadData {
+    // Native commit sends additional reloads after the first model update.
+    // Coalesce them into the completion reload instead of cancelling the
+    // transition before its first frame has been presented.
+    if (objc_getAssociatedObject(self, &kApolloRemovalTransition)) {
+        ApolloLog(@"[ListEditing] deferring reload until removal spring completes");
+        return;
+    }
     if (ApolloDeferMultiredditTableUpdate((UITableView *)self)) return;
     if (ApolloFollowingTableIsList((UITableView *)self)) {
         // Invalidate BEFORE %orig so the re-query sees a fresh mapping.

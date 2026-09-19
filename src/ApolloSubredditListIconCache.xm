@@ -22,12 +22,15 @@
 
 static char kSourceURL, kRenderedURL, kBinding;
 static NSCache<NSString *, UIImage *> *sImages;
-static NSCache<NSString *, NSNumber *> *sListURLs;
+static NSCache<NSString *, NSString *> *sRowURLs;
 static NSUInteger sHits, sMisses, sStores, sUnmatched;
 
 @interface ApolloListIconBinding : NSObject
 @property(nonatomic, copy) NSString *url;
 @property(nonatomic, copy) NSString *key;
+@property(nonatomic, copy) NSString *identity;
+@property(nonatomic) BOOL resolvedURLInConfiguration;
+@property(nonatomic, strong) UIImage *placeholder;
 @end
 @implementation ApolloListIconBinding @end
 
@@ -60,7 +63,6 @@ static void ApolloIconObserveURL(NSURL *url) {
     NSString *key = url.absoluteString;
     if (!key.length) return;
     sRowScope->url = key;
-    [sListURLs setObject:@YES forKey:key];
 }
 
 void ApolloSubredditListIconCacheClear(void) {
@@ -95,18 +97,34 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
     UIImageView *view = ApolloIconView(cell);
     if (!view) return cell;
     objc_setAssociatedObject(view, &kBinding, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    if (!scope.url.length || ApolloMultiredditHasCustomListIcon(view)) return cell;
+    if (ApolloMultiredditHasCustomListIcon(view)) return cell;
     UILabel *label = ApolloIconObjectIvar(cell, "redditTitleLabel");
     if (![label isKindOfClass:UILabel.class] || !label.text.length) return cell;
 
     ApolloListIconBinding *binding = [ApolloListIconBinding new];
-    binding.url = scope.url;
+    binding.identity = [NSString stringWithFormat:@"%@\n%ld/%g", label.text.lowercaseString,
+                        (long)view.traitCollection.userInterfaceStyle, view.traitCollection.displayScale];
+    // Following/profile rows can resolve their URL only after configuration.
+    // Remember the last successful URL for that row, shared across accounts.
+    binding.resolvedURLInConfiguration = scope.url.length > 0;
+    binding.url = scope.url ?: [sRowURLs objectForKey:binding.identity];
     // Same community across accounts shares art. Include the row identity and
     // display traits so two communities sharing a URL don't share their native
     // background color, and a different display scale never reuses a soft icon.
     binding.key = [NSString stringWithFormat:@"%@\n%@\n%ld/%g", label.text.lowercaseString,
-                   scope.url, (long)view.traitCollection.userInterfaceStyle,
+                   binding.url ?: @"", (long)view.traitCollection.userInterfaceStyle,
                    view.traitCollection.displayScale];
+    // Native memory-cache callbacks may complete during %orig, before the
+    // binding exists. Capture those successful renders here as well.
+    UIImage *configured = view.image;
+    if ([objc_getAssociatedObject(configured, &kRenderedURL) isEqualToString:binding.url]) {
+        CGImageRef bitmap = configured.CGImage;
+        [sImages setObject:configured forKey:binding.key
+                     cost:bitmap ? CGImageGetBytesPerRow(bitmap) * CGImageGetHeight(bitmap) : 0];
+        sStores++;
+    } else if (!objc_getAssociatedObject(configured, &kRenderedURL)) {
+        binding.placeholder = configured;
+    }
     UIImage *ready = [sImages objectForKey:binding.key];
     objc_setAssociatedObject(view, &kBinding, binding, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (ready) {
@@ -134,9 +152,9 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
 - (NSUUID *)downloadImageWithURL:(NSURL *)url completion:(void (^)(id))completion {
     ApolloIconObserveURL(url);
     NSString *key = url.absoluteString;
-    if (!completion || !key.length || ![sListURLs objectForKey:key]) return %orig;
-    // Also catches cold requests started by the native asynchronous HEAD check:
-    // their URLs were recorded by cacheKeyForURL during cell configuration.
+    if (!completion || !key.length) return %orig;
+    // Profile rows may discover their URL asynchronously, outside sRowScope.
+    // Tag completed images here; only list-bound 28pt renders enter our cache.
     void (^wrapped)(id) = ^(id result) {
         SEL selector = @selector(image);
         id image = [result respondsToSelector:selector]
@@ -201,7 +219,14 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
         ApolloListIconBinding *binding = objc_getAssociatedObject(self, &kBinding);
         if (binding && !ApolloMultiredditHasCustomListIcon(self)) {
             NSString *url = objc_getAssociatedObject(image, &kRenderedURL);
+            if (url.length && !binding.resolvedURLInConfiguration) {
+                binding.url = url;
+                // Match the same key used by subsequent row configurations.
+                NSArray *parts = [binding.identity componentsSeparatedByString:@"\n"];
+                binding.key = [NSString stringWithFormat:@"%@\n%@\n%@", parts.firstObject, url, parts.lastObject];
+            }
             if ([url isEqualToString:binding.url]) {
+                [sRowURLs setObject:url forKey:binding.identity];
                 CGImageRef bitmap = image.CGImage;
                 NSUInteger cost = bitmap ? CGImageGetBytesPerRow(bitmap) * CGImageGetHeight(bitmap) : 0;
                 [sImages setObject:image forKey:binding.key cost:cost];
@@ -209,12 +234,15 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
             } else if (url) {
                 sUnmatched++;
             }
-            // A URL tag is evidence for caching, not authority to reject an
-            // image. PIN may share image objects across requests, and other
-            // hooks may transform them. Replacing an unmatched result with the
-            // initial placeholder can strand rows on blank circles.
-            // Always preserve native assignments (including nil and untagged
-            // images); only the synchronous warm-cache display above is ours.
+            // Keep a known-good icon when native asynchronous work clears it
+            // or reinstalls this binding's exact initial placeholder. Do not
+            // reject other untagged images: they may be legitimate native art.
+            // Reuse clears the binding before native configuration, so this
+            // cannot carry the previous row's avatar into a different row.
+            if (!image || image == binding.placeholder) {
+                UIImage *ready = [sImages objectForKey:binding.key];
+                if (ready) image = ready;
+            }
         }
     }
     %orig(image);
@@ -232,8 +260,8 @@ extern "C" NSDictionary *ApolloSubredditListIconCacheDiagnostics(void) {
     sImages = [NSCache new];
     sImages.countLimit = 1500;
     sImages.totalCostLimit = 16 * 1024 * 1024;
-    sListURLs = [NSCache new];
-    sListURLs.countLimit = 4096;
+    sRowURLs = [NSCache new];
+    sRowURLs.countLimit = 1500;
     %init(ApolloListIconCacheHooks, ApolloIconCacheList = list,
           ApolloIconCacheCell = cell, ApolloIconCacheManager = manager);
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidReceiveMemoryWarningNotification

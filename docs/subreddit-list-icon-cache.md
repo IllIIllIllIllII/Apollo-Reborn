@@ -32,8 +32,12 @@ to the resulting bitmap. The image-view assignment caches only a bitmap whose
 URL matches the current row binding. This preserves the native crop, color,
 and pixels without copying its Swift rendering implementation.
 
-Only matching tagged images enter the cache. All native image assignments,
-including untagged images and nil, pass through unchanged. URL tags are cache
+Only tagged native results enter the cache. A URL resolved during row setup
+must match; otherwise the native result supplies the asynchronously resolved URL.
+Other untagged images pass through unchanged. A native clear or the
+exact initial placeholder retains the ready image for the current binding when
+available. Synchronous successful renders during configuration are cached too.
+URL tags are cache
 metadata, not a reliable gate for native updates: shared PIN image objects and
 other hooks can make those tags incomplete or outdated. The original guard
 replaced unmatched updates with the initial placeholder and could strand rows
@@ -60,13 +64,20 @@ message in `apollofix` logs before testing. Simulator builds expose read-only
 6. Clear tweak caches, then reload. Cold rows should become warm again.
 7. In a simulator probe, configure warm rows synchronously and compare PNG
    bytes with their settled images. Assign a bitmap with an unmatched URL tag:
-   it must display normally without entering that row's cache. Untagged images
-   and nil must also pass through. Call `prepareForReuse` and verify that image
+   it must display normally. For a URL bound during configuration, it must not
+   enter that row's cache. Other untagged images must pass through; nil must
+   retain the warm icon. Call `prepareForReuse` and verify that image
    assignments remain unaffected.
 
 Local iOS 26.5 testing verified byte-identical warm images, top/bottom scrolling,
 list reloads, hidden icons, explicit clearing/re-warming, native image assignments,
-and cell reuse. The regression follow-up additionally checks that unmatched
-URL tags, untagged native images, and nil all pass through unchanged.
+and cell reuse. Earlier regression checks covered native assignments; the latest checks below
+replace the old expectation that nil clears a warm icon.
 The test account has only one signed-in account, so a live two-account switch
 remains a device/manual check.
+
+The row binding also handles asynchronously resolved URLs (notably Following
+rows). It remembers the last successfully rendered URL per row identity, and
+updates that mapping when a subsequent native result supplies new artwork.
+Simulator regression: 10/10 visible icons restored synchronously, byte-identical;
+cached icons survive native clears, and reuse removes the old binding.
