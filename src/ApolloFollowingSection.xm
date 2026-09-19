@@ -489,8 +489,7 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
     if (NSProcessInfo.processInfo.systemUptime - [request[@"time"] doubleValue] > 5.0 || !table.window) return NO;
     NSIndexPath *path = request[@"path"];
     NSArray *before = request[@"counts"];
-    // UIKit must still be presenting the captured model. Never manufacture a
-    // deletion from a stale path after an intervening update or account switch.
+    // Reject stale row counts after intervening updates or account switches.
     if (table.numberOfSections != (NSInteger)before.count) return NO;
     for (NSInteger section = 0; section < (NSInteger)before.count; section++) {
         if ([table numberOfRowsInSection:section] != [before[section] integerValue]) return NO;
@@ -505,10 +504,7 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
         if (!removeSection && section == path.section) expected--;
         if ([source tableView:table numberOfRowsInSection:section] != expected) return NO;
     }
-    // Match the feed-shortcuts preview: unchanged rows spring into their new
-    // positions while the departing row scales to 88% and fades in place.
-    // Reconcile the real table without UIKit's separate deletion timeline, then
-    // animate presentation transforms only. Never mutate row geometry in layout.
+    // Update the table without animation, then animate row transforms and opacity.
     NSMutableDictionary<NSIndexPath *, NSValue *> *oldFrames = [NSMutableDictionary new];
     for (NSIndexPath *oldPath in table.indexPathsForVisibleRows) {
         if ([oldPath isEqual:path]) continue;
@@ -594,9 +590,7 @@ static BOOL ApolloFollowingApplyRemovalAnimation(UITableView *table) {
     if (UIAccessibilityIsReduceMotionEnabled()) {
         [transition finish];
     } else {
-        // Apollo can commit inside a performWithoutAnimation block and issue
-        // several reloads in the same turn. Start after that scope unwinds so
-        // its disabled-animation state cannot collapse our spring to one frame.
+        // Start outside Apollo's disabled-animation scope.
         dispatch_async(dispatch_get_main_queue(), ^{
             if (objc_getAssociatedObject(table, &kApolloRemovalTransition) == transition) {
                 [animator startAnimation];
@@ -1207,9 +1201,7 @@ static ApolloFollowingMap *ApolloFollowingPresentedMapForTable(UITableView *tabl
 %hook UITableView
 
 - (void)reloadData {
-    // Native commit sends additional reloads after the first model update.
-    // Coalesce them into the completion reload instead of cancelling the
-    // transition before its first frame has been presented.
+    // Defer additional reloads until the removal animation completes.
     if (objc_getAssociatedObject(self, &kApolloRemovalTransition)) {
         ApolloLog(@"[ListEditing] deferring reload until removal spring completes");
         return;

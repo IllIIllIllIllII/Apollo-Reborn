@@ -3,9 +3,7 @@
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
 
-// Keep the native edit controls and data-source actions, but present their
-// confirmation in place. UIKit's swipe confirmation translates the entire cell
-// and temporarily clears its fill on newer iOS versions.
+// Overlay confirmation buttons without shifting or clearing the row.
 static char kListConfirmation, kCellConfirmation, kEditingRightMargin, kEditingStarPriorities;
 
 static UITableView *ApolloEditingTable(UIView *view) {
@@ -25,11 +23,8 @@ static id ApolloEditingIvar(id object, const char *name) {
     return ivar ? object_getIvar(object, ivar) : nil;
 }
 
-// UIKit's inherited margins can reflect either the pre-edit or edited content
-// width on reused cells. Apollo anchors its star stack to that margin, so the
-// two values produce two different star columns. Use one explicit editing
-// inset, restoring the original value outside editing. Do this at lifecycle
-// entry points, never by driving geometry from layoutSubviews.
+// Use a consistent editing margin; restore it on exit. Apply at lifecycle
+// entry points to avoid layoutSubviews recursion.
 static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     UIButton *star = ApolloEditingIvar(cell, "accessoryButton");
     if (![star isKindOfClass:UIButton.class]) return;
@@ -37,9 +32,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     NSArray<NSNumber *> *priorities = objc_getAssociatedObject(cell, &kEditingStarPriorities);
     UIEdgeInsets margins = cell.contentView.layoutMargins;
     if (editing && ApolloEditingIsList(ApolloEditingTable(cell))) {
-        // The star and text otherwise share the same hugging priority. A
-        // reused stack can give spare width to the button instead of its text,
-        // centering the glyph inside a wider button and shifting that star.
+        // Keep the star button from stretching and shifting its glyph.
         if (!priorities) {
             priorities = @[@([star contentHuggingPriorityForAxis:UILayoutConstraintAxisHorizontal]),
                            @([star contentCompressionResistancePriorityForAxis:UILayoutConstraintAxisHorizontal])];
@@ -80,8 +73,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
 
 @implementation ApolloListEditConfirmation
 - (void)dismiss {
-    // Keep the covered grip inert for the entire outgoing slide too. Restore
-    // its original interaction state on every close/reload/reuse path.
+    // Restore grip interaction after dismissal, reload, or reuse.
     for (NSArray *entry in self.reorderControls) {
         ((UIView *)entry[0]).userInteractionEnabled = [entry[1] boolValue];
     }
@@ -107,8 +99,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     if (!panel || !cell) { [self dismiss]; return; }
     if (self.closing) return;
     self.closing = YES;
-    // A closing confirmation no longer owns taps. Its cell and animation
-    // completion retain it until the outgoing slide finishes.
+    // Ignore taps while closing; the completion retains this state.
     panel.userInteractionEnabled = NO;
     [self.table removeGestureRecognizer:self.outsideTap];
     [self.table.panGestureRecognizer removeTarget:self action:@selector(scrolled:)];
@@ -131,9 +122,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     for (UIView *view = touch.view; view; view = view.superview) {
         if ([NSStringFromClass(view.class) isEqualToString:@"UITableViewCellEditControl"]) return NO;
     }
-    // The moving surface can be visually under the finger before UIKit's
-    // hit-test view catches up. Never classify a tap inside the confirmation
-    // panel as an outside dismissal, even if it landed on the backing cell.
+    // Exclude the panel bounds from outside taps during animation.
     if (self.panel && CGRectContainsPoint(self.panel.bounds, [touch locationInView:self.panel])) return NO;
     return ![touch.view isDescendantOfView:self.panel];
 }
@@ -145,8 +134,7 @@ static void ApolloEditingAlignStar(UITableViewCell *cell, BOOL editing) {
     NSIndexPath *path = [table indexPathForCell:self.cell];
     ApolloLog(@"[ListEditing] confirmation tapped editing=%d validRow=%d", table.editing, path != nil);
     [self dismiss];
-    // Resolve the visible path at tap time. The Following/hidden-section hooks
-    // translate it to Apollo's model; never retain an index across row changes.
+    // Resolve the current row before the remapping hooks translate its index.
     if (table.editing && path && [table.dataSource respondsToSelector:@selector(tableView:commitEditingStyle:forRowAtIndexPath:)]) {
         ApolloFollowingAnimateNextRemoval(table, path);
         [table.dataSource tableView:table commitEditingStyle:UITableViewCellEditingStyleDelete forRowAtIndexPath:path];
@@ -167,10 +155,8 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     BOOL sameCell = state.cell == cell;
     if (sameCell) { [state close]; return YES; }
     [state close];
-    // Each row owns its outgoing animation. Reusing the old state here would
-    // remove its panel immediately or let its completion tear down the new one.
-    // If this row is still closing from an earlier tap, clean up that state
-    // before installing another confirmation on the same cell.
+    // Keep outgoing animations independent. Clean up any earlier confirmation
+    // on this cell before installing the new one.
     [(ApolloListEditConfirmation *)objc_getAssociatedObject(cell, &kCellConfirmation) dismiss];
     state = [ApolloListEditConfirmation new];
     state.table = table;
@@ -190,8 +176,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.accessibilityIdentifier = @"ApolloListEditConfirmation";
     [button addTarget:state action:@selector(confirm) forControlEvents:UIControlEventTouchUpInside];
     UIView *panel = [UIView new];
-    // Slide an opaque row-colored backing with the button, covering the
-    // stationary star/grip even around the button's rounded corners.
+    // Cover the grip around the rounded button with the row background.
     panel.clipsToBounds = YES;
     UIView *surface = [UIView new];
     surface.backgroundColor = cell.contentView.backgroundColor ?: cell.backgroundColor;
@@ -201,10 +186,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [surface addSubview:button];
     [cell addSubview:panel];
-    // Match the native swipe button: Footnote text, 12 points on each side,
-    // four-point vertical insets and a continuous 16-point corner radius.
-    // Round to the display pixel just as UIKit does (Unfavorite: 86 2/3 pt
-    // at 3x; Hide: 52 pt at the default content size).
+    // Preserve native button sizing, rounded to the display pixel.
     CGFloat scale = MAX(1.0, cell.traitCollection.displayScale);
     CGFloat textWidth = [title sizeWithAttributes:@{NSFontAttributeName: button.titleLabel.font}].width;
     CGFloat width = ceil((textWidth + 24.0) * scale) / scale;
@@ -232,9 +214,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     [table addGestureRecognizer:state.outsideTap];
     [table.panGestureRecognizer addTarget:state action:@selector(scrolled:)];
     [cell layoutIfNeeded];
-    // UIKit's reorder control has its own tracking/gesture handling and can
-    // steal a press even though the confirmation is drawn over it. Disable
-    // the underlying control rather than relying on visual stacking alone.
+    // Disable the covered grip so it cannot intercept confirmation taps.
     state.reorderControls = [NSMutableArray new];
     NSMutableArray<UIView *> *pending = [NSMutableArray arrayWithArray:cell.subviews];
     while (pending.count) {
@@ -254,9 +234,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
     CGRect starFrame = [state.star convertRect:state.star.bounds toView:cell];
     CGFloat starNudge = state.star ? MAX(16.0, CGRectGetMaxX(starFrame) - CGRectGetMinX(panel.frame) + 8.0) : 0.0;
     surface.transform = CGAffineTransformMakeTranslation(width + 8.0, 0.0);
-    // Narrow the native text/star stack instead of translating the star over
-    // the label. Its leading edge stays anchored and UILabel tail-truncates
-    // naturally; the reorder grip lives outside this content margin.
+    // Narrow the text/star stack to truncate the label without moving its left edge.
     UIEdgeInsets confirmationMargins = state.contentMargins;
     confirmationMargins.right += starNudge;
     [UIView animateWithDuration:UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28
@@ -272,8 +250,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 
 %hook UIControl
 - (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
-    // The native minus sends TWO actions for one tap: its rotation, then the
-    // cell's confirmation action. Only the latter may toggle our panel.
+    // The minus sends rotation and confirmation actions; only the latter toggles the panel.
     if (action == NSSelectorFromString(@"editControlWasClicked:") && ApolloEditingShowConfirmation(self)) return;
     if (action == NSSelectorFromString(@"_toggleRotate") &&
         [NSStringFromClass(self.class) isEqualToString:@"UITableViewCellEditControl"] &&
@@ -310,8 +287,7 @@ static BOOL ApolloEditingShowConfirmation(UIControl *control) {
 }
 %end
 
-// Apollo's Swift cell overrides prepareForReuse without forwarding to the
-// UITableViewCell implementation. Cover that entry point as well as stock rows.
+// The Swift cell skips super.prepareForReuse, so hook both implementations.
 @interface ApolloEditListCell : UITableViewCell @end
 %group ApolloListEditingCells
 %hook ApolloEditListCell

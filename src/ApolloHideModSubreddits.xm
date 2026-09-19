@@ -534,9 +534,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
         return;
     }
 
-    // Rebuild the filtered model BEFORE UIKit starts the edit animation.
-    // Reloading afterwards replaces the animating cells with already-edited
-    // cells, making every red circle pop into place.
+    // Refresh hidden rows before editing so reloads do not interrupt the animation.
     sShowHiddenForEditing = editing;
     UITableView *tableView = ApolloHideModTableView((UIViewController *)self);
     if (ApolloHideModHiddenList().count) {

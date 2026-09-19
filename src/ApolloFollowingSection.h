@@ -23,8 +23,7 @@ NSArray<NSString *> *ApolloSubredditSectionsResolvedOrder(void);
 // Display name for a token ("Favorites", "Multireddits", …).
 NSString *ApolloSubredditSectionDisplayName(NSString *token);
 
-// Request the preview-style spring shrink/fade for the next confirmed list removal. Reloads
-// with additional model changes retain the full reconciliation path.
+// Animate the next confirmed removal. Complex model changes use a full reload.
 void ApolloFollowingAnimateNextRemoval(UITableView *tableView, NSIndexPath *visiblePath);
 
 // Remap-awareness bridge for the other subreddit-list modules
