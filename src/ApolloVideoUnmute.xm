@@ -676,6 +676,8 @@ static void MutePreviouslyAudibleFeedVideo(AVPlayer *incoming) {
 // Make a feed video audible when the mode calls for it. Returns YES once the
 // unmute has been applied (or was already in force), NO when the video isn't
 // eligible yet — the caller uses that to decide whether to schedule a retry.
+extern BOOL ApolloFeedAutoplay_ShouldAutoUnmute(id richMediaNode);
+
 static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if (sUnmuteFeedVideos == 0 || !richMediaNode) return NO;
     // The comments header runs on its own setting; the feed one must not reach it.
@@ -707,6 +709,10 @@ static BOOL ApplyFeedUnmuteIfNeeded(id richMediaNode, NSString *reason) {
     if ([player rate] <= 0.0f) return NO;
 
     if (!FeedVideosShouldBeAudible()) return NO;
+
+    // All settled feed videos can now play. Keep a stable audio owner while
+    // allowing the other visible players to continue silently.
+    if (!ApolloFeedAutoplay_ShouldAutoUnmute(richMediaNode)) return YES;
 
     MutePreviouslyAudibleFeedVideo(player);
 
