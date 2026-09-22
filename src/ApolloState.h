@@ -289,7 +289,13 @@ extern NSString *const ApolloScrollEdgeEffectStyleChangedNotification;
 // didMoveToWindow hook in ApolloAutoHideTabBar.xm — kept here to avoid a
 // second %hook UIScrollView didMoveToWindow, which the Logos internal
 // generator silently drops as a duplicate symbol.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyle(UIScrollView *scrollView);
+#ifdef __cplusplus
+}
+#endif
 // Registers a search bar hosted in a navigation bar (feed / comments / settings
 // and the other tweak-owned screens) with the Header Style feature, which keeps
 // its field clear of the Hard style's band edge; re-applied on style changes.
