@@ -2518,15 +2518,15 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     });
 }
 
-// Subreddits group screen (ApolloSubredditsSettingsViewController), two
-// sections: the list/browsing toggles and the custom Sources.
+// Subreddits group screen: list organization, subreddit page layout, and
+// the sources used by the Search tab.
 - (ApolloSettingsSection *)buildSubredditsMainSection {
     __weak typeof(self) weakSelf = self;
 
     ApolloSettingsRow *feedShortcuts =
-        [self hubDisclosureRowWithID:@"sub.feedShortcuts"
+        [ApolloSettingsRow disclosureRowWithID:@"sub.feedShortcuts"
                                title:@"Feed Shortcuts"
-                            subtitle:^NSString * {
+                            detail:^NSString * {
             return [NSString stringWithFormat:@"%@ · %@",
                     [weakSelf subredditFeedIconStyleText],
                     [weakSelf subredditFeedLayoutText]];
@@ -2535,28 +2535,51 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
-    ApolloSettingsRow *subredditLayout =
-        [self hubDisclosureRowWithID:@"sub.layout"
-                                title:@"Subreddit Layout"
-                             subtitle:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
-                                 push:^UIViewController * {
-            return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-        }];
-
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
     ApolloSettingsRow *subredditSections =
-        [self hubDisclosureRowWithID:@"sub.sections"
-                                title:@"Subreddit Sections"
-                             subtitle:^NSString * { return [weakSelf subredditSectionsSummaryText]; }
+        [ApolloSettingsRow disclosureRowWithID:@"sub.sections"
+                                title:@"List Sections"
+                             detail:nil
                                  push:^UIViewController * {
             return [[ApolloSubredditSectionsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
         }];
 
+    ApolloSettingsRow *perAccountFavorites =
+        [ApolloSettingsRow switchRowWithID:@"sub.perAccountFavorites"
+                                     title:@"Per-Account Favorites"
+                                      isOn:^BOOL { return sPerAccountFavoritesEnabled; }
+                                  onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
+    ApolloSettingsRow *sortFavoritesAlphabetically =
+        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
+                                     title:@"Sort Favorites Alphabetically"
+                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
+                                  onToggle:^(UISwitch *sender) {
+                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
+                                      [sender setOn:sSortFavoritesAlphabetically animated:YES];
+                                  }];
+    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
+    return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
+                                            footer:@"Keep favorites and their sorting separate for each account. Turn off alphabetical sorting to reorder favorites manually."
+                                              rows:@[ feedShortcuts, subredditSections,
+                                                      perAccountFavorites, sortFavoritesAlphabetically ]];
+}
+
+- (ApolloSettingsSection *)buildSubredditsLayoutSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *subredditLayout =
+        [ApolloSettingsRow disclosureRowWithID:@"sub.layout"
+                                title:@"Subreddit Layout"
+                             detail:^NSString * { return [weakSelf subredditLayoutSummaryText]; }
+                                 push:^UIViewController * {
+            return [[ApolloSubredditLayoutViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+        }];
+
     return [ApolloSettingsSection sectionWithTitle:nil
-                                            footer:@"Feed Shortcuts customizes the Home, Popular, All and Moderator Posts rows — their icons, layout, visibility and descriptions. Subreddit Sections arranges the rest of the subreddit list — section order, followed users, multireddit descriptions and the list style toggles live there. Subreddit Layout customizes subreddit pages."
-                                              rows:@[ feedShortcuts, subredditSections, subredditLayout ]];
+                                            footer:@"Customize the layout and header elements on subreddit pages."
+                                              rows:@[ subredditLayout ]];
 }
 
 - (ApolloSettingsSection *)buildFeedShortcutsVisibilitySection {
@@ -2709,44 +2732,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     return [parts componentsJoinedByString:@" · "];
 }
 
-- (ApolloSettingsSection *)buildSubredditsFavoritesSection {
-    __weak typeof(self) weakSelf = self;
-    ApolloSettingsRow *perAccountFavorites =
-        [ApolloSettingsRow switchRowWithID:@"sub.perAccountFavorites"
-                                     title:@"Per-Account Favorites"
-                                      isOn:^BOOL { return sPerAccountFavoritesEnabled; }
-                                  onToggle:^(UISwitch *sender) { [weakSelf perAccountFavoritesSwitchToggled:sender]; }];
-    ApolloSettingsRow *sortFavoritesAlphabetically =
-        [ApolloSettingsRow switchRowWithID:@"sub.sortFavoritesAlphabetically"
-                                     title:@"Sort Favorites Alphabetically"
-                                      isOn:^BOOL { return sSortFavoritesAlphabetically; }
-                                  onToggle:^(UISwitch *sender) {
-                                      ApolloFavoritesSortingSetEnabled(sender.isOn);
-                                      [sender setOn:sSortFavoritesAlphabetically animated:YES];
-                                  }];
-    sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
-
-    return [ApolloSettingsSection sectionWithTitle:@"Favorites"
-                                            footer:@"Per-Account Favorites saves a separate list and sorting preference for each account. First enable copies the current list to existing accounts; new accounts start empty. Turning it off restores the shared list.\nAlphabetical sorting keeps existing and new favorites in order. Turn it off to rearrange them manually while editing the subreddit list."
-                                              rows:@[ perAccountFavorites, sortFavoritesAlphabetically ]];
-}
-
 - (NSString *)subredditLayoutSummaryText {
     if (!sShowSubredditHeaders) return @"Native";
-    NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    [parts addObject:sSubredditHeaderImmersive ? @"Immersive" : @"Compact"];
-    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-    if (!sSubredditShowBanner) [hidden addObject:@"Banner"];
-    if (!sSubredditShowJoinButton) [hidden addObject:@"Join Button"];
-    if (!sSubredditShowUserFlairButton) [hidden addObject:@"User Flair Button"];
-    if (!sSubredditShowSidebarButton) [hidden addObject:@"Sidebar Button"];
-    if (!sSubredditShowDisplayName) [hidden addObject:@"Subreddit Name"];
-    if (!sSubredditShowSubtitle) [hidden addObject:@"Subtitle"];
-    if (!sSubredditShowDescription) [hidden addObject:@"Description"];
-    if (hidden.count > 0) {
-        [parts addObject:[NSString stringWithFormat:@"%@ off", [hidden componentsJoinedByString:@", "]]];
-    }
-    return [parts componentsJoinedByString:@" · "];
+    return sSubredditHeaderImmersive ? @"Immersive" : @"Compact";
 }
 
 - (ApolloSettingsSection *)buildSubredditsSourcesSection {
@@ -2807,7 +2795,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         }
                                   onSelect:nil];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Sources"
+    return [ApolloSettingsSection sectionWithTitle:@"Search Tab Sources"
                                             footer:nil
                                               rows:@[ trendingLimit, trendingSource, randomSource,
                                                       randNSFW, randNSFWSource ]];
@@ -3452,7 +3440,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn?tab=readme-ov-file#dont-have-an-api-key"]}]];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"). The Reddit API Key/Secret/Redirect URI above are the default, used by any signed-in account that doesn't have its own key — set a different key per account from the account switcher."
             attributes:plainAttrs]];
-    } else if ([sectionTitle isEqualToString:@"Sources"]) {
+    } else if ([sectionTitle isEqualToString:@"Search Tab Sources"]) {
         text = [[NSMutableAttributedString alloc]
             initWithString:@"Configure custom subreddit sources by providing a URL to a plaintext file with line-separated subreddit names (without /r/). "
             attributes:plainAttrs];
@@ -4653,14 +4641,11 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildSubredditsMainSection],
-              [self buildSubredditsFavoritesSection],
+              [self buildSubredditsLayoutSection],
               [self buildSubredditsSourcesSection] ];
 }
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // Refresh the Subreddit Sections summary after returning from that screen
-    // (the order / Following toggle may have just changed).
-    [self reloadRowWithID:@"sub.sections"];
     // Account changes can select a different alphabetical-sorting preference.
     [self reloadRowWithID:@"sub.sortFavoritesAlphabetically"];
 }
