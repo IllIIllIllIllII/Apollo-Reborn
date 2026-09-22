@@ -65,9 +65,9 @@
 //
 //  4. Native AVURLAsset/resource-loader setup in RichMediaNode preload, and
 //     AVPlayerLayer creation reached by ASVideoNode.play from the feed's
-//     scrollViewDidScroll callback. New feed setup/play requests wait until
-//     tracking, dragging and deceleration end, then resume in staggered main
-//     queue turns. Pause/exit cancels pending work; existing playback keeps
+//     scrollViewDidScroll callback. New feed setup/play requests briefly dwell
+//     in their range, then start in paced main-queue turns even during dragging
+//     and deceleration. Pause/exit cancels pending work; existing playback keeps
 //     running. Comments and fullscreen nodes do not use this feed gate.
 //
 // (2), (3) and (4) are gated by the "Smoother Video Scrolling" toggle (default ON,
@@ -303,6 +303,13 @@ static Class sFeedScrollingCellClass;
 static char kFeedDeferredPreload, kFeedDeferredPlay;
 static CFTimeInterval sNextFeedVideoStart;
 
+@interface ApolloFeedVideoStartRequest : NSObject
+@property CFTimeInterval eligibleAt;
+@property BOOL executing;
+@end
+@implementation ApolloFeedVideoStartRequest
+@end
+
 // ASCellNode.scrollView is a weak-ivar getter in Apollo's bundled Texture
 // (0x1dc7c). Use it without materializing an offscreen cell's view. Walking
 // supernodes also covers crossposts and excludes comments/fullscreen nodes.
@@ -321,13 +328,16 @@ static BOOL ApolloFeedScrollIsMoving(UIScrollView *scroll) {
     return scroll.tracking || scroll.dragging || scroll.decelerating;
 }
 
-// A pending request owns no node, player or cell. Exit/pause removes the
-// association; a late timer then cannot resurrect a video that native Apollo
-// no longer wants. At rest, stagger releases instead of draining a whole
-// preload-range burst in one main-queue turn.
-static void ApolloRetryFeedVideoWork(id node, id request, const void *key, SEL action, SEL state) {
+// A short dwell filters transient cells during a fling without requiring the
+// feed to stop. Admit only one expensive setup/start per 100 ms while moving;
+// at rest drain faster. These are admission intervals, not frame-time budgets:
+// native resource-loader/layer setup still runs on main and can itself hitch.
+// The pending request owns no node, player or cell. Pause/exit invalidates its
+// identity so a delayed callback cannot resurrect abandoned playback.
+static void ApolloRetryFeedVideoWork(id node, ApolloFeedVideoStartRequest *request,
+                                     const void *key, SEL action, SEL state) {
     __weak id weakNode = node;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         id liveNode = weakNode;
         if (!liveNode || objc_getAssociatedObject(liveNode, key) != request) return;
         UIScrollView *scroll = ApolloVideoFeedScroll(liveNode);
@@ -336,18 +346,22 @@ static void ApolloRetryFeedVideoWork(id node, id request, const void *key, SEL a
             return;
         }
         CFTimeInterval now = CACurrentMediaTime();
-        if (sFeedVideoScrollSmoothing && (ApolloFeedScrollIsMoving(scroll) || now < sNextFeedVideoStart)) {
+        BOOL moving = ApolloFeedScrollIsMoving(scroll);
+        if (sFeedVideoScrollSmoothing && (now < sNextFeedVideoStart || (moving && now < request.eligibleAt))) {
             ApolloRetryFeedVideoWork(liveNode, request, key, action, state);
             return;
         }
-        objc_setAssociatedObject(liveNode, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        sNextFeedVideoStart = now + 0.016;
-        // Re-enter the public callback on main; it now reaches its original
-        // implementation because scrolling has stopped. Native playback,
-        // loading/error handling and resource-loader ownership stay intact.
+        // Reserve the slot before native code can synchronously request more
+        // work. Keep this identity installed to bypass only this callback's
+        // reentry; clearing first would defer it again while the feed moves.
+        sNextFeedVideoStart = now + (moving ? 0.100 : 0.016);
+        request.executing = YES;
         ((void (*)(id, SEL))objc_msgSend)(liveNode, action);
+        if (objc_getAssociatedObject(liveNode, key) == request) {
+            objc_setAssociatedObject(liveNode, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
 #if APOLLO_SIM_BUILD
-        ApolloLog(@"[FeedVideoScrolling] resumed deferred %@ after scrolling", NSStringFromSelector(action));
+        ApolloLog(@"[FeedVideoScrolling] admitted %@ moving=%d", NSStringFromSelector(action), moving);
 #endif
     });
 }
@@ -358,15 +372,16 @@ static BOOL ApolloDeferFeedVideoWork(id node, const void *key, SEL action, SEL s
         objc_setAssociatedObject(node, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return NO;
     }
-    if (objc_getAssociatedObject(node, key)) return YES;
+    ApolloFeedVideoStartRequest *pending = objc_getAssociatedObject(node, key);
+    if (pending) return !pending.executing;
     UIScrollView *scroll = ApolloVideoFeedScroll(node);
-    if (!scroll || !ApolloFeedScrollIsMoving(scroll)) return NO;
-    id request = [NSObject new];
+    if (!scroll) return NO;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!ApolloFeedScrollIsMoving(scroll) && now >= sNextFeedVideoStart) return NO;
+    ApolloFeedVideoStartRequest *request = [ApolloFeedVideoStartRequest new];
+    request.eligibleAt = now + 0.120;
     objc_setAssociatedObject(node, key, request, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     ApolloRetryFeedVideoWork(node, request, key, action, state);
-#if APOLLO_SIM_BUILD
-    ApolloLog(@"[FeedVideoScrolling] deferred %@ during scrolling", NSStringFromSelector(action));
-#endif
     return YES;
 }
 
@@ -751,7 +766,7 @@ static void ApolloLogRangeTuningOnce(void) {
         && [richClass instancesRespondToSelector:@selector(didEnterPreloadState)]
         && [richClass instancesRespondToSelector:@selector(didExitPreloadState)]) {
         %init(FeedVideoPreload, RichMediaNodePreload = richClass);
-        ApolloLog(@"[FeedVideoScrolling] feed video setup waits for scroll tracking/deceleration to finish");
+        ApolloLog(@"[FeedVideoScrolling] feed video setup paced during scrolling (120 ms dwell, 100 ms admission interval)");
     }
     if (cellClass && [cellClass instancesRespondToSelector:@selector(neverShowPlaceholders)]) {
         %init(FeedVideoCells, LargePostCellNode = cellClass);
