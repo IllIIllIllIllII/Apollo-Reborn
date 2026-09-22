@@ -1,5 +1,6 @@
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
+#import "ApolloHeaderPreview.h"
 #import "ApolloCommon.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloThemeRuntime.h"
@@ -1928,7 +1929,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
 
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
+        ? @"Classic hides the tab bar on the first downward swipe after it reappears. Two-Gesture waits for a second swipe. Both restore the bar after 30 seconds without scrolling."
         : @"Hide Bars on Scroll uses the classic on/off behavior on this version of iOS.";
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
@@ -1945,7 +1946,6 @@ typedef NS_ENUM(NSInteger, Tag) {
 
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
     __weak typeof(self) weakSelf = self;
-
     ApolloSettingsRow *userAvatars =
         [ApolloSettingsRow switchRowWithID:@"interface.userAvatars"
                                      title:@"Show User Profile Pictures"
@@ -1967,9 +1967,37 @@ typedef NS_ENUM(NSInteger, Tag) {
     // "Color Flairs" now rides Appearance → Flair (native injection) —
     // -flairColorsSwitchToggled: below stays as the shared toggle handler.
 
-    // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
-    // Glass only — hidden otherwise rather than shown-disabled, since the row
-    // has nothing to preview/explain on a non-Glass device.
+    return [ApolloSettingsSection sectionWithTitle:@"Display"
+        footer:@"Show profile pictures beside usernames throughout Apollo and choose their shape."
+        rows:@[ userAvatars, avatarShape ]];
+}
+
+- (ApolloSettingsSection *)buildInterfaceHeaderSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *preview = [ApolloSettingsRow customRowWithID:@"interface.headerPreview"
+        cell:^UITableViewCell *(UITableView *tableView, ApolloSettingsRow *row) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"HeaderPreview"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"HeaderPreview"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                ApolloHeaderPreview *sample = [ApolloHeaderPreview new];
+                sample.tag = 7301;
+                sample.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:sample];
+                [NSLayoutConstraint activateConstraints:@[
+                    [sample.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+                    [sample.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+                    [sample.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8],
+                    [sample.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+                ]];
+            }
+            [(ApolloHeaderPreview *)[cell.contentView viewWithTag:7301] refresh];
+            return cell;
+        } onSelect:nil];
+    preview.height = ^CGFloat { return 100 + MAX(32, ceil([UIFont preferredFontForTextStyle:UIFontTextStyleCaption2 compatibleWithTraitCollection:weakSelf.traitCollection].lineHeight) * (UIContentSizeCategoryIsAccessibilityCategory(weakSelf.traitCollection.preferredContentSizeCategory) ? 3 : 2) + 12); };
+    preview.visible = ^BOOL { return IsLiquidGlass(); };
+
     ApolloSettingsRow *scrollEdgeEffect =
         [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
                                       cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
@@ -2007,15 +2035,17 @@ typedef NS_ENUM(NSInteger, Tag) {
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyScrollReturnButton];
             ApolloScrollReturnButtonSettingChanged();
         }];
-
     ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
         title:@"Collapse Navigation Actions"
         isOn:^BOOL { return sCollapseNavigationActions; }
         onToggle:^(UISwitch *sender) {
             sCollapseNavigationActions = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
-            [weakSelf visibilityDidChange];
+            if (UIAccessibilityIsReduceMotionEnabled()) {
+                [UIView performWithoutAnimation:^{ [weakSelf visibilityDidChange]; }];
+            } else [weakSelf visibilityDidChange];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
 
@@ -2026,12 +2056,13 @@ typedef NS_ENUM(NSInteger, Tag) {
             sCenterTitleBetweenButtons = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
-    return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:@"User Profile Pictures adds avatars beside usernames in posts, comments, messages, inbox rows, and moderator lists. Return Button puts an arrow beside Back after a status bar tap scrolls to the top; tap it, the navigation bar, or the status bar again to go back to where you were. Liquid Glass is required for the remaining options.\n\nIn Liquid Glass, navigation titles stay centered unless expanded actions need room. Collapse Navigation Actions hides the actions behind an ellipsis until tapped; scrolling collapses them again. With it off, actions stay expanded. Center Title Between Buttons centers the title in the space between the back button and actions. Both options default to off. Header Style: Soft is the iOS 26 default; Hard is the iOS 27 default. Hidden removes the header edge effect entirely."
-                                              rows:@[ userAvatars, avatarShape, scrollReturnButton, collapseActions, centerBetween, scrollEdgeEffect ]];
+    return [ApolloSettingsSection sectionWithTitle:@"Header"
+        footer:@"Return Button restores the previous scroll position after a status bar tap. Collapse hides actions behind ••• until tapped; scrolling hides them again. Turn it off to keep actions visible and adjust title alignment."
+        rows:@[ preview, scrollEdgeEffect, scrollReturnButton, collapseActions, centerBetween ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2063,6 +2094,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSUserDefaults standardUserDefaults] setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloScrollEdgeEffectStyleChangedNotification object:nil];
     [self reloadRowWithID:@"gen.scrollEdgeEffect"];
+    [(ApolloHeaderPreview *)[[self cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
 }
 
 - (void)presentScrollEdgeEffectStyleSheetFromSourceView:(UIView *)sourceView {
@@ -5025,10 +5057,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
 @end
 
 @implementation ApolloInterfaceSettingsViewController
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        [self.tableView reloadData];
+    }
+}
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
-    return @[ [self buildInterfaceTabBarSection],
-              [self buildInterfaceDisplayNavigationSection] ];
+    NSMutableArray *sections = [NSMutableArray arrayWithObjects:[self buildInterfaceTabBarSection], [self buildInterfaceDisplayNavigationSection], nil];
+    if (IsLiquidGlass()) [sections addObject:[self buildInterfaceHeaderSection]];
+    return sections;
 }
 @end
 
