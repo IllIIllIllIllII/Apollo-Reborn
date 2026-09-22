@@ -91,7 +91,8 @@ extern BOOL sFeedVideoScrubber;
 
 // "Smoother Video Scrolling" — when ON (default), feed video players are built
 // on a background queue and video posts draw asynchronously after they scroll
-// in (no synchronous display wait). See ApolloFeedVideoScrolling.xm.
+// in (no synchronous display wait). New feed video setup/play waits until
+// scrolling stops. See ApolloFeedVideoScrolling.xm.
 extern BOOL sFeedVideoScrollSmoothing;
 
 // "Hold for Video Speed": when ON (default), press-and-hold the right side of a
