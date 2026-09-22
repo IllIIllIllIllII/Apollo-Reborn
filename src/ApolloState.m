@@ -92,6 +92,7 @@ NSInteger sSubredditFeedIconStyle = ApolloSubredditFeedIconStyleClassic;
 NSInteger sSubredditFeedLayout = ApolloSubredditFeedLayoutRows;
 BOOL sPerAccountFavoritesEnabled = NO;
 BOOL sSortFavoritesAlphabetically = NO;
+BOOL sConfirmFavoriteToggle = NO;
 BOOL sHideSubredditListDescriptions = NO;
 BOOL sHideMultiredditDescriptions = NO;
 BOOL sEnableFlairColors = NO;

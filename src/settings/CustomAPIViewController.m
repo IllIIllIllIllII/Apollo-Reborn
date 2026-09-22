@@ -2706,10 +2706,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                       [sender setOn:sSortFavoritesAlphabetically animated:YES];
                                   }];
     sortFavoritesAlphabetically.enabled = ^BOOL { return ApolloFavoritesSortingIsAvailable(); };
+    ApolloSettingsRow *confirmFavoriteToggle =
+        [ApolloSettingsRow switchRowWithID:@"sub.confirmFavoriteToggle"
+                                     title:@"Confirm Favorite Changes"
+                                      isOn:^BOOL { return sConfirmFavoriteToggle; }
+                                  onToggle:^(UISwitch *sender) {
+                                      sConfirmFavoriteToggle = sender.isOn;
+                                      [[NSUserDefaults standardUserDefaults] setBool:sender.isOn
+                                                                              forKey:UDKeyConfirmFavoriteToggle];
+                                  }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
-                                            footer:@"Keep favorites and their sorting separate for each account. Turn off alphabetical sorting to reorder favorites manually."
+                                            footer:@"Keep favorites and their sorting separate for each account. Turn off alphabetical sorting to reorder favorites manually. Confirm Favorite Changes asks before adding or removing a favorite from the Subreddits list star."
                                               rows:@[ feedShortcuts, subredditSections,
-                                                      perAccountFavorites, sortFavoritesAlphabetically ]];
+                                                      perAccountFavorites, sortFavoritesAlphabetically,
+                                                      confirmFavoriteToggle ]];
 }
 
 - (ApolloSettingsSection *)buildSubredditsLayoutSection {
