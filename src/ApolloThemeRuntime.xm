@@ -3,6 +3,7 @@
 #import "ApolloThemeCompiler.h"
 #import "ApolloThemeGalleryCatalog.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
 #import <CoreText/CoreText.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -2477,6 +2478,9 @@ static void ApolloThemeRestoreOverlayPillText(id node) {
 - (void)didMoveToWindow {
     %orig;
     ApplyThemeSearchFieldBackground(self);
+    // Header Style (ApolloScrollEdgeEffect.xm) shares this hook rather than
+    // adding a second UISearchBar didMoveToWindow.
+    ApolloHeaderStyleSearchBarDidMoveToWindow(self);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
