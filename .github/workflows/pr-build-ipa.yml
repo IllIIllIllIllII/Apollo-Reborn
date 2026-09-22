@@ -116,6 +116,7 @@ jobs:
           path: theos
           submodules: recursive
 
+      # This pinned Xcode uses the Makefile's iOS 26.0 fallback.
       - name: Select Xcode 26.0.1
         run: sudo xcode-select -s /Applications/Xcode_26.0.1.app
 

@@ -1,3 +1,6 @@
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoCompatibility.h"
+#import "ApolloDuoRail.h"
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <CoreImage/CoreImage.h>
@@ -173,6 +176,10 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 // the visible subset in display order; cards with no data stay hidden and out of
 // the row, so the layout centres however many actually have values.
 @property(nonatomic, strong) NSArray<ApolloProfileStatCard *> *statCards;
+// The closed Duo rail reserves the table's trailing safe-area column. The
+// custom header remains full-width for its banner, while its stat row stops at
+// the same content edge as Apollo's native grouped rows below it.
+@property(nonatomic) CGFloat statCardsTrailingInset;
 // Raw values behind the cards' compact text, kept for the tap-detail popup
 // (issue #797): the cards show "13.1k", the popup shows "13,102".
 @property(nonatomic) NSInteger statLinkKarma;
@@ -251,6 +258,8 @@ static CGFloat const ApolloProfileStatsTopGap = 14.0;
 static CGFloat const ApolloProfileGroupedMargin = 15.0;
 // Collapsed bio line cap; the "more" toggle expands past it.
 static NSInteger const ApolloProfileAboutCollapsedLines = 3;
+
+static CGFloat ApolloProfileDuoContentRightEdgeInView(UIView *view);
 
 // Compact count formatting for karma values: 1.2k / 45k / 1.3M.
 static NSString *ApolloProfileFormatCount(NSInteger value) {
@@ -1146,8 +1155,8 @@ static UIFont *ApolloProfileClassicNameFont(void) {
     // Glass stat cards. The row hugs the 15pt inset-grouped margin rather than
     // the text column's inset, so the card edges line up with the native
     // Posts/Comments/Saved group directly below the header (issue #852). The
-    // symmetric widening keeps the row centered (and RTL-safe); on iPad the
-    // capped, centered body column just gains the same few points per side.
+    // normal layout keeps the capped body column centered on iPad. Duo uses
+    // its table's content edge so cards align with the adaptive shortcut rows.
     NSUInteger cardCount = self.statCards.count;
     if (cardCount > 0) {
         y += ApolloProfileStatsTopGap;
@@ -1156,6 +1165,25 @@ static UIFont *ApolloProfileClassicNameFont(void) {
                                          ApolloIdentityHeaderSideInset() - ApolloProfileGroupedMargin));
             CGFloat rowX = bodyX - delta;
             CGFloat rowW = bodyWidth + delta * 2.0;
+            if (ApolloDuoSplitIsUnfolded() || ApolloDuoCurrentMode() != ApolloDuoModePhone) {
+                CGFloat headerWidth = CGRectGetWidth(self.bounds);
+                // Read the live rail edge here as well as during header
+                // installation. The profile header is created before UIKit has
+                // attached the floating tab bar on a fresh tab switch, so the
+                // cached inset can still be zero during its first visible layout.
+                CGFloat liveRight = ApolloProfileDuoContentRightEdgeInView(self);
+                CGFloat trailingInset = isfinite(liveRight)
+                    ? MAX(0.0, headerWidth - liveRight)
+                    : self.statCardsTrailingInset;
+                if (isfinite(liveRight)) self.statCardsTrailingInset = trailingInset;
+                // The visible shortcut group below ends one grouped margin inside
+                // the rail-clipped table content. Keep the glass cards on that
+                // same trailing edge instead of lining them up with the invisible
+                // cell-content boundary behind the rounded group.
+                rowX = ApolloProfileGroupedMargin;
+                CGFloat rowRight = headerWidth - trailingInset - ApolloProfileGroupedMargin;
+                rowW = MAX(0.0, rowRight - rowX);
+            }
             CGFloat totalGap = ApolloProfileStatsCardGap * (cardCount - 1);
             CGFloat cardW = floor((rowW - totalGap) / cardCount);
             // RTL mirrors reading order, exactly like the Follow/Message row above:
@@ -3725,6 +3753,22 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
     header.socialLinksView.hostViewController = viewController;
     header.badgeBookView.hostViewController = viewController;
     header.username = username;
+    CGFloat trailingContentInset = 0.0;
+    BOOL measuredVerticalRail = NO;
+    CGFloat nativeContentRight = ApolloProfileDuoContentRightEdgeInView(tableView);
+    if (isfinite(nativeContentRight)) {
+        trailingContentInset = MAX(0.0, width - nativeContentRight);
+        measuredVerticalRail = YES;
+    }
+    if (!measuredVerticalRail) {
+        // Keep the last good Duo measurement while UIKit briefly rebuilds the
+        // floating rail during a theme or tab transition. Sampling visible
+        // cells here made the cards change width as different rows scrolled in.
+        trailingContentInset = header.statCardsTrailingInset >= 40.0
+            ? header.statCardsTrailingInset
+            : tableView.safeAreaInsets.right;
+    }
+    header.statCardsTrailingInset = trailingContentInset;
 
     CGFloat chromeHeight = tableView.adjustedContentInset.top;
     NSString *(^currentInstallSignature)(void) = ^NSString *{
@@ -3734,8 +3778,8 @@ static void ApolloProfileInstallOrUpdateHeader(id viewControllerObject) {
             resolvedColorWithTraitCollection:viewController.traitCollection];
         UIColor *cardColor = [(ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor)
             resolvedColorWithTraitCollection:viewController.traitCollection];
-        return [NSString stringWithFormat:@"%@|%.2f|%.2f|%.2f|%p|%lu|%d%d%d%d%d|%ld|%ld|%lu|%@|%@",
-        username, width, [header preferredHeightForWidth:width], chromeHeight, header.bannerImageView.image,
+        return [NSString stringWithFormat:@"%@|%.2f|%.2f|%.2f|%.2f|%p|%lu|%d%d%d%d%d|%ld|%ld|%lu|%@|%@",
+        username, width, header.statCardsTrailingInset, [header preferredHeightForWidth:width], chromeHeight, header.bannerImageView.image,
         (unsigned long)header.contentGeneration, sProfileHeaderImmersive, sProfileShowBanner,
         sProfileShowStatCards, sProfileShowSocialLinks, sProfileShowActions,
         (long)sProfileAvatarStyle, (long)viewController.traitCollection.userInterfaceStyle,
@@ -3849,6 +3893,37 @@ static void ApolloProfileScheduleInstallOrUpdateHeader(id viewControllerObject) 
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloProfileInstallOrUpdateHeader(strongController);
     });
+}
+
+// The custom stat-card header remains full-width for its banner, but its cards
+// stop at the grouped-content edge beside the closed Duo rail.
+static CGFloat ApolloProfileDuoContentRightEdgeInView(UIView *view) {
+    if (!view.window || (!ApolloDuoSplitIsUnfolded() && ApolloDuoCurrentMode() == ApolloDuoModePhone)) return NAN;
+    // The primary column has its own trailing safe-area inset even though
+    // the tab rail belongs to the detail column. Match UITableView's content
+    // width here; measuring the distant rail makes the cards 20pt too wide.
+    UITableView *table = nil;
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:UITableView.class]) { table = (id)ancestor; break; }
+    }
+    for (UIResponder *responder = table; responder; responder = responder.nextResponder) {
+        if (![responder isKindOfClass:UIViewController.class]) continue;
+        if (ApolloDuoSplitIsSidebarController((id)responder)) {
+            CGPoint edge = CGPointMake(CGRectGetWidth(table.bounds) - table.safeAreaInsets.right, 0.0);
+            return [view convertPoint:edge fromView:table].x;
+        }
+        break;
+    }
+    // Portrait has a bottom tab bar. Zero is a valid new measurement, not a
+    // temporarily missing rail: discard the previous closed-display inset.
+    if (ApolloDuoSplitIsUnfoldedPortrait()) return CGRectGetWidth(view.bounds);
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    if (!tabBar.window || tabBar.hidden || CGRectGetWidth(tabBar.bounds) >= 100.0
+        || CGRectGetHeight(tabBar.bounds) <= CGRectGetWidth(tabBar.bounds)) return NAN;
+    CGRect tabBarFrame = [tabBar convertRect:tabBar.bounds toView:view];
+    if (CGRectGetMinX(tabBarFrame) <= CGRectGetWidth(view.bounds) * 0.6) return NAN;
+    return CGRectGetMinX(tabBarFrame) - ApolloProfileGroupedMargin;
 }
 
 static void ApolloProfileRefreshViewControllersInTree(UIViewController *viewController, NSString *username, NSHashTable *visited, NSUInteger *refreshCount) {

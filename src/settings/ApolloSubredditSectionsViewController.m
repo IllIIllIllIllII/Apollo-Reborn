@@ -5,6 +5,7 @@
 #import "ApolloSettingsForm.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloDuoRail.h"
 #import "UserDefaultConstants.h"
 
 // The screen is a container (ApolloSubredditSectionsViewController) that pins
@@ -363,6 +364,9 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
 // the transparent bar.
 @property (nonatomic, strong) UIView *pinnedCoverView;
 @property (nonatomic, strong) NSLayoutConstraint *previewContentHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *previewCardTrailingConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *scrollBoundaryTrailingConstraint;
+@property (nonatomic) CGFloat previewTrailingRailReserve;
 // The host's constraints for wherever it is mounted right now (rebuilt on
 // every remount — moving a view drops its cross-hierarchy constraints).
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *hostMountConstraints;
@@ -733,6 +737,14 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     pinnedCover.userInteractionEnabled = NO;
     self.pinnedCoverView = pinnedCover;
     [self.view addSubview:pinnedCover];
+    NSLayoutConstraint *pinIconTrailing =
+        [pinIcon.trailingAnchor constraintEqualToAnchor:previewCard.trailingAnchor constant:-12.0];
+    NSLayoutConstraint *previewCardTrailing =
+        [previewCard.trailingAnchor constraintEqualToAnchor:previewHost.trailingAnchor constant:-20.0];
+    NSLayoutConstraint *scrollBoundaryTrailing =
+        [scrollBoundary.trailingAnchor constraintEqualToAnchor:previewHost.trailingAnchor];
+    self.previewCardTrailingConstraint = previewCardTrailing;
+    self.scrollBoundaryTrailingConstraint = scrollBoundaryTrailing;
     [NSLayoutConstraint activateConstraints:@[
         [pinnedCover.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [pinnedCover.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
@@ -749,7 +761,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
         [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:pinCaption.leadingAnchor constant:-8.0],
 
         [pinIcon.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
-        [pinIcon.trailingAnchor constraintEqualToAnchor:previewHost.layoutMarginsGuide.trailingAnchor constant:-12.0],
+        pinIconTrailing,
         [pinIcon.widthAnchor constraintEqualToConstant:22.0],
         [pinIcon.heightAnchor constraintEqualToConstant:22.0],
         [pinCaption.trailingAnchor constraintEqualToAnchor:pinIcon.leadingAnchor constant:-6.0],
@@ -761,12 +773,12 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
 
         [previewCard.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:7.0],
         [previewCard.leadingAnchor constraintEqualToAnchor:previewHost.leadingAnchor constant:20.0],
-        [previewCard.trailingAnchor constraintEqualToAnchor:previewHost.trailingAnchor constant:-20.0],
+        previewCardTrailing,
         [previewCard.bottomAnchor constraintEqualToAnchor:previewHost.bottomAnchor constant:-2.0],
         contentHeight,
 
         [scrollBoundary.leadingAnchor constraintEqualToAnchor:previewHost.leadingAnchor],
-        [scrollBoundary.trailingAnchor constraintEqualToAnchor:previewHost.trailingAnchor],
+        scrollBoundaryTrailing,
         [scrollBoundary.bottomAnchor constraintEqualToAnchor:previewHost.bottomAnchor],
         [scrollBoundary.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale],
 
@@ -976,6 +988,29 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     [super viewDidLayoutSubviews];
     UITableView *tableView = self.formViewController.tableView;
     if (CGRectIsEmpty(tableView.bounds) || self.view.safeAreaInsets.top <= 0.0) return;
+
+    // The Duo rail overlays the trailing side of the page instead of reducing
+    // the table's bounds. Measure the real rail frame and reserve that width
+    // inside the preview only, keeping its card, pin, and boundary clear of
+    // the system controls in both pinned and scrolling-header modes.
+    CGFloat railReserve = 0.0;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    if (tabBar.window && !tabBar.hidden && CGRectGetWidth(tabBar.bounds) < 100.0 &&
+        CGRectGetHeight(tabBar.bounds) > CGRectGetWidth(tabBar.bounds)) {
+        CGRect railFrame = [tabBar convertRect:tabBar.bounds toView:self.view];
+        if (CGRectGetMidX(railFrame) > CGRectGetMidX(self.view.bounds)) {
+            railReserve = MAX(0.0, CGRectGetWidth(self.view.bounds) - CGRectGetMinX(railFrame));
+        }
+    }
+    if (fabs(railReserve - self.previewTrailingRailReserve) > 0.5) {
+        self.previewTrailingRailReserve = railReserve;
+        self.previewCardTrailingConstraint.constant = -(20.0 + railReserve);
+        self.scrollBoundaryTrailingConstraint.constant = -railReserve;
+        [self.previewHost setNeedsLayout];
+        [self apollo_syncPreviewSlot];
+    }
+
     CGSize size = self.view.bounds.size;
     if (!CGSizeEqualToSize(size, self.previewEvaluatedSize)) {
         self.previewEvaluatedSize = size;

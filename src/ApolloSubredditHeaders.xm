@@ -1,3 +1,5 @@
+#import "ApolloDuoSplitView.h"
+#import "ApolloDuoRail.h"
 #import <PhotosUI/PhotosUI.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -500,7 +502,22 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
 }
 
 - (ApolloIdentityHeaderLayout)apollo_identityForWidth:(CGFloat)width {
-    return ApolloIdentityHeaderLayoutMakeWithBanner(width, sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0);
+    CGRect column = ApolloDuoSplitContentFrame(self.hostViewController, self);
+    if (CGRectIsNull(column) && ApolloDuoRailHasVisibleSideBar() && self.hostViewController.view.window) {
+        // UITableView sizes its header to the readable width on the cover.
+        // Identity artwork still centers over the whole screen, including rail.
+        column = [self convertRect:self.hostViewController.view.bounds fromView:self.hostViewController.view];
+    }
+    CGFloat leading = CGRectIsNull(column) ? 0.0 : MAX(0.0, CGRectGetMinX(column));
+    CGFloat alignmentWidth = CGRectIsNull(column) ? width : CGRectGetWidth(column);
+    CGFloat bannerHeight = sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0;
+    ApolloIdentityHeaderLayout layout = ApolloIdentityHeaderLayoutMakeWithBanner(alignmentWidth, bannerHeight);
+    layout.bannerFrame.size.width = width;
+    layout.avatarFrame.origin.x += leading;
+    layout.nameFrame.origin.x += leading;
+    layout.subnameFrame.origin.x += leading;
+    layout.bodyX += leading;
+    return layout;
 }
 
 // Y of the action cluster: right below the name/subname stack and above the
@@ -1452,9 +1469,9 @@ static BOOL ApolloSubredditPostsTypeTag(id viewController, uint8_t *tag) {
 // for #327: we gate on the synchronous PostsType tag so multireddit feeds (even
 // when named like a real subreddit) and profile/special feeds (Upvoted, Hidden,
 // All, Popular, ...) never install a header. For a genuine single-subreddit
-// feed we use `currentSubreddit.name` once Apollo has fetched it, and otherwise
-// fall back to the nav title so the header still appears instantly on
-// navigation instead of waiting for that async object.
+// feed the navigation title is its synchronous slug. currentSubreddit can still
+// describe the previous feed while an in-place quick switch fetches its model.
+// Random feeds use the resolved model because their title can just be "Random".
 // Apollo's search-results VC is a different class and never reaches this hook.
 // Non-static: ApolloGalleryMenu.xm needs the same "is this really a single
 // subreddit, and which one" answer to decide whether the subreddit "..." menu
@@ -1473,6 +1490,12 @@ NSString *ApolloSubredditNameFromViewController(UIViewController *viewController
     uint8_t tag = 0;
     BOOL haveTag = ApolloSubredditPostsTypeTag(viewController, &tag);
     if (haveTag && tag != kApolloPostsTypeSubreddit && tag != kApolloPostsTypeRandom) return nil;
+
+    if (haveTag && tag == kApolloPostsTypeSubreddit) {
+        NSString *title = viewController.navigationItem.title;
+        if (title.length == 0) title = viewController.title;
+        if (title.length) return ApolloNormalizedSubredditName(title);
+    }
 
     // Authoritative slug once Apollo has loaded the backing subreddit object.
     id subreddit = ApolloSubredditTypedIvar(viewController, @"currentSubreddit", objc_getClass("RDKSubreddit"));
@@ -1576,6 +1599,17 @@ static UIView *ApolloSubredditFindSubviewOfClass(UIView *root, Class cls) {
         if (match) return match;
     }
     return nil;
+}
+
+static void ApolloSubredditBindNavigationOwner(UIViewController *controller) {
+    ApolloSubredditWeakControllerBox *box =
+        objc_getAssociatedObject(controller.navigationItem, kApolloSubredditNavigationOwnerKey);
+    if (!box) {
+        box = [ApolloSubredditWeakControllerBox new];
+        objc_setAssociatedObject(controller.navigationItem, kApolloSubredditNavigationOwnerKey,
+                                 box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    box.viewController = controller;
 }
 
 // Apollo's UINavigationItem has no public owner back-reference. Installation
@@ -2608,14 +2642,7 @@ static void ApolloSubredditInstallOrUpdateHeader(UIViewController *viewControlle
 
     header.hostViewController = viewController;
     header.subredditName = subredditName;
-    ApolloSubredditWeakControllerBox *navigationOwner =
-        objc_getAssociatedObject(viewController.navigationItem, kApolloSubredditNavigationOwnerKey);
-    if (!navigationOwner) {
-        navigationOwner = [[ApolloSubredditWeakControllerBox alloc] init];
-        objc_setAssociatedObject(viewController.navigationItem, kApolloSubredditNavigationOwnerKey,
-                                 navigationOwner, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    navigationOwner.viewController = viewController;
+    ApolloSubredditBindNavigationOwner(viewController);
     __weak UIViewController *weakViewController = viewController;
     header.heightInvalidationBlock = ^{
         UIViewController *strongViewController = weakViewController;
@@ -3029,10 +3056,26 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 
 %end
 
+%hook UINavigationItem
+
+- (void)setTitle:(NSString *)title {
+    BOOL changed = ![self.title isEqualToString:title];
+    %orig(title);
+    if (!changed) return;
+    ApolloSubredditWeakControllerBox *owner =
+        objc_getAssociatedObject(self, kApolloSubredditNavigationOwnerKey);
+    // The quick-switcher reuses the feed without another VC layout/appearance
+    // callback. Refresh at the title change for both typed and tapped choices.
+    ApolloSubredditScheduleRepairPass(owner.viewController, @"feed title changed");
+}
+
+%end
+
 %hook _TtC6Apollo19PostsViewController
 
 - (void)viewDidLoad {
     %orig;
+    ApolloSubredditBindNavigationOwner((UIViewController *)self);
     ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
 }
 
@@ -3042,6 +3085,7 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+    ApolloSubredditBindNavigationOwner((UIViewController *)self);
     // Apollo retains popped controllers for swipe-forward navigation. Teardown
     // blocks late offscreen repairs, but the same controller becomes eligible
     // again when it reappears. Clear before %orig so nested layout callbacks

@@ -236,7 +236,11 @@ static NSString *ApolloHLSubredditName(UIViewController *viewController) {
     // title fallback then always agree).
     NSString *derived = nil;
     NSString *normalized = ApolloHLNormalizedName(rawName);
-    if (normalized.length) {
+    // A named feed's title changes synchronously during the quick-switcher
+    // transition; its asynchronously loaded model may still name the old feed.
+    if (haveTag && tag == 0 && rawTitle.length) {
+        derived = ApolloHLNormalizedName(rawTitle).lowercaseString;
+    } else if (normalized.length) {
         derived = normalized.lowercaseString;
     } else if (haveTag) {
         derived = ApolloHLNormalizedName(rawTitle).lowercaseString;

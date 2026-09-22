@@ -1,7 +1,35 @@
 export ARCHS = arm64
 export libFLEX_ARCHS = arm64
 
-TARGET := iphone:clang:26.0:14.0
+# Simulator callers pass TARGET explicitly. Device builds prefer an installed
+# iOS 27.1 SDK, with iOS 26.0 for CI; both retain the iOS 14 deployment floor.
+# Override with APOLLO_DEVICE_SDK=26.0 (or 27.1).
+APOLLO_DEVICE_SDK_PREFERRED := 27.1
+APOLLO_DEVICE_SDK_FALLBACK := 26.0
+APOLLO_DEVICE_DEPLOY := 14.0
+_APOLLO_XCODE_DEVELOPER := $(or $(DEVELOPER_DIR),$(shell xcode-select -p 2>/dev/null))
+
+ifeq ($(filter command line,$(origin TARGET)),)
+  _APOLLO_THEOS_SDKS := $(or $(THEOS_SDKS_PATH),$(THEOS)/sdks)
+  _APOLLO_XCODE_SDKS := $(_APOLLO_XCODE_DEVELOPER)/Platforms/iPhoneOS.platform/Developer/SDKs
+  _APOLLO_SDK_27_1 := $(shell if [ -d "$(_APOLLO_THEOS_SDKS)/iPhoneOS$(APOLLO_DEVICE_SDK_PREFERRED).sdk" ] || \
+                               [ -d "$(_APOLLO_XCODE_SDKS)/iPhoneOS$(APOLLO_DEVICE_SDK_PREFERRED).sdk" ]; then echo yes; fi)
+  ifndef APOLLO_DEVICE_SDK
+    ifneq ($(strip $(_APOLLO_SDK_27_1)),)
+      APOLLO_DEVICE_SDK := $(APOLLO_DEVICE_SDK_PREFERRED)
+    else
+      APOLLO_DEVICE_SDK := $(APOLLO_DEVICE_SDK_FALLBACK)
+    endif
+  endif
+  TARGET := iphone:clang:$(APOLLO_DEVICE_SDK):$(APOLLO_DEVICE_DEPLOY)
+  $(info [ApolloReborn] Device Theos SDK pin $(APOLLO_DEVICE_SDK) (TARGET=$(TARGET)))
+  ifeq ($(APOLLO_DEVICE_SDK),$(APOLLO_DEVICE_SDK_FALLBACK))
+    ifeq ($(strip $(_APOLLO_SDK_27_1)),)
+      $(info [ApolloReborn] iPhoneOS27.1.sdk not in $(_APOLLO_THEOS_SDKS) or $(_APOLLO_XCODE_SDKS); using $(APOLLO_DEVICE_SDK_FALLBACK). A 27.1 Simulator runtime is not a device SDK.)
+    endif
+  endif
+endif
+
 INSTALL_TARGET_PROCESSES = Apollo
 THEOS_LEAN_AND_MEAN = 1
 
@@ -53,6 +81,15 @@ ApolloReborn_FILES = \
     $(WHATS_NEW_GEN_M) \
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
+    $(SRC_DIR)/ApolloDeviceGeometry.m \
+    $(SRC_DIR)/ApolloDeviceDisplay.m \
+    $(SRC_DIR)/ApolloDeviceDisplay.xm \
+    $(SRC_DIR)/ApolloDuoSplitView.xm \
+    $(SRC_DIR)/ApolloDuoRailCore.m \
+    $(SRC_DIR)/ApolloDuoRail.xm \
+    $(SRC_DIR)/ApolloDuoSubsChrome.m \
+    $(SRC_DIR)/ApolloDuoSubsChrome.xm \
+    $(SRC_DIR)/ApolloMediaHinge.xm \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
@@ -174,8 +211,6 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloShortcutListEditing.xm \
     $(SRC_DIR)/ApolloRecentlyRead.xm \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
-    $(SRC_DIR)/ApolloSaveAllMediaItems.m \
-    $(SRC_DIR)/ApolloSaveAllMedia.xm \
     $(SRC_DIR)/ApolloHiddenContentData.m \
     $(SRC_DIR)/ApolloHiddenContentViewController.m \
     $(SRC_DIR)/ApolloHiddenContentMedia.m \
@@ -251,6 +286,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSearchNativeBar.xm \
     $(SRC_DIR)/ApolloSearchObserverCleanup.xm \
     $(SRC_DIR)/ApolloJumpBarSuggestionTint.xm \
+    $(SRC_DIR)/ApolloJumpBarTitle.xm \
+    $(SRC_DIR)/ApolloSubredditSwitcherSheet.xm \
     $(SRC_DIR)/ApolloSearchHeaderOverlapFix.xm \
     $(SRC_DIR)/ApolloSearchTabFixes.xm \
     $(SRC_DIR)/ApolloImageChestResolver.m \
@@ -346,9 +383,9 @@ endif
 # dir explicitly, only when it's present. (Nothing uses the macros right now —
 # theme generation moved off guided generation entirely — but the flag is
 # harmless and any future @Generable use silently needs it.)
-FM_PLUGIN_PATH := $(shell xcode-select -p)/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins
-ifneq ($(wildcard $(FM_PLUGIN_PATH)/libFoundationModelsMacros.dylib),)
-ApolloReborn_SWIFTFLAGS += -plugin-path $(FM_PLUGIN_PATH)
+FM_PLUGIN_PATH := $(_APOLLO_XCODE_DEVELOPER)/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins
+ifneq ($(shell test -f "$(FM_PLUGIN_PATH)/libFoundationModelsMacros.dylib" && echo yes),)
+ApolloReborn_SWIFTFLAGS += -plugin-path "$(FM_PLUGIN_PATH)"
 endif
 # Apple's Translation framework (used by the on-device "apple" translation provider in
 # ApolloAppleTranslation.swift) only exists on iOS 18.0+. Weak-link it so the tweak still

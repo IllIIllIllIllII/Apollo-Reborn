@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Build
+
+- Device Theos builds pin the iOS 27.1 SDK when `iPhoneOS27.1.sdk` is installed, otherwise keep the 26.0 pin; the iOS 14.0 floor is unchanged. Simulator builds stay on `latest`
+
+### Fixes
+
+- Adapt Duo browsing to native sidebar/detail navigation, preserving the active page through fold and orientation changes. Keep search below titles and align empty states, profile cards, and action pills with the visible column.
+- Fill the Duo inner display in Liquid Glass builds by advertising guest SDK 27.1, and keep the app window within its assigned scene.
+- Keep all App Icon packs available while the Duo sidebar shows or hides; use four columns in wide landscape and two in portrait or split view. Show six Daily Spotlight icons.
+- Restore holding the Account tab to open the account switcher without changing tabs.
+- Replace the subreddit title dropdown with a searchable sheet, remove the title chevron, and refresh community headers and highlights when switching subreddits.
+- Keep Floating Post Tabs, media chrome, and Dynamic Island geometry tied to the active window scene and its safe area.
+
 ## [v3.8.0] - 2026-09-25
 
 ### Features

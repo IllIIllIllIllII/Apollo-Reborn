@@ -6,6 +6,7 @@
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloScrollToTop.h"
 #import "ApolloSearchNativeBar.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloState.h"
 
 // Apollo's status-bar proxy calls ASTableViewController rather than scrolling
@@ -724,10 +725,14 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
         ![viewController isKindOfClass:UINavigationController.class]) {
         return %orig(tabBarController, viewController);
     }
-    UINavigationController *nav = (UINavigationController *)viewController;
+    UINavigationController *outer = (UINavigationController *)viewController;
+    // The outer Duo tab contains only a split host. Scroll/pop the actual
+    // detail stack, so the sidebar and its own scroll position stay intact.
+    UINavigationController *nav = ApolloDuoSplitDetailNavigation(outer);
     UIViewController *owner = nav.topViewController;
     // Do not navigate behind a modal or interrupt an interactive push/pop.
-    if (nav.presentedViewController || tabBarController.presentedViewController || nav.transitionCoordinator) return NO;
+    if (outer.presentedViewController || nav.presentedViewController ||
+        tabBarController.presentedViewController || outer.transitionCoordinator || nav.transitionCoordinator) return NO;
     UIView *content = owner.viewIfLoaded;
     if (!content.window) return NO;
     // Texture's real table is authoritative even when empty or short. Do not

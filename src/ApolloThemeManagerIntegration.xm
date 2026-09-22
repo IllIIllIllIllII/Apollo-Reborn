@@ -13,11 +13,56 @@
 #import "ApolloThemeManagerViewController.h"
 #import "ApolloBoldPostTitles.h"
 #import "ApolloCommon.h"
+#import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
 static NSString * const kAppColorThemeKey = @"AppColorTheme";
+
+static BOOL ApolloThemePickerUsesDuoRail(void) {
+    if (!IsLiquidGlass()) return NO;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+    return tabBar.window && !tabBar.hidden
+        && CGRectGetWidth(tabBar.bounds) < 100.0
+        && CGRectGetHeight(tabBar.bounds) > CGRectGetWidth(tabBar.bounds);
+}
+
+static void ApolloThemePickerRemoveBoopButton(UIViewController *controller) {
+    if (!controller || !ApolloThemePickerUsesDuoRail()) return;
+    SEL boop = NSSelectorFromString(@"boopBarButtonItemTappedWithSender:");
+    for (NSInteger side = 0; side < 2; side++) {
+        BOOL rightSide = side == 1;
+        NSArray<UIBarButtonItem *> *source = rightSide
+            ? controller.navigationItem.rightBarButtonItems
+            : controller.navigationItem.leftBarButtonItems;
+        NSMutableArray<UIBarButtonItem *> *filtered = [NSMutableArray array];
+        for (UIBarButtonItem *item in source) {
+            NSString *label = item.accessibilityLabel.lowercaseString;
+            if (item.action == boop || [label containsString:@"boop"]) continue;
+            [filtered addObject:item];
+        }
+        if (filtered.count == source.count) continue;
+        if (rightSide) controller.navigationItem.rightBarButtonItems = filtered;
+        else controller.navigationItem.leftBarButtonItems = filtered;
+    }
+}
+
+static void ApolloThemePickerRestoreDuoTabMetrics(void) {
+    if (!ApolloThemePickerUsesDuoRail()) return;
+    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+    UITabBar *tabBar = tabs.tabBar;
+    void (^relayout)(void) = ^{
+        ApolloDuoRailRefreshGlyphs();
+        [tabBar setNeedsLayout];
+        [tabBar.superview setNeedsLayout];
+        [tabBar.superview layoutIfNeeded];
+    };
+    dispatch_async(dispatch_get_main_queue(), relayout);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), relayout);
+}
 
 // ---------------------------------------------------------------------------
 // Saved original IMPs for the Appearance VC.
@@ -656,6 +701,17 @@ static UIImage *CustomPickerSwatch(void) {
                                  @(sPendingNativeScreenMode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         sPendingNativeScreenMode = ApolloNativeThemeScreenFull;
     }
+    ApolloThemePickerRemoveBoopButton((UIViewController *)self);
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    ApolloThemePickerRemoveBoopButton((UIViewController *)self);
+}
+
+- (void)viewDidLayoutSubviews {
+    %orig;
+    ApolloThemePickerRemoveBoopButton((UIViewController *)self);
 }
 
 - (long long)numberOfSectionsInTableView:(UITableView *)tv {
@@ -821,12 +877,14 @@ static UIImage *CustomPickerSwatch(void) {
                            generation:nil];
         ApolloThemeRuntimeEnable();
         [tv reloadData];
+        ApolloThemePickerRestoreDuoTabMetrics();
         return;
     }
     if (ip.section == 0) {                           // stock theme selected
         if ([ApolloThemeStore shared].customThemeEnabled) ApolloThemeRuntimeDisable();
         %orig(tv, [NSIndexPath indexPathForRow:ip.row - 1 inSection:0]);
         [tv reloadData];
+        ApolloThemePickerRestoreDuoTabMetrics();
         return;
     }
     %orig;
