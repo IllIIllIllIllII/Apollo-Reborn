@@ -76,6 +76,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
 - (void)tableView:(UITableView *)tableView
         willDisplayHeaderView:(UIView *)view
                    forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
     if (tableView != self.tableView || section != 0 ||
         ![view isKindOfClass:[UITableViewHeaderFooterView class]]) return;
 

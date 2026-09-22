@@ -14,6 +14,7 @@
 #import "ApolloBoldPostTitles.h"
 #import "ApolloCommon.h"
 #import "settings/ApolloSettingsForm.h"
+#import "settings/ApolloSettingsTableViewController.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -549,6 +550,7 @@ static CGFloat HeightForHeader(id self, SEL _cmd, UITableView *tv, NSInteger sec
 
 static void WillDisplayHeader(id self, SEL _cmd, UITableView *tv, UIView *view, NSInteger section) {
     if (sWillDisplayHeaderOrig) sWillDisplayHeaderOrig(self, _cmd, tv, view, section);
+    ApolloSettingsApplySectionHeaderTypography(view);
     if (section != 0 || view.bounds.size.height <= 0) return;
     NSString *category = tv.traitCollection.preferredContentSizeCategory ?: @"";
     NSDictionary *pin = objc_getAssociatedObject(self, kThemesHeaderPinKey);
