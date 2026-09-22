@@ -443,6 +443,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    [super tableView:tableView willDisplayHeaderView:view forSection:section];
     if (tableView != self.tableView || ![view isKindOfClass:UITableViewHeaderFooterView.class]) return;
     UIFont *font = ((UITableViewHeaderFooterView *)view).textLabel.font;
     if (font && ![self.pinnedPreviewTitleLabel.font isEqual:font]) {
