@@ -651,22 +651,7 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
 // preview), rather than approximating it with an impact weight. Resolve the
 // private API dynamically so unavailable implementations simply omit feedback.
 - (void)apollo_playBannerPreviewFeedback {
-    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
-    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
-    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
-    SEL stateSelector = NSSelectorFromString(@"previewState");
-    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
-    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
-    if (![configurationClass respondsToSelector:configurationSelector] ||
-        ![configurationClass respondsToSelector:stateSelector] ||
-        ![generatorClass instancesRespondToSelector:initializer] ||
-        ![generatorClass instancesRespondToSelector:transition]) return;
-    id configuration = ((id (*)(id, SEL))objc_msgSend)(configurationClass, configurationSelector);
-    id state = ((id (*)(id, SEL))objc_msgSend)(configurationClass, stateSelector);
-    if (!configuration || !state) return;
-    id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, self);
-    self.bannerPreviewFeedback = generator;
-    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
+    self.bannerPreviewFeedback = ApolloPlayPreviewOpenedFeedback(self);
 }
 
 // Keep the banner menu anchored on iPhone instead of adapting to a bottom sheet.
@@ -698,7 +683,10 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
     [sheet addAction:[UIAlertAction actionWithTitle:@"View Banner" style:UIAlertActionStyleDefault
         handler:^(__unused UIAlertAction *action) {
             ApolloProfileHeaderView *header = weakSelf;
-            if (header.window) ApolloPresentImageChestItems(@[@{@"url": url}], header, 0);
+            if (header.window && ApolloPresentProfileBanner(url, header)) {
+                UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+                [feedback impactOccurred];
+            }
         }]];
     sheet.modalPresentationStyle = UIModalPresentationPopover;
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
