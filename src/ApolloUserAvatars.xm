@@ -131,7 +131,7 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 
 @end
 
-@interface ApolloProfileHeaderView : UIView <UIGestureRecognizerDelegate>
+@interface ApolloProfileHeaderView : UIView <UIGestureRecognizerDelegate, UIPopoverPresentationControllerDelegate>
 @property(nonatomic, strong) UIImageView *bannerImageView;
 @property(nonatomic, strong) id bannerPreviewFeedback;
 @property(nonatomic, strong) UIView *detailsBackgroundView;
@@ -669,6 +669,16 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
     ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
 }
 
+// Keep the banner menu anchored on iPhone instead of adapting to a bottom sheet.
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller {
+    return UIModalPresentationNone;
+}
+
+- (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller
+                                                                             traitCollection:(UITraitCollection *)traits {
+    return UIModalPresentationNone;
+}
+
 - (void)apollo_bannerLongPressed:(UILongPressGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
     UIViewController *host = self.hostViewController;
@@ -690,9 +700,14 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
             ApolloProfileHeaderView *header = weakSelf;
             if (header.window) ApolloPresentImageChestItems(@[@{@"url": url}], header, 0);
         }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self;
-    sheet.popoverPresentationController.sourceRect = self.bannerImageView.frame;
+    sheet.modalPresentationStyle = UIModalPresentationPopover;
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    popover.delegate = self;
+    // Point upward into the banner while keeping the menu above the avatar.
+    popover.sourceView = self;
+    CGFloat menuAnchorY = MAX(0.0, CGRectGetMinY(self.avatarBorderView.frame) - 72.0);
+    popover.sourceRect = CGRectMake(CGRectGetMidX(self.avatarBorderView.frame), menuAnchorY, 1.0, 1.0);
+    popover.permittedArrowDirections = UIPopoverArrowDirectionUp;
     [self apollo_playBannerPreviewFeedback];
     [host presentViewController:sheet animated:YES completion:nil];
 }
