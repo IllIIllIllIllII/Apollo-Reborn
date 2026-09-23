@@ -317,6 +317,9 @@ void ApolloHeaderStyleSearchBarDidMoveToWindow(UISearchBar *searchBar);
 // ASTableViewController, which layers an intercepting UIScrollView over its
 // ASTableView. Applying at the controller level mirrors SwiftUI's inherited
 // NavigationStack modifier and reaches both views.
+#ifdef __cplusplus
+extern "C" {
+#endif
 void ApolloApplyScrollEdgeEffectStyleToViewController(UIViewController *viewController);
 // Temporarily suppress Hard header while immersive profile artwork is visible.
 void ApolloSetProfileHeroVisible(UIViewController *viewController, BOOL visible);
