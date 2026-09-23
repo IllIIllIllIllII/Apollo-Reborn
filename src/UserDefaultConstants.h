@@ -155,8 +155,8 @@ static NSString *const UDKeyFeedVideosUnmutedMemory = @"FeedVideosUnmutedMemory"
 static NSString *const UDKeyFeedVideoScrubber = @"FeedVideoScrubber";
 // "Smoother Video Scrolling": build feed video players on a background queue
 // and let video posts finish drawing asynchronously after they scroll in
-// instead of holding the frame for them. New video setup/play is paced
-// during scrolling. Default YES. See
+// instead of holding the frame for them. New video setup/play waits until
+// scrolling stops. Default YES. See
 // ApolloFeedVideoScrolling.xm.
 static NSString *const UDKeyFeedVideoScrollSmoothing = @"FeedVideoScrollSmoothing";
 // "Hold for Video Speed": press-and-hold the right side of a fullscreen video to

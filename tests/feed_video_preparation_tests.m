@@ -37,25 +37,13 @@ static BOOL sFeedVideoScrollSmoothing = YES;
 @property id supernode;
 @property UIScrollView *scrollView;
 @property BOOL visible;
-@property BOOL inPreloadState;
-@property NSInteger preloads;
 @property NSInteger plays;
-@property CFTimeInterval playedAt;
 @property NSInteger attaches;
 @property AVPlayerItem *attachedItem;
 @end
 @implementation TestNode
 - (BOOL)isVisible { return self.visible; }
-- (BOOL)isInPreloadState { return self.inPreloadState; }
-- (void)didEnterPreloadState {
-    if (ApolloDeferFeedVideoWork(self, &kFeedDeferredPreload, @selector(didEnterPreloadState), @selector(isInPreloadState))) return;
-    self.preloads++;
-}
-- (void)play {
-    if (ApolloDeferFeedVideoWork(self, &kFeedDeferredPlay, @selector(play), @selector(isVisible))) return;
-    self.plays++;
-    self.playedAt = CACurrentMediaTime();
-}
+- (void)play { self.plays++; }
 - (id)videoComposition { CHECK(NSThread.isMainThread); return nil; }
 - (id)audioMix { CHECK(NSThread.isMainThread); return nil; }
 - (void)setCurrentItem:(id)item { CHECK(NSThread.isMainThread); self.attaches++; self.attachedItem = item; }
@@ -155,21 +143,11 @@ int main(void) {
         TestNode *commentsVideo = [TestNode new]; commentsVideo.visible = YES;
         CHECK(!ApolloDeferFeedVideoWork(commentsVideo, &kFeedDeferredPlay, @selector(play), @selector(isVisible)));
         CHECK(ApolloDeferFeedVideoWork(feedNode, &kFeedDeferredPlay, @selector(play), @selector(isVisible)));
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.06]];
-        CHECK(feedNode.plays == 0); // transient cells get a short dwell
-        // Repeated visibility callbacks coalesce without resetting the dwell.
-        CHECK(ApolloDeferFeedVideoWork(feedNode, &kFeedDeferredPlay, @selector(play), @selector(isVisible)));
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.20]];
-        CHECK(feedNode.plays == 1 && scroll.decelerating); // no settle required
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.12]];
+        CHECK(feedNode.plays == 0); // deceleration, not just finger tracking
         scroll.decelerating = NO;
-        scroll.dragging = YES;
-        TestCell *another = [TestCell new]; another.scrollView = scroll; another.visible = YES;
-        TestCell *third = [TestCell new]; third.scrollView = scroll; third.visible = YES;
-        [another play]; [third play];
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.40]];
-        CHECK(another.plays == 1 && third.plays == 1 && scroll.dragging);
-        CHECK(fabs(another.playedAt - third.playedAt) >= 0.099); // burst is spread out
-        CHECK(!objc_getAssociatedObject(another, &kFeedDeferredPlay));
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+        CHECK(feedNode.plays == 1);
         scroll.dragging = YES;
         CHECK(ApolloDeferFeedVideoWork(feedNode, &kFeedDeferredPlay, @selector(play), @selector(isVisible)));
         objc_setAssociatedObject(feedNode, &kFeedDeferredPlay, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -188,22 +166,6 @@ int main(void) {
         [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.12]];
         CHECK(feedNode.plays == 1); // disabling does not leave a duplicate replay
         sFeedVideoScrollSmoothing = YES;
-        // Asset/resource-loader setup is admitted during motion as well;
-        // allowing play alone would still leave new videos waiting for assets.
-        feedNode.inPreloadState = YES;
-        [feedNode didEnterPreloadState];
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.30]];
-        CHECK(feedNode.preloads == 1 && scroll.tracking);
-        [feedNode didEnterPreloadState];
-        feedNode.inPreloadState = NO;
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.20]];
-        CHECK(feedNode.preloads == 1); // exit before admission discards setup
-        // Stopping early removes the dwell, but not inter-operation spacing.
-        sNextFeedVideoStart = 0;
-        [feedNode play];
-        scroll.tracking = NO;
-        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.08]];
-        CHECK(feedNode.plays == 2);
         NSURL *fixture = WriteVideoFixture();
         AVURLAsset *realAsset = [AVURLAsset URLAssetWithURL:fixture options:nil];
         dispatch_semaphore_t loaded = dispatch_semaphore_create(0);
@@ -220,7 +182,7 @@ int main(void) {
         CHECK([realAsset statusOfValueForKey:@"duration" error:nil] == AVKeyValueStatusLoaded);
         CHECK([realAsset statusOfValueForKey:@"tracks" error:nil] == AVKeyValueStatusLoaded);
         [[NSFileManager defaultManager] removeItemAtURL:fixture error:nil];
-        puts("PASS: metadata preload, duplicate coalescing, cancellation, same-asset reentry, stale completion, native failure guards, node lifetime, real player attachment, prepared asset reuse, playback during dragging/deceleration, start pacing, reentry, exit/pause cancellation, toggle-off, crossposts and comments scope");
+        puts("PASS: metadata preload, duplicate coalescing, cancellation, same-asset reentry, stale completion, native failure guards, node lifetime, real player attachment, prepared asset reuse, scroll/deceleration deferral, exit/pause cancellation, toggle-off, crossposts and comments scope");
     }
     return 0;
 }
