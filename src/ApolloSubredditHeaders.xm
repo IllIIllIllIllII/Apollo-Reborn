@@ -3114,7 +3114,17 @@ static void ApolloSubredditSettleBlockedTableToTop(UITableView *tableView) {
 // split-view / chrome-height changes silently never ran.
 - (void)viewSafeAreaInsetsDidChange {
     %orig;
-    ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
+    ApolloSubredditHeaderView *header = objc_getAssociatedObject(self, kApolloSubredditHeaderViewKey);
+    if (header) {
+        // Duo keeps the table full-width beneath the sidebar, so its bounds
+        // can stay identical while the visible alignment band changes. The
+        // structural install check misses that change. Remeasure after UIKit
+        // settles the safe area, including any new description wrapping.
+        [header setNeedsLayout];
+        ApolloSubredditScheduleRepairPass((UIViewController *)self, @"safe area changed");
+    } else {
+        ApolloSubredditScheduleInstallIfNeeded((UIViewController *)self);
+    }
 }
 
 - (void)redditAccountChangedWithNotification:(id)notification {

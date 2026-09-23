@@ -106,6 +106,9 @@ static BOOL ApolloDuoRailIsFeedContentController(UIViewController *controller) {
     NSString *name = NSStringFromClass(controller.class);
     return [name isEqualToString:@"Apollo.PostsViewController"]
         || [name isEqualToString:@"Apollo.CommentsViewController"]
+        // Account > Comments uses its own Texture controller, including
+        // inline media and the attached post preview beneath each comment.
+        || [name isEqualToString:@"Apollo.UserCommentsViewController"]
         || [name isEqualToString:@"Apollo.ProfileViewController"];
 }
 
