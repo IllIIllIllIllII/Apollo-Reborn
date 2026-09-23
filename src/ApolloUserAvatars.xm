@@ -131,8 +131,9 @@ static const void *kApolloProfileTabAvatarImageMarkerKey = &kApolloProfileTabAva
 
 @end
 
-@interface ApolloProfileHeaderView : UIView
+@interface ApolloProfileHeaderView : UIView <UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIImageView *bannerImageView;
+@property(nonatomic, strong) id bannerPreviewFeedback;
 @property(nonatomic, strong) UIView *detailsBackgroundView;
 @property(nonatomic, strong) UIImageView *avatarImageView;
 @property(nonatomic, strong) UIView *avatarBorderView;
@@ -493,6 +494,13 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         _bannerImageView.clipsToBounds = YES;
         [self addSubview:_bannerImageView];
 
+        // The immersive banner image is alpha-zero: recognize on the header
+        // instead, restricting touches to its banner region below the chrome.
+        UILongPressGestureRecognizer *bannerHold = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self action:@selector(apollo_bannerLongPressed:)];
+        bannerHold.delegate = self;
+        [self addGestureRecognizer:bannerHold];
+
         _detailsBackgroundView = [[UIView alloc] init];
         _detailsBackgroundView.backgroundColor = [UIColor clearColor];
         [self addSubview:_detailsBackgroundView];
@@ -630,6 +638,63 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
         _aboutLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     }
     return self;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    if (!sProfileShowBanner || !self.currentBannerURL || !self.bannerImageView.image) return NO;
+    CGPoint point = [touch locationInView:self];
+    return CGRectContainsPoint(self.bannerImageView.frame, point) &&
+        !CGRectContainsPoint(self.avatarBorderView.frame, point);
+}
+
+// UIKit's preview-state pattern (the same semantic feedback as opening a
+// preview), rather than approximating it with an impact weight. Resolve the
+// private API dynamically so unavailable implementations simply omit feedback.
+- (void)apollo_playBannerPreviewFeedback {
+    Class configurationClass = NSClassFromString(@"_UIStatesFeedbackGeneratorPreviewConfiguration");
+    Class generatorClass = NSClassFromString(@"_UIStatesFeedbackGenerator");
+    SEL configurationSelector = NSSelectorFromString(@"defaultConfiguration");
+    SEL stateSelector = NSSelectorFromString(@"previewState");
+    SEL initializer = NSSelectorFromString(@"initWithConfiguration:coordinateSpace:");
+    SEL transition = NSSelectorFromString(@"transitionToState:ended:");
+    if (![configurationClass respondsToSelector:configurationSelector] ||
+        ![configurationClass respondsToSelector:stateSelector] ||
+        ![generatorClass instancesRespondToSelector:initializer] ||
+        ![generatorClass instancesRespondToSelector:transition]) return;
+    id configuration = ((id (*)(id, SEL))objc_msgSend)(configurationClass, configurationSelector);
+    id state = ((id (*)(id, SEL))objc_msgSend)(configurationClass, stateSelector);
+    if (!configuration || !state) return;
+    id generator = ((id (*)(id, SEL, id, id))objc_msgSend)([generatorClass alloc], initializer, configuration, self);
+    self.bannerPreviewFeedback = generator;
+    ((void (*)(id, SEL, id, BOOL))objc_msgSend)(generator, transition, state, YES);
+}
+
+- (void)apollo_bannerLongPressed:(UILongPressGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateBegan) return;
+    UIViewController *host = self.hostViewController;
+    NSURL *url = self.currentBannerURL;
+    if (!host || host.presentedViewController || !sProfileShowBanner || !url) return;
+    // Match the original-image URL used by the profile cache, preserving the
+    // full artwork in the viewer and saved image rather than Reddit's crop.
+    if ([url.host.lowercaseString isEqualToString:@"styles.redditmedia.com"] &&
+        [url.path containsString:@"/styles/profileBanner_"]) {
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        components.query = nil;
+        url = components.URL ?: url;
+    }
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"View Banner" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            ApolloProfileHeaderView *header = weakSelf;
+            if (header.window) ApolloPresentImageChestItems(@[@{@"url": url}], header, 0);
+        }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self;
+    sheet.popoverPresentationController.sourceRect = self.bannerImageView.frame;
+    [self apollo_playBannerPreviewFeedback];
+    [host presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
