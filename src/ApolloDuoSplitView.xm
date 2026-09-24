@@ -481,7 +481,12 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state) {
     [state.primary setViewControllers:@[] animated:NO];
     [state.secondary setViewControllers:@[] animated:NO];
     [state.outer setOverrideTraitCollection:nil forChildViewController:state.host];
-    [state.outer setViewControllers:[@[state.root] arrayByAddingObjectsFromArray:detail] animated:NO];
+    // The cover display opens these tabs at their overview, not at the
+    // detail selected automatically for the unfolded secondary column.
+    BOOL overviewOnCover = !ApolloDuoSplitIsUnfolded()
+        && ([state.kind isEqualToString:@"account"] || [state.kind isEqualToString:@"settings"]);
+    [state.outer setViewControllers:overviewOnCover ? @[state.root]
+        : [@[state.root] arrayByAddingObjectsFromArray:detail] animated:NO];
     [state.outer setNavigationBarHidden:state.navigationBarWasHidden animated:NO];
     state.root.navigationItem.title = state.sidebarTitle;
     state.split = nil;
@@ -791,7 +796,32 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
 %end
 %end
 
+@interface ApolloDuoTabSceneDelegate : NSObject @end
+%group ApolloDuoTabSelectionHooks
+%hook ApolloDuoTabSceneDelegate
+- (BOOL)tabBarController:(UITabBarController *)tabs
+ shouldSelectViewController:(UIViewController *)page {
+    BOOL allowed = %orig(tabs, page);
+    if (!allowed || tabs != (id)ApolloMainTabBarController()
+        || ApolloDuoSplitIsUnfolded() || !ApolloDuoCoverChromeIsActive()
+        || ![page isKindOfClass:UINavigationController.class]) return allowed;
+    UINavigationController *nav = (id)page;
+    NSString *kind = ApolloDuoSplitKind(nav.viewControllers.firstObject);
+    if (([kind isEqualToString:@"account"] || [kind isEqualToString:@"settings"])
+        && nav.viewControllers.count > 1 && !nav.transitionCoordinator
+        && !tabs.presentedViewController && !nav.presentedViewController) {
+        // Only a tab tap returns to the overview. Programmatic selection
+        // (including deep links) keeps its requested destination.
+        [nav popToRootViewControllerAnimated:NO];
+    }
+    return allowed;
+}
+%end
+%end
+
 %ctor {
+    Class sceneDelegate = NSClassFromString(@"Apollo.SceneDelegate");
+    if (sceneDelegate) %init(ApolloDuoTabSelectionHooks, ApolloDuoTabSceneDelegate = sceneDelegate);
     Class navigation = NSClassFromString(@"Apollo.ApolloNavigationController");
     if (navigation) %init(ApolloDuoSplitNavigationHooks, ApolloDuoSplitNavigation = navigation);
     Class emptyLabel = NSClassFromString(@"Apollo.EmptyStateLabel");
