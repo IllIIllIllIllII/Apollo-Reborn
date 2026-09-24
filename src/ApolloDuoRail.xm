@@ -1,6 +1,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloCommon.h"
+#import "ApolloThemeRuntime.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -72,6 +73,30 @@ static BOOL sApolloDuoClampingJumpButton;
 
 // Keep Texture measurements within the native split and trailing safe area.
 %hook ASTableView
+
+- (void)setBackgroundColor:(UIColor *)color {
+    // Texture can replay a resolved color from its table node after Apollo
+    // has already recolored the cells. The rail exposes that table surface.
+    // Keep opaque feed surfaces dynamic; transparent immersive backgrounds
+    // continue to show their own banner/page backdrop.
+    if (color && ApolloDuoRailFeedContentWidth(self) > 0.0
+        && CGColorGetAlpha([color resolvedColorWithTraitCollection:self.traitCollection].CGColor) > 0.01) {
+        color = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+            return [(ApolloThemeCardBackgroundColor() ?: UIColor.systemBackgroundColor)
+                resolvedColorWithTraitCollection:traits];
+        }];
+    }
+    %orig(color);
+}
+
+- (void)didMoveToWindow {
+    %orig;
+    // Initial node colors may be assigned before the table is marked as a
+    // Duo feed. Reapply once it joins the hierarchy, when that scope is known.
+    if (self.window && ApolloDuoRailFeedContentWidth(self) > 0.0) {
+        self.backgroundColor = self.backgroundColor;
+    }
+}
 
 - (void)safeAreaInsetsDidChange {
     %orig;
