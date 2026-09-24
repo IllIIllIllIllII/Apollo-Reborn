@@ -3176,6 +3176,17 @@ BOOL ApolloSubredditTitleShouldTruncate(UIViewController *viewController) {
 %ctor {
     sPostsViewControllerClass = objc_getClass("_TtC6Apollo19PostsViewController");
 
+    // Apollo rethemes its rows directly, but our immersive backing surface
+    // retains the previous theme's dynamic provider. Refresh that surface
+    // after native theme observers finish, including retained tab stacks.
+    for (NSString *name in @[@"com.christianselig.ApolloSpecificThemeChanged",
+                              @"com.christianselig.CommentsColorThemeChanged"]) {
+        [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil
+            queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) {
+                ApolloSubredditRefreshVisibleControllers();
+            }];
+    }
+
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloSubredditHeaderOwnershipChangedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
