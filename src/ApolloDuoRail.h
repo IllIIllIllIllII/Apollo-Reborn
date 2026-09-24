@@ -15,7 +15,7 @@ void ApolloDuoRailSync(void);
 void ApolloDuoRailPrepareFeedContent(UIViewController *controller);
 CGFloat ApolloDuoRailFeedContentWidth(UITableView *table);
 
-/// Reapply reduced native tab glyphs after Apollo replaces or retints them.
+/// Refresh native tab layout after Apollo replaces or retints its glyphs.
 void ApolloDuoRailRefreshGlyphs(void);
 
 /// Keep the feed scroll indicator at the physical trailing screen edge.

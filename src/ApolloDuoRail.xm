@@ -1,7 +1,7 @@
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloCommon.h"
-#import "ApolloThemeRuntime.h"
+#import "ApolloTextureDecls.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -27,6 +27,26 @@ struct ApolloDuoSizeRange { CGSize min; CGSize max; };
 
 @interface _TtC6Apollo20FloatingActionButton : UIButton
 @end
+
+@interface ASCellNode : ASDisplayNode
+@end
+
+@interface _ASTableViewCell : UITableViewCell
+@property (nonatomic, readonly) ASCellNode *node;
+@end
+
+static void ApolloDuoSyncCellBackground(ASCellNode *node) {
+    if (!node.isNodeLoaded || !ApolloDuoRailHasVisibleSideBar()) return;
+    UIView *ancestor = node.view.superview;
+    while (ancestor && ![ancestor isKindOfClass:UITableViewCell.class]) {
+        ancestor = ancestor.superview;
+    }
+    if ([ancestor isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
+        _ASTableViewCell *cell = (_ASTableViewCell *)ancestor;
+        // A queued update must never repaint a cell recycled for another node.
+        if (cell.node == node) cell.backgroundColor = node.backgroundColor;
+    }
+}
 
 // Apollo moves the comments jump button from scroll handling after the
 // controller's layout callbacks have returned. Keep the visible comments
@@ -71,32 +91,30 @@ static BOOL sApolloDuoClampingJumpButton;
 
 %group ApolloDuoRailTexture
 
-// Keep Texture measurements within the native split and trailing safe area.
-%hook ASTableView
+%hook ASCellNode
 
 - (void)setBackgroundColor:(UIColor *)color {
-    // Texture can replay a resolved color from its table node after Apollo
-    // has already recolored the cells. The rail exposes that table surface.
-    // Keep opaque feed surfaces dynamic; transparent immersive backgrounds
-    // continue to show their own banner/page backdrop.
-    if (color && ApolloDuoRailFeedContentWidth(self) > 0.0
-        && CGColorGetAlpha([color resolvedColorWithTraitCollection:self.traitCollection].CGColor) > 0.01) {
-        color = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
-            return [(ApolloThemeCardBackgroundColor() ?: UIColor.systemBackgroundColor)
-                resolvedColorWithTraitCollection:traits];
-        }];
-    }
     %orig(color);
+    // Texture copies the node background to its full-width UIKit cell only
+    // when assigning the cell's element. Apollo recolors existing nodes on a
+    // theme change without assigning that element again, leaving the exposed
+    // rail area in the previous theme. Mirror the actual node color so post,
+    // inbox, and separator surfaces retain their native appearance.
+    if (!self.isNodeLoaded) return;
+    if (NSThread.isMainThread) {
+        ApolloDuoSyncCellBackground(self);
+    } else {
+        __weak ASCellNode *weakNode = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ApolloDuoSyncCellBackground(weakNode);
+        });
+    }
 }
 
-- (void)didMoveToWindow {
-    %orig;
-    // Initial node colors may be assigned before the table is marked as a
-    // Duo feed. Reapply once it joins the hierarchy, when that scope is known.
-    if (self.window && ApolloDuoRailFeedContentWidth(self) > 0.0) {
-        self.backgroundColor = self.backgroundColor;
-    }
-}
+%end
+
+// Keep Texture measurements within the native split and trailing safe area.
+%hook ASTableView
 
 - (void)safeAreaInsetsDidChange {
     %orig;
