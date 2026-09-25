@@ -2223,41 +2223,48 @@ static BOOL sApolloInBarHideSwipeHandler = NO;
 //            that presentation's targets without changing navigation layout.
 //   iOS <26: leave Apollo's behavior intact and observe the gesture so we
 //            can mirror nav-bar visibility onto the tab bar.
+static void ApolloRestoreBarsForNavigationTransition(UINavigationController *navigationController,
+                                                       NSString *reason) {
+    if (!navigationController) return;
+    ApolloTopBarRestoreNavigationController(navigationController);
+    UITabBarController *tabBarController = ApolloLocateTabBarController(navigationController);
+    if (tabBarController) {
+        // Restore unconditionally. A native provider can be visually compact
+        // even when the custom-presentation ownership marker is absent, and
+        // interactive pop transitions enter through the pop methods below.
+        ApolloRestoreHideOnScrollPresentation(tabBarController, reason);
+    }
+}
+
 %hook UINavigationController
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    ApolloTopBarRestoreNavigationController(self);
-    if (ApolloSupportsNativeTabBarScrollBehavior()) {
-        UITabBarController *tbc = ApolloLocateTabBarController(self);
-        if (tbc && ApolloTabBarIsHideOnScrollPresentationOwned(tbc.tabBar)) {
-            ApolloRestoreHideOnScrollPresentation(tbc, @"navigation push");
-        }
-    }
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation push");
     %orig(viewController, animated);
 }
 
 - (UIViewController *)popViewControllerAnimated:(BOOL)animated {
-    ApolloTopBarRestoreNavigationController(self);
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation pop");
     return %orig(animated);
 }
 
 - (NSArray<UIViewController *> *)popToViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    ApolloTopBarRestoreNavigationController(self);
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation pop to controller");
     return %orig(viewController, animated);
 }
 
 - (NSArray<UIViewController *> *)popToRootViewControllerAnimated:(BOOL)animated {
-    ApolloTopBarRestoreNavigationController(self);
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation pop to root");
     return %orig(animated);
 }
 
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
-    ApolloTopBarRestoreNavigationController(self);
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
     %orig(viewControllers, animated);
 }
 
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers {
-    ApolloTopBarRestoreNavigationController(self);
+    ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
     %orig(viewControllers);
 }
 
