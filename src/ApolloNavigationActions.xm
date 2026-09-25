@@ -1598,6 +1598,7 @@ static void ApolloActionsPrepare(UINavigationItem *item, NSArray *items) {
     if (!IsLiquidGlass()) return;
     ApolloNavigationActionsControllerBox *box = objc_getAssociatedObject(item, &kActionsControllerKey);
     if (!box.controller || !ApolloActionsAppController(box.controller)) return;
+    if (ApolloDuoSplitSuppressesFeedActions(box.controller)) return;
     NSArray *nativeItems = ApolloActionsDuoNativeItems(item, items);
     nativeItems = ApolloActionsInboxItems(item, nativeItems);
     if (!ApolloActionsArraysIdentical(items, nativeItems)) {
@@ -1625,6 +1626,8 @@ static void ApolloActionsResetBeforeNavigation(UIViewController *controller) {
 }
 
 static NSArray<UIBarButtonItem *> *ApolloActionsPresentedItems(UINavigationItem *item, NSArray<UIBarButtonItem *> *items) {
+    ApolloNavigationActionsControllerBox *feedBox = objc_getAssociatedObject(item, &kActionsControllerKey);
+    if (ApolloDuoSplitSuppressesFeedActions(feedBox.controller)) return @[];
     ApolloNavigationActionsOwner *owner = ApolloActionsOwner(item, NO);
     if (owner.moreItem == owner.inboxDisclosure && owner.standardItems.count &&
         [items containsObject:owner.moreItem] && ApolloActionsHasTrailingTabRail()) {

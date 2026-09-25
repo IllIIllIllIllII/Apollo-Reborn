@@ -1,6 +1,8 @@
+#import "ApolloDuoAccount.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
 #import "ApolloCommon.h"
+#import "ApolloThemeRuntime.h"
 #import "ApolloTextureDecls.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -44,8 +46,30 @@ static void ApolloDuoSyncCellBackground(ASCellNode *node) {
     if ([ancestor isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
         _ASTableViewCell *cell = (_ASTableViewCell *)ancestor;
         // A queued update must never repaint a cell recycled for another node.
-        if (cell.node == node) cell.backgroundColor = node.backgroundColor;
+        if (cell.node != node) return;
+        cell.backgroundColor = node.backgroundColor;
     }
+}
+
+static UIColor *ApolloDuoAccountFeedNodeBackground(ASCellNode *node, UIColor *requested) {
+    if (!NSThread.isMainThread || !node.isNodeLoaded) return requested;
+    if (ApolloDuoSplitIsSubredditOverlayView(node.view)) return UIColor.clearColor;
+    NSString *name = NSStringFromClass(node.class);
+    if (![name hasSuffix:@"CommentCellNode"] && ![name hasSuffix:@"PostCellNode"]) return requested;
+    UIView *parent = node.view.superview;
+    while (parent && ![parent isKindOfClass:UITableView.class]) parent = parent.superview;
+    BOOL accountFeed = ApolloDuoAccountIsOverviewTable((UITableView *)parent);
+    for (UIResponder *responder = parent; !accountFeed && responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) {
+            accountFeed = ApolloDuoSplitIsAccountFeedController((UIViewController *)responder);
+            break;
+        }
+    }
+    if (!accountFeed) return requested;
+    // Native deselection restores the comment-thread page color even in a
+    // profile feed. All account shortcuts share the same independent cards;
+    // retain their palette on Back as well as on first display.
+    return ApolloThemeCardBackgroundColor() ?: requested;
 }
 
 // Apollo moves the comments jump button from scroll handling after the
@@ -91,10 +115,16 @@ static BOOL sApolloDuoClampingJumpButton;
 
 %group ApolloDuoRailTexture
 
+%hook UIView
+- (void)setBackgroundColor:(UIColor *)color {
+    %orig(ApolloDuoSplitOverlayBackground(self, color));
+}
+%end
+
 %hook ASCellNode
 
 - (void)setBackgroundColor:(UIColor *)color {
-    %orig(color);
+    %orig(ApolloDuoAccountFeedNodeBackground(self, color));
     // Texture copies the node background to its full-width UIKit cell only
     // when assigning the cell's element. Apollo recolors existing nodes on a
     // theme change without assigning that element again, leaving the exposed
@@ -116,9 +146,25 @@ static BOOL sApolloDuoClampingJumpButton;
 // Keep Texture measurements within the native split and trailing safe area.
 %hook ASTableView
 
+- (void)tableView:(UITableView *)table willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)path {
+    %orig(table, cell, path);
+    if ([cell isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
+        ASCellNode *node = ((_ASTableViewCell *)cell).node;
+        node.backgroundColor = ApolloDuoAccountFeedNodeBackground(node, node.backgroundColor);
+        ApolloDuoSyncCellBackground(node);
+    }
+}
+
+- (CGFloat)tableView:(UITableView *)table heightForRowAtIndexPath:(NSIndexPath *)path {
+    if (ApolloDuoAccountHidesProfileRow((UITableView *)self, path)) return 0;
+    return %orig(table, path);
+}
+
 - (void)safeAreaInsetsDidChange {
     %orig;
     UITableView *table = (UITableView *)self;
+    // Sidebar changes can leave bounds untouched while moving the visible pane.
+    [table.backgroundView setNeedsLayout];
     CGFloat width = ApolloDuoRailFeedContentWidth(table);
     if (width <= 0.0) return;
     static char measuredWidthKey, refreshPendingKey;
@@ -163,7 +209,16 @@ static BOOL sApolloDuoClampingJumpButton;
 - (void)endUpdatesAnimated:(BOOL)animated completion:(void (^)(BOOL))completion {
     // Folding already has a UIKit transition. Texture otherwise starts its
     // own height animation after remeasuring, making post text settle twice.
-    %orig(ApolloDuoSplitIsResizing() ? NO : animated, completion);
+    __weak UITableView *weakTable = (id)self;
+    %orig(ApolloDuoSplitIsResizing() ? NO : animated, ^(BOOL finished) {
+        if (completion) completion(finished);
+        UITableView *table = weakTable;
+        if (table) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"ApolloDuoProfileMenuUpdated" object:table];
+            });
+        }
+    });
 }
 
 // Texture caches the table's bounds width, subtracting contentInset but not

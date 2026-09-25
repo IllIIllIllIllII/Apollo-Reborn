@@ -1,3 +1,4 @@
+#import "../ApolloDuoSplitView.h"
 #import "settings/ApolloSubredditSectionsViewController.h"
 
 #import "ApolloCommon.h"
@@ -113,7 +114,7 @@ static ApolloSubredditSectionsPreviewBlock *ApolloSectionsPreviewRow(NSString *k
 // place; the sample shows the default).
 static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPreviewState(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL modern = sSubredditListEnhancements && [defaults boolForKey:UDKeyModernSubredditDividers];
+    BOOL modern = (sSubredditListEnhancements || ApolloDuoRequiresSubredditEnhancements()) && [defaults boolForKey:UDKeyModernSubredditDividers];
     BOOL separate = [defaults boolForKey:UDKeySeparateFollowedUsers];
     NSString *multiredditSubtitle = sHideMultiredditDescriptions ? nil : @"apolloapp, ios, swift";
 
@@ -367,6 +368,7 @@ static ApolloSubredditSectionsPreviewState *ApolloSubredditSectionsCurrentPrevie
 @property (nonatomic, strong) NSLayoutConstraint *previewCardTrailingConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *scrollBoundaryTrailingConstraint;
 @property (nonatomic) CGFloat previewTrailingRailReserve;
+@property (nonatomic, strong) NSLayoutConstraint *previewCardLeadingConstraint;
 // The host's constraints for wherever it is mounted right now (rebuilt on
 // every remount — moving a view drops its cross-hierarchy constraints).
 @property (nonatomic, copy) NSArray<NSLayoutConstraint *> *hostMountConstraints;
@@ -426,14 +428,15 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     ApolloSettingsRow *enhancements =
         [ApolloSettingsRow switchRowWithID:@"sections.enhancements"
                                      title:@"Subreddit List Enhancements"
-                                      isOn:^BOOL { return sSubredditListEnhancements; }
+                                      isOn:^BOOL { return sSubredditListEnhancements || ApolloDuoRequiresSubredditEnhancements(); }
                                   onToggle:^(UISwitch *sender) { [weakSelf listEnhancementsToggled:sender]; }];
     ApolloSettingsRow *modernDividers =
         [ApolloSettingsRow switchRowWithID:@"sections.modernDividers"
                                      title:@"Modern Subreddit Dividers"
                                       isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyModernSubredditDividers]; }
                                   onToggle:^(UISwitch *sender) { [weakSelf modernDividersToggled:sender]; }];
-    modernDividers.visible = ^BOOL { return sSubredditListEnhancements; };
+    enhancements.visible = ^BOOL { return !ApolloDuoRequiresSubredditEnhancements(); };
+    modernDividers.visible = ^BOOL { return sSubredditListEnhancements || ApolloDuoRequiresSubredditEnhancements(); };
     ApolloSettingsSection *optionsSection =
         [ApolloSettingsSection sectionWithTitle:@"Options"
                                          footer:@"Followed users get their own Following section, reorderable from the list's Edit mode. Multireddit rows show a description or their subreddits. Enhancements add accent-colored dividers — the preview shows what each option changes."
@@ -739,6 +742,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     [self.view addSubview:pinnedCover];
     NSLayoutConstraint *pinIconTrailing =
         [pinIcon.trailingAnchor constraintEqualToAnchor:previewCard.trailingAnchor constant:-12.0];
+    self.previewCardLeadingConstraint = [previewCard.leadingAnchor constraintEqualToAnchor:previewHost.leadingAnchor constant:20.0];
     NSLayoutConstraint *previewCardTrailing =
         [previewCard.trailingAnchor constraintEqualToAnchor:previewHost.trailingAnchor constant:-20.0];
     NSLayoutConstraint *scrollBoundaryTrailing =
@@ -757,7 +761,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     self.previewContentHeightConstraint = contentHeight;
     [NSLayoutConstraint activateConstraints:@[
         [titleLabel.topAnchor constraintEqualToAnchor:previewHost.topAnchor constant:15.0],
-        [titleLabel.leadingAnchor constraintEqualToAnchor:previewHost.layoutMarginsGuide.leadingAnchor constant:16.0],
+        [titleLabel.leadingAnchor constraintEqualToAnchor:previewCard.leadingAnchor constant:16.0],
         [titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:pinCaption.leadingAnchor constant:-8.0],
 
         [pinIcon.centerYAnchor constraintEqualToAnchor:titleLabel.centerYAnchor],
@@ -772,7 +776,7 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
         [pinButton.heightAnchor constraintEqualToConstant:44.0],
 
         [previewCard.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:7.0],
-        [previewCard.leadingAnchor constraintEqualToAnchor:previewHost.leadingAnchor constant:20.0],
+        self.previewCardLeadingConstraint,
         previewCardTrailing,
         [previewCard.bottomAnchor constraintEqualToAnchor:previewHost.bottomAnchor constant:-2.0],
         contentHeight,
@@ -993,6 +997,12 @@ static BOOL ApolloSubredditSectionsPreviewPinnedPreference(void) {
     // the table's bounds. Measure the real rail frame and reserve that width
     // inside the preview only, keeping its card, pin, and boundary clear of
     // the system controls in both pinned and scrolling-header modes.
+    CGFloat leadingInset = self.view.safeAreaInsets.left;
+    if (fabs(self.previewCardLeadingConstraint.constant - (20.0 + leadingInset)) > 0.5) {
+        self.previewCardLeadingConstraint.constant = 20.0 + leadingInset;
+        [self.previewHost setNeedsLayout];
+        [self apollo_syncPreviewSlot];
+    }
     CGFloat railReserve = 0.0;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;

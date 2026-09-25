@@ -512,7 +512,9 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     CGFloat alignmentWidth = CGRectIsNull(column) ? width : CGRectGetWidth(column);
     CGFloat bannerHeight = sSubredditShowBanner ? ApolloSubredditBannerHeight : 0.0;
     ApolloIdentityHeaderLayout layout = ApolloIdentityHeaderLayoutMakeWithBanner(alignmentWidth, bannerHeight);
-    layout.bannerFrame.size.width = width;
+    // Crop the artwork in the same visible column as the identity controls.
+    layout.bannerFrame.origin.x = leading;
+    layout.bannerFrame.size.width = alignmentWidth;
     layout.avatarFrame.origin.x += leading;
     layout.nameFrame.origin.x += leading;
     layout.subnameFrame.origin.x += leading;
@@ -2187,6 +2189,7 @@ static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITa
     } else if (tableView.backgroundView != ambient) {
         tableView.backgroundView = ambient;
     }
+    ambient.contentViewController = viewController;
     ambient.frame = tableView.bounds;
     header.bannerImageView.alpha = ApolloSubredditFadedBannerAlpha;
     ApolloSubredditSyncAmbient(header);
@@ -2867,7 +2870,14 @@ static void ApolloSubredditRefreshViewControllersInTree(UIViewController *viewCo
             NSString *normalizedName = ApolloNormalizedSubredditName(subredditName).lowercaseString;
             matchesScope = normalizedName.length > 0 && [subredditNames containsObject:normalizedName];
         }
-        if (matchesScope) ApolloSubredditInstallOrUpdateHeader(viewController);
+        if (matchesScope) {
+            ApolloSubredditInstallOrUpdateHeader(viewController);
+            // Visibility changes (especially Flair beside Join) can leave the
+            // header's total size unchanged. Resizing the wrapper alone then
+            // does not run the layout that applies the current preferences.
+            ApolloSubredditHeaderView *header = objc_getAssociatedObject(viewController, kApolloSubredditHeaderViewKey);
+            [header setNeedsLayout];
+        }
     }
 
     for (UIViewController *child in viewController.childViewControllers) {

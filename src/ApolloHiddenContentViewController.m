@@ -1,4 +1,5 @@
 #import "ApolloHiddenContentViewController.h"
+#import "ApolloDuoSplitView.h"
 #import "ApolloHiddenContentMedia.h"
 #import "ApolloCommon.h"
 #import "ApolloSaveAllMedia.h"
@@ -8,6 +9,31 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
+
+// A split secondary can extend beneath the sidebar. Keep status text and
+// progress inside the visible pane, including while its width changes.
+@interface ApolloHiddenStatusContainer : UIView
+@property(nonatomic, weak) UIViewController *owner;
+@property(nonatomic, strong) UIView *contentView;
+@end
+@implementation ApolloHiddenStatusContainer
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        _contentView = [UIView new];
+        [self addSubview:_contentView];
+    }
+    return self;
+}
+- (void)safeAreaInsetsDidChange {
+    [super safeAreaInsetsDidChange];
+    [self setNeedsLayout];
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect frame = ApolloDuoSplitContentFrame(self.owner, self);
+    self.contentView.frame = CGRectIsNull(frame) ? self.bounds : CGRectIntersection(self.bounds, frame);
+}
+@end
 
 // Some image hosts return a successful image response containing their removal
 // notice. Recognize only the known tombstone wording, never the post's status:
@@ -887,6 +913,7 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 @property (nonatomic, strong) UIView *statusContainerView;
 @property (nonatomic, strong) DACircularProgressView *progressRing;
 @property (nonatomic, strong) UILabel *progressLabel;
+@property (nonatomic, strong) UIView *statusContentView;
 @property (nonatomic, strong) UILabel *emptyStateLabel;
 @end
 
@@ -950,7 +977,10 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
 
     // tableView.backgroundView rather than a plain subview of self.view: it's a
     // fixed, non-scrolling layer UIKit keeps sized to the table view's bounds.
-    self.statusContainerView = [[UIView alloc] initWithFrame:self.tableView.bounds];
+    ApolloHiddenStatusContainer *statusContainer = [[ApolloHiddenStatusContainer alloc] initWithFrame:self.tableView.bounds];
+    statusContainer.owner = self;
+    self.statusContainerView = statusContainer;
+    self.statusContentView = statusContainer.contentView;
     self.statusContainerView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.backgroundView = self.statusContainerView;
 
@@ -971,16 +1001,16 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
     self.progressLabel.textAlignment = NSTextAlignmentCenter;
     self.progressLabel.numberOfLines = 0;
     self.progressLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.statusContainerView addSubview:self.progressRing];
-    [self.statusContainerView addSubview:self.progressLabel];
+    [self.statusContentView addSubview:self.progressRing];
+    [self.statusContentView addSubview:self.progressLabel];
     [NSLayoutConstraint activateConstraints:@[
-        [self.progressRing.centerXAnchor constraintEqualToAnchor:self.statusContainerView.centerXAnchor],
-        [self.progressRing.centerYAnchor constraintEqualToAnchor:self.statusContainerView.centerYAnchor constant:-12],
+        [self.progressRing.centerXAnchor constraintEqualToAnchor:self.statusContentView.centerXAnchor],
+        [self.progressRing.centerYAnchor constraintEqualToAnchor:self.statusContentView.centerYAnchor constant:-12],
         [self.progressRing.widthAnchor constraintEqualToConstant:56],
         [self.progressRing.heightAnchor constraintEqualToConstant:56],
         [self.progressLabel.topAnchor constraintEqualToAnchor:self.progressRing.bottomAnchor constant:12],
-        [self.progressLabel.leadingAnchor constraintEqualToAnchor:self.statusContainerView.leadingAnchor constant:20],
-        [self.progressLabel.trailingAnchor constraintEqualToAnchor:self.statusContainerView.trailingAnchor constant:-20],
+        [self.progressLabel.leadingAnchor constraintEqualToAnchor:self.statusContentView.leadingAnchor constant:20],
+        [self.progressLabel.trailingAnchor constraintEqualToAnchor:self.statusContentView.trailingAnchor constant:-20],
     ]];
 
     [self apollo_fetchForceRefresh:NO];
@@ -1176,8 +1206,8 @@ static void ApolloHiddenContentSaveMedia(NSArray<NSURL *> *urls, UIViewControlle
         self.emptyStateLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     }
     self.emptyStateLabel.text = text;
-    self.emptyStateLabel.frame = CGRectInset(self.statusContainerView.bounds, 32.0, 0);
-    [self.statusContainerView addSubview:self.emptyStateLabel];
+    self.emptyStateLabel.frame = CGRectInset(self.statusContentView.bounds, 32.0, 0);
+    [self.statusContentView addSubview:self.emptyStateLabel];
 }
 
 - (void)apollo_showEmptyState {

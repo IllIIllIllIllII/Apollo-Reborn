@@ -1,3 +1,4 @@
+#import "ApolloDuoAccount.h"
 // ApolloProfileMoreMenu.xm
 //
 // A "..." for the signed-in user's own profile tab, so the button is universal
@@ -141,7 +142,7 @@ static void ApolloProfileMoreMenuShare(UIViewController *viewController) {
 
 #pragma mark - Menu construction
 
-static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
+UIMenu *ApolloProfileMoreMenuForController(UIViewController *viewController) {
     __weak UIViewController *weakVC = viewController;
 
     UIAction *gallery = [UIAction actionWithTitle:@"Gallery View"
@@ -248,7 +249,7 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
             // would need to refresh — and never reassigning .menu means a
             // normalize can't collapse or re-render the pull-down while the
             // user has it open.
-            ours.menu = ApolloProfileMoreMenuBuild(viewController);
+            ours.menu = ApolloProfileMoreMenuForController(viewController);
             objc_setAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey, ours,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[ProfileMoreMenu] Built own-profile '...' for u/%@ (glyph=%@)",

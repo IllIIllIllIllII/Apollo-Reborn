@@ -777,9 +777,21 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
                   (long)section, height, fitted);
     }
     if (!needsPass) return;
+    // Adopting footer measurements must not move the reader. UITableView may
+    // compensate its offset when estimates below the viewport become exact,
+    // which otherwise makes a newly pushed settings page snap upward.
+    __block CGPoint offset = tableView.contentOffset;
+    CGFloat distanceFromTop = offset.y + tableView.adjustedContentInset.top;
     [UIView performWithoutAnimation:^{
         [tableView beginUpdates];
         [tableView endUpdates];
+        [tableView layoutIfNeeded];
+        if (!tableView.dragging && !tableView.decelerating) {
+            CGFloat minimum = -tableView.adjustedContentInset.top;
+            CGFloat maximum = MAX(minimum, tableView.contentSize.height - tableView.bounds.size.height + tableView.adjustedContentInset.bottom);
+            offset.y = MIN(maximum, MAX(minimum, distanceFromTop + minimum));
+            [tableView setContentOffset:offset animated:NO];
+        }
     }];
 }
 

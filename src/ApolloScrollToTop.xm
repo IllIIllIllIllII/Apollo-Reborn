@@ -761,6 +761,8 @@ static UIScrollView *ApolloPostsTabContentScrollView(UIView *view, CGRect viewpo
     } else if (nav.viewControllers.count > 1) {
         [nav popViewControllerAnimated:!UIAccessibilityIsReduceMotionEnabled()];
         ApolloLog(@"[PostsTab] Returned one page from %@", NSStringFromClass(owner.class));
+    } else if (ApolloDuoSplitRevealPostsList(outer)) {
+        ApolloLog(@"[PostsTab] Revealed subreddit list at feed top");
     }
     // Returning NO also prevents UIKit/Apollo from popping again after our scroll.
     return NO;
