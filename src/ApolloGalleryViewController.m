@@ -981,7 +981,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
     if (scrollView != self.collectionView ||
-        sTabBarHideStyle != ApolloTabBarHideStyleDown ||
+        sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
         ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
 
     // The first drag can create a fresh edge-effect object after the layout

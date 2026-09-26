@@ -128,7 +128,7 @@ static NSHashTable<ApolloDownBottomEdgeState *> *sApolloDownBottomEdges;
 
 static BOOL ApolloDownOwnsBottomEdge(UIScrollView *scrollView) {
     if (!scrollView.window || !ApolloSupportsNativeTabBarScrollBehavior() ||
-        sTabBarHideStyle != ApolloTabBarHideStyleDown ||
+        sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
         ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return NO;
     UITabBarController *controller = nil;
     for (UIResponder *responder = scrollView; responder; responder = responder.nextResponder) {

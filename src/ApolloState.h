@@ -14,12 +14,14 @@ typedef NS_ENUM(NSInteger, ApolloTabBarHideStyle) {
     ApolloTabBarHideStyleRight = 1,
     ApolloTabBarHideStyleFade = 2,
     ApolloTabBarHideStyleDown = 3,
+    ApolloTabBarHideStyleMinimize = 4,
 };
 
 static inline BOOL ApolloTabBarHideStyleUsesCustomPresentation(
     ApolloTabBarHideStyle style) {
     return style == ApolloTabBarHideStyleFade ||
-           style == ApolloTabBarHideStyleDown;
+           style == ApolloTabBarHideStyleDown ||
+           style == ApolloTabBarHideStyleMinimize;
 }
 
 extern NSString *sRedditClientId;
