@@ -4019,7 +4019,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     NSInteger storedTabBarHideStyle =
         [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyTabBarCollapseSide];
     if (storedTabBarHideStyle < ApolloTabBarHideStyleLeft ||
-        storedTabBarHideStyle > ApolloTabBarHideStyleDown) {
+        storedTabBarHideStyle > ApolloTabBarHideStyleMinimize) {
         storedTabBarHideStyle = ApolloTabBarHideStyleLeft;
     }
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
