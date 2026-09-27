@@ -34,6 +34,55 @@
 // The saved position and the second status-bar tap are always on. The Return
 // Button setting (sScrollReturnButton) only governs the visible affordance:
 // the arrow beside Back and the navigation-bar tap.
+// Shared with the Interface preview so the symbol and glass stay identical.
+UIButton *ApolloScrollReturnCreateButton(void) {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.frame = CGRectMake(0, 0, 44, 44);
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setImage:[UIImage systemImageNamed:@"arrow.uturn.down"] forState:UIControlStateNormal];
+    [button setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]
+                            forImageInState:UIControlStateNormal];
+    if (@available(iOS 26.0, *)) {
+        if (IsLiquidGlass()) {
+            // Match the back button's 44-point glass surface. A configured
+            // glass button adds optical background insets inside its bounds,
+            // making the bubble smaller even when the touch target is larger.
+            UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+            effect.interactive = YES;
+            UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
+            glass.frame = CGRectMake(0, 0, 44, 44);
+            glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            glass.userInteractionEnabled = NO;
+            glass.clipsToBounds = YES;
+            glass.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
+            // Effect foreground belongs inside contentView. UIButton may
+            // reorder its internal image view underneath a custom effect.
+            [button setImage:nil forState:UIControlStateNormal];
+            UIImage *symbol = [UIImage systemImageNamed:@"arrow.uturn.down"
+                withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]];
+            UIImageView *arrow = [[UIImageView alloc] initWithImage:symbol];
+            arrow.translatesAutoresizingMaskIntoConstraints = NO;
+            arrow.tintColor = UIColor.labelColor;
+            arrow.isAccessibilityElement = NO;
+            [glass.contentView addSubview:arrow];
+            [NSLayoutConstraint activateConstraints:@[
+                [arrow.centerXAnchor constraintEqualToAnchor:glass.contentView.centerXAnchor],
+                [arrow.centerYAnchor constraintEqualToAnchor:glass.contentView.centerYAnchor]
+            ]];
+            [button addSubview:glass];
+        } else {
+            button.backgroundColor = UIColor.secondarySystemBackgroundColor;
+        }
+    } else {
+        button.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    }
+    button.tintColor = UIColor.labelColor;
+    button.layer.cornerRadius = 22;
+    button.accessibilityIdentifier = @"apollo.scrollReturn";
+    button.accessibilityLabel = @"Return to your spot";
+    return button;
+}
+
 static char kApolloScrollReturn;
 static char kApolloScrollReturnGeometryContext;
 
@@ -408,50 +457,7 @@ static NSString *ApolloReturnItemID(id node) {
 }
 - (void)showButton {
     if (!sScrollReturnButton || self.returnItem) return;
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.frame = CGRectMake(0, 0, 44, 44);
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-    [button setImage:[UIImage systemImageNamed:@"arrow.uturn.down"] forState:UIControlStateNormal];
-    [button setPreferredSymbolConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]
-                            forImageInState:UIControlStateNormal];
-    if (@available(iOS 26.0, *)) {
-        if (IsLiquidGlass()) {
-            // Match the back button's 44-point glass surface. A configured
-            // glass button adds optical background insets inside its bounds,
-            // making the bubble smaller even when the touch target is larger.
-            UIGlassEffect *effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-            effect.interactive = YES;
-            UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:effect];
-            glass.frame = CGRectMake(0, 0, 44, 44);
-            glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            glass.userInteractionEnabled = NO;
-            glass.clipsToBounds = YES;
-            glass.cornerConfiguration = [UICornerConfiguration capsuleConfiguration];
-            // Effect foreground belongs inside contentView. UIButton may
-            // reorder its internal image view underneath a custom effect.
-            [button setImage:nil forState:UIControlStateNormal];
-            UIImage *symbol = [UIImage systemImageNamed:@"arrow.uturn.down"
-                withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:22 weight:UIImageSymbolWeightMedium]];
-            UIImageView *arrow = [[UIImageView alloc] initWithImage:symbol];
-            arrow.translatesAutoresizingMaskIntoConstraints = NO;
-            arrow.tintColor = UIColor.labelColor;
-            arrow.isAccessibilityElement = NO;
-            [glass.contentView addSubview:arrow];
-            [NSLayoutConstraint activateConstraints:@[
-                [arrow.centerXAnchor constraintEqualToAnchor:glass.contentView.centerXAnchor],
-                [arrow.centerYAnchor constraintEqualToAnchor:glass.contentView.centerYAnchor]
-            ]];
-            [button addSubview:glass];
-        } else {
-            button.backgroundColor = UIColor.secondarySystemBackgroundColor;
-        }
-    } else {
-        button.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    }
-    button.tintColor = UIColor.labelColor;
-    button.layer.cornerRadius = 22;
-    button.accessibilityIdentifier = @"apollo.scrollReturn";
-    button.accessibilityLabel = @"Return to your spot";
+    UIButton *button = ApolloScrollReturnCreateButton();
     button.alpha = 0;
     [button addTarget:self action:@selector(returnToPosition) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
