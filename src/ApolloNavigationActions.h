@@ -32,4 +32,9 @@ static inline BOOL ApolloNavigationActionsViewIsInManagedRoots(UIView *view, NSA
     return NO;
 }
 
+// Settings preview reuses the production glass strip and glyph animation.
+UIControl *ApolloNavigationActionsCreatePreview(UIView *content, UIButton *more);
+void ApolloNavigationActionsPreviewSetExpanded(UIControl *preview, BOOL expanded, BOOL animated,
+                                               void (^layout)(void));
+
 __END_DECLS

@@ -3,6 +3,7 @@
 #import "ApolloSearchLandingPreferences.h"
 #import "settings/CustomAPIViewController.h"
 #import "settings/ApolloSiriSettingsViewController.h"
+#import "ApolloHeaderPreview.h"
 #import "ApolloCommon.h"
 #import "ApolloAppIcon.h"
 #import "ApolloFeedShortcutsAppearance.h"
@@ -2291,12 +2292,55 @@ typedef NS_ENUM(NSInteger, Tag) {
 - (ApolloSettingsSection *)buildInterfaceDisplayNavigationSection {
     __weak typeof(self) weakSelf = self;
 
-    // "Color Flairs" now rides Appearance → Flair (native injection) —
-    // -flairColorsSwitchToggled: below stays as the shared toggle handler.
+    NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
+    ApolloSettingsRow *trueBlackKeyboard =
+        [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
+                                    title:@"True Black Keyboard"
+                                   detail:^NSString * {
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            return trueBlackTitles[MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1))];
+        }
+                                 onSelect:^{
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.trueBlackKeyboard"],
+                @"True Black Keyboard", trueBlackTitles, MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1)),
+                ^(NSInteger picked) {
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyTrueBlackKeyboardMode];
+                    [weakSelf reloadRowWithID:@"interface.trueBlackKeyboard"];
+                });
+        }];
 
-    // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
-    // Glass only — hidden otherwise rather than shown-disabled, since the row
-    // has nothing to preview/explain on a non-Glass device.
+    return [ApolloSettingsSection sectionWithTitle:@"Display"
+        footer:@"True Black Keyboard uses a pure black background in the chosen appearance, starting the next time the keyboard appears." rows:@[ trueBlackKeyboard ]];
+}
+
+- (ApolloSettingsSection *)buildInterfaceHeaderSection {
+    __weak typeof(self) weakSelf = self;
+
+    ApolloSettingsRow *preview = [ApolloSettingsRow customRowWithID:@"interface.headerPreview"
+        cell:^UITableViewCell *(UITableView *tableView, ApolloSettingsRow *row) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"HeaderPreview"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"HeaderPreview"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                ApolloHeaderPreview *sample = [ApolloHeaderPreview new];
+                sample.tag = 7301;
+                sample.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:sample];
+                [NSLayoutConstraint activateConstraints:@[
+                    [sample.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:8],
+                    [sample.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-8],
+                    [sample.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8],
+                    [sample.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8],
+                ]];
+            }
+            [(ApolloHeaderPreview *)[cell.contentView viewWithTag:7301] refresh];
+            return cell;
+        } onSelect:nil];
+    preview.height = ^CGFloat { return 100 + MAX(32, ceil([UIFont preferredFontForTextStyle:UIFontTextStyleCaption2 compatibleWithTraitCollection:weakSelf.traitCollection].lineHeight) * (UIContentSizeCategoryIsAccessibilityCategory(weakSelf.traitCollection.preferredContentSizeCategory) ? 3 : 2) + 12); };
+    preview.visible = ^BOOL { return IsLiquidGlass(); };
+
+
     ApolloSettingsRow *scrollEdgeEffect =
         [ApolloSettingsRow customRowWithID:@"gen.scrollEdgeEffect"
                                       cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
@@ -2333,6 +2377,7 @@ typedef NS_ENUM(NSInteger, Tag) {
             sScrollReturnButton = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyScrollReturnButton];
             ApolloScrollReturnButtonSettingChanged();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
 
     ApolloSettingsRow *collapseActions = [ApolloSettingsRow switchRowWithID:@"interface.CollapseNavigationActions"
@@ -2341,8 +2386,11 @@ typedef NS_ENUM(NSInteger, Tag) {
         onToggle:^(UISwitch *sender) {
             sCollapseNavigationActions = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCollapseNavigationActions];
-            [weakSelf visibilityDidChange];
+            if (UIAccessibilityIsReduceMotionEnabled()) {
+                [UIView performWithoutAnimation:^{ [weakSelf visibilityDidChange]; }];
+            } else [weakSelf visibilityDidChange];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     collapseActions.visible = ^BOOL { return IsLiquidGlass(); };
 
@@ -2353,34 +2401,16 @@ typedef NS_ENUM(NSInteger, Tag) {
             sCenterTitleBetweenButtons = sender.on;
             [NSUserDefaults.standardUserDefaults setBool:sender.on forKey:UDKeyCenterTitleBetweenButtons];
             ApolloNavigationTitlesRefresh();
+            [(ApolloHeaderPreview *)[[weakSelf cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
         }];
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
-    NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
-    ApolloSettingsRow *trueBlackKeyboard =
-        [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
-                                    title:@"True Black Keyboard"
-                                   detail:^NSString * {
-            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
-            return trueBlackTitles[MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1))];
-        }
-                                 onSelect:^{
-            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
-            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.trueBlackKeyboard"],
-                @"True Black Keyboard", trueBlackTitles, MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1)),
-                ^(NSInteger picked) {
-                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyTrueBlackKeyboardMode];
-                    [weakSelf reloadRowWithID:@"interface.trueBlackKeyboard"];
-                });
-        }];
-
-    NSString *footer = @"Return Button restores your scroll position after a status bar tap.";
+    NSString *footer = @"Return appears beside Back after tapping the status bar to scroll a feed or comments to the top. Tap the arrow or header to return; scrolling or leaving clears it. A second status-bar tap works even with Return off.";
     if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
+        footer = [footer stringByAppendingString:@"\n\nCollapse hides actions behind •••; tap to expand, scroll to collapse. With Collapse off, actions stay visible; Center Title aligns the title between buttons. Compare styles above."];
     }
-    return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
-                                            footer:footer
-                                              rows:@[ scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, scrollEdgeEffect ]];
+    return [ApolloSettingsSection sectionWithTitle:@"Header" footer:footer
+        rows:@[ preview, scrollEdgeEffect, scrollReturnButton, collapseActions, centerBetween ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
@@ -2412,6 +2442,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     [[NSUserDefaults standardUserDefaults] setInteger:sScrollEdgeEffectStyle forKey:UDKeyScrollEdgeEffectStyle];
     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloScrollEdgeEffectStyleChangedNotification object:nil];
     [self reloadRowWithID:@"gen.scrollEdgeEffect"];
+    [(ApolloHeaderPreview *)[[self cellForRowID:@"interface.headerPreview"].contentView viewWithTag:7301] refresh];
 }
 
 - (void)presentScrollEdgeEffectStyleSheetFromSourceView:(UIView *)sourceView {
@@ -5605,11 +5636,18 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 @end
 
 @implementation ApolloInterfaceSettingsViewController
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if (![previousTraitCollection.preferredContentSizeCategory isEqualToString:self.traitCollection.preferredContentSizeCategory]) {
+        [self.tableView reloadData];
+    }
+}
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
               [self buildInterfaceDisplayNavigationSection],
               [self buildInterfaceLiquidGlassSection],
+              [self buildInterfaceHeaderSection],
               [self buildInterfaceMenusSection] ];
 }
 @end

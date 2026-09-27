@@ -1,6 +1,8 @@
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 __BEGIN_DECLS
+// The production 44-point return control, without a navigation action.
+UIButton *ApolloScrollReturnCreateButton(void);
 // The Return Button setting (UDKeyScrollReturnButton / sScrollReturnButton)
 // changed. Off: every live screen drops its return button and navigation-bar
 // tap right away; the saved position stays, so a second status-bar tap still
