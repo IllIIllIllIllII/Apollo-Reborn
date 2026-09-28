@@ -1321,7 +1321,7 @@ static UIFont *ApolloProfileClassicNameFont(void) {
 // the layout centres however many we actually have (0, 1, 2, or 3).
 - (void)apollo_applyStats:(ApolloUserProfileInfo *)info {
     NSMutableArray<ApolloProfileStatCard *> *visible = [NSMutableArray array];
-    if (!info || !sProfileShowStatCards) {
+    if (!info || !sProfileShowStatCards || !sProfileGlassStatCards) {
         // nil info is the profile-switch reset (messaging nil reads stats as 0 and flashes
         // a "0 karma" row); !sProfileShowStatCards is the viewer turning cards off.
         for (ApolloProfileStatCard *card in @[self.postKarmaCard, self.commentKarmaCard, self.ageCard]) card.hidden = YES;
@@ -1407,7 +1407,7 @@ static UIFont *ApolloProfileClassicNameFont(void) {
     NSString *infoSignature = [NSString stringWithFormat:@"%@|%@|%@|%lld|%lld|%.0f|%d|%d|%d|%d",
         username ?: @"", info.displayName ?: @"", info.aboutText ?: @"",
         (long long)info.linkKarma, (long long)info.commentKarma, info.createdUTC,
-        info.followStateKnown, info.userIsSubscriber, sProfileShowStatCards, sProfileShowActions];
+        info.followStateKnown, info.userIsSubscriber, (sProfileShowStatCards && sProfileGlassStatCards), sProfileShowActions];
     if ([self.lastProfileInfoSignature isEqualToString:infoSignature]) return;
     self.lastProfileInfoSignature = infoSignature;
     self.contentGeneration++;
@@ -4950,8 +4950,7 @@ static void ApolloAvatarApplySubredditIconToSharePreview(id postInfo, NSString *
 
 // Apollo's native profile stats cell (Comment Karma / Post Karma / Account Age). When
 // "Detailed Profiles" is on, the custom header owns stats visibility. Collapse
-// the native cell whether stat cards are shown or hidden, so disabling cards
-// does not expose Apollo's unstyled stats row instead.
+// the native cell for Glass or hidden stats; restore it only for Native stats.
 // Zero an ASDisplayNode's fixed style heights so an empty layoutSpec actually
 // collapses it — a bare ASLayoutSpec doesn't override the node's own height/preferredSize
 // (see ApolloSubredditHighlights' ApolloHLZeroNodeHeight, same trick).
@@ -5042,12 +5041,12 @@ static void ApolloProfileZeroNodeHeight(id node) {
 %hook _TtC6Apollo21ProfileHeaderCellNode
 
 - (id)layoutSpecThatFits:(struct CDStruct_90e057aa)constrainedSize {
-    BOOL collapseNativeRow = sShowDetailedProfiles;
+    BOOL collapseNativeRow = sShowDetailedProfiles && (!sProfileShowStatCards || sProfileGlassStatCards);
     // Zeroing Texture style dimensions is persistent. Restore the exact values
     // captured from Apollo before asking it for a Native layout.
     if (!collapseNativeRow) ApolloProfileRestoreNodeHeight(self);
     id spec = %orig;
-    // Only Native mode should show Apollo's original karma row.
+    // Show the original row for Native profiles or an enabled Native stats style.
     if (!collapseNativeRow) return spec;
     ApolloProfileZeroNodeHeight(self);
     Class specClass = NSClassFromString(@"ASLayoutSpec");

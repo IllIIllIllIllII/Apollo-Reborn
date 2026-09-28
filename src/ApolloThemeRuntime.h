@@ -71,6 +71,8 @@ UIColor *ApolloThemeSubredditListSecondaryTextColor(void);
 // Native settings text colors, including custom themes and Pure Black.
 UIColor *ApolloThemeSettingsTextColor(void);
 UIColor *ApolloThemeSettingsSecondaryTextColor(void);
+// Native profile stats captions use Apollo's tertiary (unread) text palette.
+UIColor *ApolloThemeProfileStatCaptionColor(void);
 
 // Correct a RESOLVED color that was derived from a theme token under the wrong
 // appearance (ambient resolution vs the themed window — see issue #810):

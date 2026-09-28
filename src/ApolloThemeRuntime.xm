@@ -1595,6 +1595,23 @@ static UIColor *ApolloThemeSettingsLabelColor(BOOL secondary) {
 UIColor *ApolloThemeSettingsTextColor(void) { return ApolloThemeSettingsLabelColor(NO); }
 UIColor *ApolloThemeSettingsSecondaryTextColor(void) { return ApolloThemeSettingsLabelColor(YES); }
 
+UIColor *ApolloThemeProfileStatCaptionColor(void) {
+    UIColor *custom = ApolloThemeRuntimeColor(ApolloThemeTokenTertiaryLabel);
+    if (custom) return custom;
+    uint8_t raw = 0;
+    if (!GetLiveAppColorThemeRaw(&raw) || raw >= kStockThemeCount) return nil;
+    // Native sub_100689abc: role 2, unread; theme raw 4 has a blue-gray palette.
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        uint32_t rgb = traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? (raw == 4 ? 0x7E9296 : 0x61626A) : 0x858585;
+        sBypassHook++;
+        UIColor *color = ApolloThemeUIColorFromRGB(rgb);
+        sBypassHook--;
+        return color;
+    }];
+}
+
+
 // Dark-mode separator override for a non-tinted stock theme. One "on" value
 // covers both Pure Black tiers — PURER doesn't push the separator any
 // further than plain Pure Black does (unlike the card).

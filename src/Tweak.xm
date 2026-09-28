@@ -3708,6 +3708,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyProfileHeaderImmersive: @YES,
                                     UDKeyProfileShowBanner: @YES,
                                     UDKeyProfileShowStatCards: @YES,
+                                    UDKeyProfileGlassStatCards: @YES,
                                     UDKeyProfileShowSocialLinks: @YES,
                                     UDKeyProfileShowActions: @YES,
                                     UDKeyProfileAvatarStyle: @1, // Circle; registered defaults preserve saved choices.
@@ -3981,6 +3982,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sProfileHeaderImmersive = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileHeaderImmersive];
     sProfileShowBanner = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowBanner];
     sProfileShowStatCards = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowStatCards];
+    sProfileGlassStatCards = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileGlassStatCards];
     sProfileShowSocialLinks = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowSocialLinks];
     sProfileShowActions = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyProfileShowActions];
     // Start the shared avatar-shape feature on Circle for every installation,
