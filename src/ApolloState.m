@@ -55,6 +55,7 @@ BOOL sProfileHeaderImmersive = YES; // New (immersive melt) vs Classic (flat); d
 // default ON; avatar style 0=Full snoovatar, 1=Circle, 2=Square (default Full).
 BOOL sProfileShowBanner = YES;
 BOOL sProfileShowStatCards = YES;
+BOOL sProfileGlassStatCards = YES;
 BOOL sProfileShowSocialLinks = YES;
 BOOL sProfileShowActions = YES;   // Follow / Message row on other-user profiles
 NSInteger sProfileAvatarStyle = 1; // Circle until preferences load.

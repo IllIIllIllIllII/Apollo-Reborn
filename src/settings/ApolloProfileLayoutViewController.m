@@ -99,9 +99,33 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 - (CGFloat)preferredHeightForWidth:(CGFloat)width;
 @end
 
+// Apollo 1.15.11 ProfileHeaderCellNode calls FontManager's role-12 value
+// and caption helpers (0x100251f8c / 0x100251bf0). These are native size
+// tables, not UIKit Title3/Subheadline; e.g. Large is 19/14 rather than 20/15.
+static UIFont *ApolloNativeProfileStatFont(BOOL caption) {
+    NSArray *categories = @[UIContentSizeCategoryExtraSmall, UIContentSizeCategorySmall,
+        UIContentSizeCategoryMedium, UIContentSizeCategoryLarge, UIContentSizeCategoryExtraLarge,
+        UIContentSizeCategoryExtraExtraLarge, UIContentSizeCategoryExtraExtraExtraLarge,
+        UIContentSizeCategoryAccessibilityMedium, UIContentSizeCategoryAccessibilityLarge,
+        UIContentSizeCategoryAccessibilityExtraLarge, UIContentSizeCategoryAccessibilityExtraExtraLarge,
+        UIContentSizeCategoryAccessibilityExtraExtraExtraLarge];
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSUInteger index = [categories indexOfObject:UIApplication.sharedApplication.preferredContentSizeCategory];
+    if ([defaults objectForKey:@"UseSystemTextSize"] && ![defaults boolForKey:@"UseSystemTextSize"]) {
+        NSInteger raw = [defaults integerForKey:@"ApolloCustomTextSize"];
+        if (raw >= 1 && raw <= 12) index = (NSUInteger)(raw - 1);
+    }
+    if (index == NSNotFound) index = 3;
+    static const CGFloat values[] = {16, 17, 18, 19, 21, 23, 25, 31, 37, 43, 49, 55};
+    static const CGFloat captions[] = {12, 12, 13, 14, 16, 18, 20, 25, 30, 36, 42, 49};
+    return ApolloThemeRuntimeFont([UIFont systemFontOfSize:caption ? captions[index] : values[index]
+        weight:caption ? UIFontWeightRegular : UIFontWeightMedium]);
+}
+
 // Frozen native snapshot: keep the title and bare stats on the page surface,
 // separate from the custom header's avatar, bands, and stat cards.
 @interface ApolloNativeProfileHeaderPreviewView : UIView
+@property(nonatomic) BOOL statsOnly;
 @property(nonatomic, strong) UIVisualEffectView *titlePill;
 @property(nonatomic, strong) UILabel *usernameLabel;
 @property(nonatomic, copy) NSArray<UILabel *> *statValues;
@@ -149,17 +173,30 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 - (void)configureWithInfo:(ApolloUserProfileInfo *)info {
     self.usernameLabel.text = info.username;
     // Keep the snapshot's age fixed.
-    self.statValues[0].text = [NSString localizedStringWithFormat:@"%.1fK", info.commentKarma / 1000.0];
-    self.statValues[1].text = [NSString localizedStringWithFormat:@"%.1fK", info.linkKarma / 1000.0];
+    NSNumberFormatter *formatter = [NSNumberFormatter new];
+    formatter.maximumFractionDigits = 1;
+    formatter.minimumFractionDigits = 0;
+    NSArray<NSNumber *> *karma = @[@(info.commentKarma), @(info.linkKarma)];
+    for (NSUInteger index = 0; index < karma.count; index++) {
+        double value = karma[index].doubleValue;
+        self.statValues[index].text = value >= 1000.0
+            ? [[formatter stringFromNumber:@(value / 1000.0)] stringByAppendingString:@"K"]
+            : [formatter stringFromNumber:@(value)];
+    }
     self.statValues[2].text = @"15y 8mo";
-    self.usernameLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-        scaledFontForFont:[UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold]];
+    self.usernameLabel.font = ApolloThemeRuntimeFont([UIFont systemFontOfSize:
+        ApolloSettingsFont(UIFontTextStyleBody, self.traitCollection).pointSize weight:UIFontWeightSemibold]);
     for (UILabel *value in self.statValues) {
-        value.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleTitle3]
-            scaledFontForFont:[UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium]];
+        value.font = ApolloNativeProfileStatFont(NO);
     }
     for (UILabel *label in self.statLabels) {
-        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        label.font = ApolloNativeProfileStatFont(YES);
+        NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+        paragraph.alignment = NSTextAlignmentCenter;
+        paragraph.lineSpacing = 1.0;
+        label.attributedText = [[NSAttributedString alloc] initWithString:label.text attributes:@{
+            NSFontAttributeName: label.font, NSParagraphStyleAttributeName: paragraph
+        }];
     }
     self.titlePill.effect = ApolloImmersiveGlassEffect(nil, 0.0, NO);
     self.titlePill.hidden = !IsLiquidGlass();
@@ -167,7 +204,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 }
 
 - (CGFloat)statLabelHeightForWidth:(CGFloat)width {
-    CGFloat columnWidth = MAX(1.0, (width - 24.0) / 3.0);
+    CGFloat columnWidth = MAX(1.0, width / 3.0);
     CGFloat height = 0.0;
     for (UILabel *label in self.statLabels) {
         height = MAX(height, ceil([label sizeThatFits:CGSizeMake(columnWidth, CGFLOAT_MAX)].height));
@@ -177,8 +214,8 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {
     CGFloat titleHeight = MAX(44.0, ceil(self.usernameLabel.font.lineHeight) + 20.0);
-    return 16.0 + titleHeight + 34.0 + ceil(self.statValues.firstObject.font.lineHeight)
-        + 4.0 + [self statLabelHeightForWidth:width] + 20.0;
+    return (self.statsOnly ? 12.0 : 16.0 + titleHeight + 34.0) + ceil(self.statValues.firstObject.font.lineHeight)
+        + 5.0 + [self statLabelHeightForWidth:width] + 20.0;
 }
 
 - (void)layoutSubviews {
@@ -186,9 +223,8 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     self.backgroundColor = ApolloImmersiveResolvedPageColor(
         ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor,
         self.traitCollection);
-    UIColor *primary = ApolloThemeRuntimeColor(ApolloThemeTokenLabel) ?: UIColor.labelColor;
-    UIColor *secondary = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel)
-        ?: UIColor.secondaryLabelColor;
+    UIColor *primary = ApolloThemeSettingsTextColor() ?: UIColor.labelColor;
+    UIColor *secondary = ApolloThemeProfileStatCaptionColor() ?: UIColor.tertiaryLabelColor;
     self.usernameLabel.textColor = primary;
     CGFloat width = CGRectGetWidth(self.bounds);
     CGFloat titleHeight = MAX(44.0, ceil(self.usernameLabel.font.lineHeight) + 20.0);
@@ -197,16 +233,18 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     self.titlePill.frame = CGRectMake((width - titleWidth) / 2.0, 16.0, titleWidth, titleHeight);
     self.titlePill.layer.cornerRadius = titleHeight / 2.0;
     self.usernameLabel.frame = self.titlePill.frame;
-    CGFloat statsTop = 16.0 + titleHeight + 34.0;
-    CGFloat columnWidth = (width - 24.0) / 3.0;
+    self.usernameLabel.hidden = self.statsOnly;
+    self.titlePill.hidden = self.statsOnly || !IsLiquidGlass();
+    CGFloat statsTop = self.statsOnly ? 12.0 : 16.0 + titleHeight + 34.0;
+    CGFloat columnWidth = width / 3.0;
     CGFloat valueHeight = ceil(self.statValues.firstObject.font.lineHeight);
     CGFloat labelHeight = [self statLabelHeightForWidth:width];
     for (NSUInteger index = 0; index < self.statValues.count; index++) {
-        CGFloat x = 12.0 + columnWidth * index;
+        CGFloat x = columnWidth * index;
         self.statValues[index].textColor = primary;
         self.statLabels[index].textColor = secondary;
         self.statValues[index].frame = CGRectMake(x, statsTop, columnWidth, valueHeight);
-        self.statLabels[index].frame = CGRectMake(x, statsTop + valueHeight + 4.0,
+        self.statLabels[index].frame = CGRectMake(x, statsTop + valueHeight + 5.0,
                                                 columnWidth, labelHeight);
     }
 }
@@ -266,7 +304,10 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 
 - (void)configureWithInfo:(ApolloUserProfileInfo *)info {
     if (!info) return;
-    self.nativeHeaderView.hidden = sShowDetailedProfiles;
+    BOOL nativeStats = sShowDetailedProfiles && sProfileShowStatCards && !sProfileGlassStatCards;
+    self.nativeHeaderView.statsOnly = sShowDetailedProfiles;
+    self.nativeHeaderView.hidden = sShowDetailedProfiles && !nativeStats;
+    [self.nativeHeaderView configureWithInfo:info];
     self.productionHeaderView.hidden = !sShowDetailedProfiles;
     if (!sShowDetailedProfiles) {
         [self.nativeHeaderView configureWithInfo:info];
@@ -291,7 +332,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
         @"%@ profile preview for u slash %@. %@ avatar. Banner %@. Stat cards %@. Social links %@. Badge Book %@. Follow and Message %@.",
         density, ApolloProfileLayoutPreviewUsername, avatar,
         sProfileShowBanner ? @"shown" : @"hidden",
-        sProfileShowStatCards ? @"shown" : @"hidden",
+        sProfileShowStatCards ? (sProfileGlassStatCards ? @"Glass" : @"Native") : @"hidden",
         sProfileShowSocialLinks ? @"shown" : @"hidden",
         sBadgeBookEnabled ? @"shown" : @"hidden",
         sProfileShowActions ? @"shown" : @"hidden"];
@@ -303,7 +344,8 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     if (!sShowDetailedProfiles) return [self.nativeHeaderView preferredHeightForWidth:width];
     self.productionHeaderView.bounds = CGRectMake(0.0, 0.0, width,
                                                    CGRectGetHeight(self.productionHeaderView.bounds));
-    return [self.productionHeaderView preferredHeightForWidth:width];
+    CGFloat statsHeight = self.nativeHeaderView.hidden ? 0.0 : [self.nativeHeaderView preferredHeightForWidth:width];
+    return [self.productionHeaderView preferredHeightForWidth:width] + statsHeight;
 }
 
 - (void)layoutSubviews {
@@ -321,7 +363,9 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     CGFloat headerHeight = sShowDetailedProfiles
         ? [self.productionHeaderView preferredHeightForWidth:width]
         : [self.nativeHeaderView preferredHeightForWidth:width];
-    self.renderContainerView.bounds = CGRectMake(0.0, 0.0, width, headerHeight);
+    CGFloat statsHeight = sShowDetailedProfiles && !self.nativeHeaderView.hidden
+        ? [self.nativeHeaderView preferredHeightForWidth:width] : 0.0;
+    self.renderContainerView.bounds = CGRectMake(0.0, 0.0, width, headerHeight + statsHeight);
     self.renderContainerView.center = CGPointMake(width / 2.0, height / 2.0);
     self.renderContainerView.layer.cornerRadius = self.layer.cornerRadius;
 
@@ -332,7 +376,12 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
         return;
     }
 
-    self.productionHeaderView.frame = self.renderContainerView.bounds;
+    self.productionHeaderView.frame = CGRectMake(0.0, 0.0, width, headerHeight);
+    if (statsHeight > 0.0) {
+        self.nativeHeaderView.frame = CGRectMake(0.0, headerHeight, width, statsHeight);
+        [self.nativeHeaderView setNeedsLayout];
+        [self.nativeHeaderView layoutIfNeeded];
+    }
     [self.productionHeaderView setNeedsLayout];
     [self.productionHeaderView layoutIfNeeded];
 
@@ -478,7 +527,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
             [self rebuildForm];
         } else {
             for (NSString *rowID in @[@"style", @"avatar", @"showBanner",
-                                     @"showStatCards", @"showSocialLinks",
+                                     @"showStatCards", @"statCardStyle", @"showSocialLinks",
                                      @"showBadgeBook", @"showActions"]) {
                 [self reloadRowWithID:rowID];
             }
@@ -608,8 +657,25 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
                                   onToggle:^(UISwitch *sender) {
             sProfileShowStatCards = sender.isOn;
             [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyProfileShowStatCards];
+            [weakSelf visibilityDidChange];
             [weakSelf apollo_applyWithProfileStructureChange:YES];
         }];
+
+    ApolloSettingsRow *statCardStyle =
+        [ApolloSettingsRow valueRowWithID:@"statCardStyle"
+                                   title:@"Stat Card Style"
+                                  detail:^NSString * { return sProfileGlassStatCards ? @"Glass" : @"Native"; }
+                                   onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"statCardStyle"], @"Stat Card Style",
+                @[@"Native", @"Glass"], sProfileGlassStatCards ? 1 : 0, ^(NSInteger pickedIndex) {
+                    sProfileGlassStatCards = pickedIndex == 1;
+                    [[NSUserDefaults standardUserDefaults] setBool:sProfileGlassStatCards forKey:UDKeyProfileGlassStatCards];
+                    [weakSelf reloadRowWithID:@"statCardStyle"];
+                    [weakSelf apollo_applyWithProfileStructureChange:YES];
+                });
+        }];
+    statCardStyle.configure = disclosure;
+    statCardStyle.visible = ^BOOL { return sProfileShowStatCards; };
 
     ApolloSettingsRow *socialLinks =
         [ApolloSettingsRow switchRowWithID:@"showSocialLinks"
@@ -650,7 +716,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
 
     ApolloSettingsSection *showSection =
         [ApolloSettingsSection sectionWithTitle:@"Show on Profiles" footer:nil
-                                           rows:@[ banner, statCards, socialLinks, badgeBook, actions ]];
+                                           rows:@[ banner, statCards, statCardStyle, socialLinks, badgeBook, actions ]];
 
     return @[ layoutSection, showSection ];
 }
@@ -825,7 +891,7 @@ static UIImage *ApolloProfilePreviewBanner(UITraitCollection *traits) {
     visibleControls.origin.y = top + ([self apollo_canPinPreview] ? self.pinnedPreviewHeight : 0.0);
     visibleControls.size.height = MAX(0.0, CGRectGetMaxY(self.tableView.bounds)
         - self.tableView.adjustedContentInset.bottom - CGRectGetMinY(visibleControls));
-    for (NSString *rowID in @[@"style", @"avatar", @"showBanner", @"showStatCards",
+    for (NSString *rowID in @[@"style", @"avatar", @"showBanner", @"showStatCards", @"statCardStyle",
                                @"showSocialLinks", @"showBadgeBook", @"showActions"]) {
         UITableViewCell *cell = [self cellForRowID:rowID];
         if (!cell || !CGRectIntersectsRect(cell.frame, visibleControls)) continue;

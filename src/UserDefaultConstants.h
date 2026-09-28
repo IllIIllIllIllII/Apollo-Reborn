@@ -245,6 +245,8 @@ static NSString *const UDKeyBadgeBookEnabled = @"BadgeBookEnabled";
 static NSString *const UDKeyProfileHeaderImmersive = @"ProfileHeaderImmersive";
 static NSString *const UDKeyProfileShowBanner = @"ProfileShowBanner";
 static NSString *const UDKeyProfileShowStatCards = @"ProfileShowStatCards";
+// YES (default): glass cards; NO: Apollo's native stats row when enabled.
+static NSString *const UDKeyProfileGlassStatCards = @"ProfileGlassStatCards";
 static NSString *const UDKeyProfileShowSocialLinks = @"ProfileShowSocialLinks";
 static NSString *const UDKeyProfileShowActions = @"ProfileShowActions";
 static NSString *const UDKeyProfileAvatarStyle = @"ProfileAvatarStyle";
