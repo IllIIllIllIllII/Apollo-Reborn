@@ -2151,12 +2151,30 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     centerBetween.visible = ^BOOL { return IsLiquidGlass() && !sCollapseNavigationActions; };
 
-    NSString *footer = @"Return appears beside Back after tapping the status bar to scroll a feed or comments to the top. Tap the arrow or header to return; scrolling or leaving clears it. A second status-bar tap works even with Return off.";
+    NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
+    ApolloSettingsRow *trueBlackKeyboard =
+        [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
+                                    title:@"True Black Keyboard"
+                                   detail:^NSString * {
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            return trueBlackTitles[MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1))];
+        }
+                                 onSelect:^{
+            NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:UDKeyTrueBlackKeyboardMode];
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.trueBlackKeyboard"],
+                @"True Black Keyboard", trueBlackTitles, MAX(0, MIN(mode, (NSInteger)trueBlackTitles.count - 1)),
+                ^(NSInteger picked) {
+                    [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyTrueBlackKeyboardMode];
+                    [weakSelf reloadRowWithID:@"interface.trueBlackKeyboard"];
+                });
+        }];
+
+    NSString *footer = @"True Black Keyboard paints the keyboard background pure black in the chosen appearance (takes effect the next time the keyboard appears).\n\nReturn appears beside Back after tapping the status bar to scroll a feed or comments to the top. Tap the arrow or header to return; scrolling or leaving clears it. A second status-bar tap works even with Return off.";
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@"\n\nCollapse hides actions behind •••; tap to expand, scroll to collapse. With Collapse off, actions stay visible; Center Title aligns the title between buttons. Compare styles above."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Header" footer:footer
-        rows:@[ preview, scrollEdgeEffect, scrollReturnButton, collapseActions, centerBetween ]];
+        rows:@[ preview, trueBlackKeyboard, scrollEdgeEffect, scrollReturnButton, collapseActions, centerBetween ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
