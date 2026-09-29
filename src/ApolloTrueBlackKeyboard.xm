@@ -30,15 +30,17 @@ static UIUserInterfaceStyle AppInterfaceStyle(void) {
     return UIUserInterfaceStyleUnspecified;
 }
 
-static const void *kBottomFillKey = &kBottomFillKey;
+static const void *kEdgeFillKey = &kEdgeFillKey;
+// Height left uncovered at the top so the keyboard's rounded top corners stay rounded.
+static const CGFloat kTopCornerClearance = 44;
 
-// The backdrop's bottom corners are rounded a hair tighter than the screen's, so a sliver of the
-// app can show at the very edge of a black keyboard. A black strip behind the backdrop's bottom
-// edge (extended a few points past the sides and bottom, and clipped by the screen itself)
-// fills it. It only covers the bottom band, so the top corners keep their rounded shape.
+// The backdrop's edges are a hair tighter than the screen's (bottom corners, and the sides on
+// some devices), so a sliver of the app can show at the edge of a black keyboard. A black strip
+// behind the backdrop, extended a few points past the sides and bottom (the screen clips it),
+// fills that. It starts below the top corners, so they keep their rounded shape.
 // Auto Layout constraints rather than frame writes, so nothing here can loop during layout.
-static void UpdateBottomFill(UIVisualEffectView *backdrop, BOOL show) {
-    UIView *fill = objc_getAssociatedObject(backdrop, kBottomFillKey);
+static void UpdateEdgeFill(UIVisualEffectView *backdrop, BOOL show) {
+    UIView *fill = objc_getAssociatedObject(backdrop, kEdgeFillKey);
     if (!show) {
         fill.hidden = YES;
         return;
@@ -56,16 +58,16 @@ static void UpdateBottomFill(UIVisualEffectView *backdrop, BOOL show) {
             [fill.leadingAnchor constraintEqualToAnchor:backdrop.leadingAnchor constant:-4],
             [fill.trailingAnchor constraintEqualToAnchor:backdrop.trailingAnchor constant:4],
             [fill.bottomAnchor constraintEqualToAnchor:backdrop.bottomAnchor constant:4],
-            [fill.heightAnchor constraintEqualToConstant:64],
+            [fill.topAnchor constraintEqualToAnchor:backdrop.topAnchor constant:kTopCornerClearance],
         ]];
-        objc_setAssociatedObject(backdrop, kBottomFillKey, fill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(backdrop, kEdgeFillKey, fill, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     fill.hidden = NO;
 }
 
 static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
     BOOL applies = TrueBlackKeyboardAppliesTo(AppInterfaceStyle());
-    UpdateBottomFill(backdrop, applies);
+    UpdateEdgeFill(backdrop, applies);
     if (!applies) return;
     if (backdrop.effect) backdrop.effect = nil;
     backdrop.backgroundColor = UIColor.blackColor;
