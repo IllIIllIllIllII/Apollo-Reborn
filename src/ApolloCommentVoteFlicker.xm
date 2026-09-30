@@ -53,6 +53,7 @@
 @property (nonatomic) BOOL displaysAsynchronously;
 @property (nonatomic, readonly) BOOL isNodeLoaded;
 @property (nonatomic, readonly) UIView *view;
+@property (nonatomic, readonly) CALayer *layer;
 - (NSArray<ASDisplayNode *> *)subnodes;
 - (void)didEnterHierarchy;
 - (void)didExitHierarchy;
@@ -111,6 +112,22 @@ static void ApolloVFTrackMacDisplayLeaf(id node, BOOL inHierarchy) {
         if (inHierarchy) [leaves addObject:node];
         else [leaves removeObject:node];
     }
+}
+
+// YES when the node's backing layer is attached to a window and overlaps it.
+// Walks superlayers to the owning UIView so layer-backed nodes (which have no
+// view of their own) are handled too; never touches -view.
+static BOOL ApolloVFNodeIsOnScreen(ASDisplayNode *node) {
+    if (![node respondsToSelector:@selector(isNodeLoaded)] || !node.isNodeLoaded) return NO;
+    CALayer *layer = node.layer;
+    UIWindow *window = nil;
+    for (CALayer *l = layer; l && !window; l = l.superlayer) {
+        id delegate = l.delegate;
+        if ([delegate isKindOfClass:[UIView class]]) window = ((UIView *)delegate).window;
+    }
+    if (!window) return NO;
+    CGRect inWindow = [layer convertRect:layer.bounds toLayer:window.layer];
+    return CGRectIntersectsRect(window.bounds, inWindow);
 }
 
 static UIWindowScene *ApolloVFFocusSceneForNotification(NSNotification *notification) {
@@ -184,6 +201,15 @@ static void ApolloVFScheduleMacFocusFlush(UIWindowScene *focusScene) {
 
 - (void)didExitHierarchy {
     ApolloVFTrackMacDisplayLeaf(self, NO);
+    %orig;
+}
+
+// Mac focus changes arrive as UIApplicationDidEnterBackground, so Texture
+// drops every cell from the Display range and clears its contents; the async
+// redisplay on return then commits blank text for a couple of frames. Keep the
+// contents of nodes still on screen (the old image shows until the redraw lands).
+- (void)clearContents {
+    if (ApolloVFNodeIsOnScreen(self)) return;
     %orig;
 }
 
