@@ -25,7 +25,7 @@ static NSString *ApolloUpdateInstalledVersion(void) {
 
 // Sim builds carry no ARBuildVariant stamp and the manifest matches the current
 // version, so let the sim script inject both to exercise the update UI.
-static NSString *ApolloUpdateBuildVariant(void) {
+static NSString *ApolloUpdateRawVariant(void) {
 #if APOLLO_SIM_BUILD
     const char *override = getenv("APOLLO_UPDATE_BUILD_VARIANT");
     if (override && *override) return @(override);
@@ -33,8 +33,30 @@ static NSString *ApolloUpdateBuildVariant(void) {
     return ApolloBuildVariant();
 }
 
+// A .deb's ARVariant marker ("deb-rootful"/"deb-rootless") is also baked into IPAs
+// that had the .deb injected without a release stamp (local and test builds). Only a
+// real jailbreak install resolves that marker from outside the app bundle; those users
+// update through their package manager, so the feature stays off for them.
+static BOOL ApolloUpdateIsJailbreakInstall(void) {
+    if (![ApolloUpdateRawVariant() hasPrefix:@"deb-"]) return NO;
+#if APOLLO_SIM_BUILD
+    const char *override = getenv("APOLLO_UPDATE_BUILD_VARIANT");
+    if (override && *override) return YES;   // the override models a package-manager install
+#endif
+    NSString *marker = ApolloBundledResourcePath(@"ARVariant", @"txt");
+    return marker.length > 0 && ![marker hasPrefix:[NSBundle mainBundle].bundlePath];
+}
+
+// The variant used to pick the manifest entry. An unstamped sideloaded IPA (injected
+// .deb) is treated as the standard build so the hand-off still works.
+static NSString *ApolloUpdateBuildVariant(void) {
+    NSString *variant = ApolloUpdateRawVariant();
+    if ([variant hasPrefix:@"deb-"] && !ApolloUpdateIsJailbreakInstall()) return @"ipa";
+    return variant;
+}
+
 BOOL ApolloUpdateChecksAvailable(void) {
-    return ![ApolloUpdateBuildVariant() hasPrefix:@"deb-"];
+    return !ApolloUpdateIsJailbreakInstall();
 }
 
 #pragma mark - Fetch
