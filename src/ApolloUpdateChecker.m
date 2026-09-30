@@ -35,16 +35,25 @@ static NSString *ApolloUpdateRawVariant(void) {
 
 // A .deb's ARVariant marker ("deb-rootful"/"deb-rootless") is also baked into IPAs
 // that had the .deb injected without a release stamp (local and test builds). Only a
-// real jailbreak install resolves that marker from outside the app bundle; those users
-// update through their package manager, so the feature stays off for them.
+// real jailbreak install resolves that marker from the absolute jailbreak roots
+// ApolloBundledResourcePath falls back to (/var/jb/... or /Library/...); an injected
+// IPA resolves it inside the app container. Those users update through their package
+// manager, so the feature stays off for them.
 static BOOL ApolloUpdateIsJailbreakInstall(void) {
     if (![ApolloUpdateRawVariant() hasPrefix:@"deb-"]) return NO;
 #if APOLLO_SIM_BUILD
     const char *override = getenv("APOLLO_UPDATE_BUILD_VARIANT");
     if (override && *override) return YES;   // the override models a package-manager install
 #endif
-    NSString *marker = ApolloBundledResourcePath(@"ARVariant", @"txt");
-    return marker.length > 0 && ![marker hasPrefix:[NSBundle mainBundle].bundlePath];
+    static BOOL jailbreak;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *marker = ApolloBundledResourcePath(@"ARVariant", @"txt");
+        jailbreak = [marker hasPrefix:@"/var/jb/"] || [marker hasPrefix:@"/Library/"];
+        ApolloLog(@"[update] deb marker=%@ bundle=%@ -> jailbreak=%d",
+                  marker, [NSBundle mainBundle].bundlePath, jailbreak);
+    });
+    return jailbreak;
 }
 
 // The variant used to pick the manifest entry. An unstamped sideloaded IPA (injected
@@ -183,8 +192,10 @@ void ApolloUpdateCheckIfNeeded(void) {
 #endif
         if (![defaults boolForKey:UDKeyAutomaticUpdateChecks]) { ApolloLog(@"[update] auto check: off"); return; }
         // Only sideloaded release variants have an IPA to hand off.
-        if (!ApolloUpdateManifestKeyForBuildVariant(ApolloUpdateBuildVariant())) {
-            ApolloLog(@"[update] auto check: no release variant (%@)", ApolloUpdateBuildVariant());
+        NSString *variant = ApolloUpdateBuildVariant();
+        if (!ApolloUpdateManifestKeyForBuildVariant(variant)) {
+            ApolloLog(@"[update] auto check: no release variant (raw=%@ effective=%@ available=%d)",
+                      ApolloUpdateRawVariant(), variant, ApolloUpdateChecksAvailable());
             return;
         }
 
