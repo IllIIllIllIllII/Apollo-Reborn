@@ -225,6 +225,15 @@ For the least moving parts:
 
 That reproduces Balackburn’s distribution model, but with the Liquid Glass asset catalog and icon pipeline owned by this repo instead of living out-of-band.
 
+## In-App Update Prompt
+
+A sideloaded app cannot install its own update: iOS only runs code signed by the user's certificate, and that key lives in their sideloader. So the tweak (`src/ApolloUpdateChecker.m`) checks for a newer release and hands off instead:
+
+- It fetches [release-manifest.json](release-manifest.json) from `main` (at most once a day on foreground, plus Settings → About → Check for Updates), so publishing a release through the normal workflow is all that is needed.
+- The installed variant comes from the `ARBuildVariant` Info.plist stamp (`stamp-build-variant` in `build_release_variants.sh`) and maps to the manifest `variants` key: `ipa` → `standard`, `ipa-noext` → `noExtensions`, `glass` → `glass`, `glass-noext` → `noExtensionsGlass`, `glassicons` → `glassIcons`, `glassicons-noext` → `noExtensionsGlassIcons`. Builds without a release stamp (`.deb`, dev builds) get no automatic prompt; `.deb` installs hide the feature.
+- The prompt offers the add-source links for AltStore Classic, SideStore, Feather (see the setup sections above) and FlareStore (`flarestore://addRepo=<source URL>`, from FlareStore's in-app Settings → URL Schemes), plus a direct IPA download. The sideloader icons are bundled as `Resources/update-icon-*.png`. If you add a variant to `update_source_json.py`, add its `ARBuildVariant` mapping in `ApolloUpdateManifest.m` too.
+- Versions compare on `release.tweakVersion`, so it must keep increasing per public release.
+
 ## Hosted Base IPA
 
 This release pipeline expects a user-supplied public URL for an unmodified Apollo base IPA or another prepared Apollo base build. The workflow consumes that file as a plain download URL and does not require R2 credentials or GitHub secrets.
