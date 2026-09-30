@@ -1,18 +1,30 @@
-// True Black Keyboard (issue #148): paints the system keyboard's backdrop pure black for OLED.
+// True Black Keyboard: paints the system keyboard's backdrop pure black for OLED.
 //
-// The keyboard is drawn in-process by UIKitCore, so we can restyle it from here. The backdrop
-// (UIKBBackdropView, a UIVisualEffectView) loses its blur/glass effect and gets a black fill.
-// Under a light-mode app the keyboard is also built with the dark render config so the keycaps
-// and glyphs match the dark-mode keyboard. Which appearance(s) get this is a user mode
-// (UDKeyTrueBlackKeyboardMode). All hooks fail soft — if UIKitCore renames a class the
-// keyboard just looks stock.
+// The keyboard is drawn in-process by UIKitCore, so it can be restyled from here. The backdrop
+// (UIKBBackdropView) loses its blur/glass effect and gets a black fill; under a light-mode app
+// the dark render config is used so keycaps and glyphs match the dark keyboard. Hooks fail soft:
+// if UIKitCore renames a class the keyboard just looks stock.
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
 #import "UserDefaultConstants.h"
 
+// The dark-config swap below hooks +configForAppearance:inputMode:traitEnvironment:, which UIKit
+// added in iOS 15. iOS 14 only has +configForAppearance:inputMode:, so the hook never installs
+// there and a light app would get light keycaps on black; keep the stock keyboard in that case.
+static BOOL DarkConfigSwapAvailable(void) {
+    static BOOL available;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        available = class_getClassMethod(objc_getClass("UIKBRenderConfig"),
+            NSSelectorFromString(@"configForAppearance:inputMode:traitEnvironment:")) != NULL;
+    });
+    return available;
+}
+
 // 0 Off, 1 Dark Only, 2 Light Only, 3 Always.
 static BOOL TrueBlackKeyboardAppliesTo(UIUserInterfaceStyle style) {
+    if (style != UIUserInterfaceStyleDark && !DarkConfigSwapAvailable()) return NO;
     switch ([[NSUserDefaults standardUserDefaults] integerForKey:UDKeyTrueBlackKeyboardMode]) {
         case 1: return style == UIUserInterfaceStyleDark;
         case 2: return style != UIUserInterfaceStyleDark;
@@ -21,8 +33,7 @@ static BOOL TrueBlackKeyboardAppliesTo(UIUserInterfaceStyle style) {
     }
 }
 
-// The app's own appearance (Apollo may override it per window), read from its first
-// normal-level window; the keyboard's own traits follow the keyboard config, not the app.
+// The app's appearance (Apollo may override it per window), from its first normal-level window.
 static UIUserInterfaceStyle AppInterfaceStyle(void) {
     for (UIWindow *window in ApolloAllWindows()) {
         if (window.windowLevel == UIWindowLevelNormal) return window.traitCollection.userInterfaceStyle;
@@ -31,14 +42,13 @@ static UIUserInterfaceStyle AppInterfaceStyle(void) {
 }
 
 static const void *kEdgeFillKey = &kEdgeFillKey;
-// Height left uncovered at the top so the keyboard's rounded top corners stay rounded.
+// Uncovered height at the top, keeping the top corners rounded.
 static const CGFloat kTopCornerClearance = 44;
 
-// The backdrop's edges are a hair tighter than the screen's (bottom corners, and the sides on
-// some devices), so a sliver of the app can show at the edge of a black keyboard. A black strip
-// behind the backdrop, extended a few points past the sides and bottom (the screen clips it),
-// fills that. It starts below the top corners, so they keep their rounded shape.
-// Auto Layout constraints rather than frame writes, so nothing here can loop during layout.
+// The backdrop's edges are a hair tighter than the screen's, so slivers of the app can show at
+// the sides and bottom corners. A black strip behind it, a few points wider than the backdrop
+// (the screen clips the excess), fills that; it starts below the top corners so they stay round.
+// Uses constraints rather than frame writes so it can't loop during layout.
 static void UpdateEdgeFill(UIVisualEffectView *backdrop, BOOL show) {
     UIView *fill = objc_getAssociatedObject(backdrop, kEdgeFillKey);
     if (!show) {
@@ -65,16 +75,54 @@ static void UpdateEdgeFill(UIVisualEffectView *backdrop, BOOL show) {
     fill.hidden = NO;
 }
 
+static const void *kStockLookKey = &kStockLookKey;
+
+static BOOL IsOpaqueBlack(UIColor *color) {
+    CGFloat r = 1, g = 1, b = 1, a = 0;
+    return [color getRed:&r green:&g blue:&b alpha:&a] && r == 0 && g == 0 && b == 0 && a == 1;
+}
+
+// Puts UIKit's look back when the mode stops applying to a backdrop that's still up (Dark Mode
+// Only and the app flips to light while typing). UIKit's _setRenderConfig: re-sets its effect and
+// tint for the new config, but not the content view fill or the views hidden below, so the light
+// keycaps would sit on black and the return key, globe and mic glyphs would vanish.
+static void RevertTrueBlack(UIVisualEffectView *backdrop) {
+    NSDictionary *stock = objc_getAssociatedObject(backdrop, kStockLookKey);
+    if (!stock) return;
+    objc_setAssociatedObject(backdrop, kStockLookKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (IsOpaqueBlack(backdrop.backgroundColor)) backdrop.backgroundColor = stock[@"background"];
+    backdrop.contentView.backgroundColor = stock[@"content"];
+    for (UIView *sub in stock[@"hidden"]) sub.hidden = NO;
+}
+
 static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
     BOOL applies = TrueBlackKeyboardAppliesTo(AppInterfaceStyle());
     UpdateEdgeFill(backdrop, applies);
-    if (!applies) return;
-    if (backdrop.effect) backdrop.effect = nil;
+    if (!applies) {
+        RevertTrueBlack(backdrop);
+        return;
+    }
+    NSMutableDictionary *stock = objc_getAssociatedObject(backdrop, kStockLookKey);
+    if (!stock) {
+        stock = [NSMutableDictionary dictionaryWithObject:[NSHashTable weakObjectsHashTable] forKey:@"hidden"];
+        stock[@"content"] = backdrop.contentView.backgroundColor;
+        objc_setAssociatedObject(backdrop, kStockLookKey, stock, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // UIKit re-sets the tint on each render-config change; keep its latest before covering it.
+    if (!IsOpaqueBlack(backdrop.backgroundColor)) stock[@"background"] = backdrop.backgroundColor;
+    if (backdrop.effect) {
+        // Outside any running animation: a light/dark flip animates backgroundEffects on this view,
+        // and UIKit throws if .effect was animated next to it (UIVisualEffectView.m:1045).
+        [UIView performWithoutAnimation:^{ backdrop.effect = nil; }];
+    }
     backdrop.backgroundColor = UIColor.blackColor;
     backdrop.contentView.backgroundColor = UIColor.blackColor;
     for (UIView *sub in backdrop.subviews) {
         // Any private glass/blur layer view UIKit adds beside the content view.
-        if (sub != backdrop.contentView) sub.hidden = YES;
+        if (sub != backdrop.contentView && !sub.hidden) {
+            sub.hidden = YES;
+            [stock[@"hidden"] addObject:sub];
+        }
     }
 }
 
@@ -101,7 +149,7 @@ static void ApplyTrueBlack(UIVisualEffectView *backdrop) {
 
 - (void)layoutSubviews {
     %orig;
-    // Idempotent colour/effect writes only — no geometry, so no rotation loop.
+    // Idempotent color/effect writes only, no geometry.
     ApplyTrueBlack((UIVisualEffectView *)self);
 }
 
