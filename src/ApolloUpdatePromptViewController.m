@@ -484,7 +484,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                                  title:@"Feather" subtitle:(_info.downloadURL ? @"Download to Feather's Library" : @"Continue in Feather")
                             identifier:@"update.feather" action:@selector(apollo_featherTapped)];
         [self apollo_addRowWithIcon:@"update-icon-flarestore" symbols:@[@"flame.fill"] tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1]
-                                 title:@"FlareStore" subtitle:(_info.downloadURL ? @"Import the update in FlareStore" : @"Continue in FlareStore")
+                                 title:@"FlareStore" subtitle:(_info.downloadURL ? @"Opens FlareStore and copies the IPA link" : @"Continue in FlareStore")
                             identifier:@"update.flarestore" action:@selector(apollo_flareStoreTapped)];
     }
     if (_info.downloadURL) {
@@ -665,7 +665,20 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 - (void)apollo_flareStoreTapped {
+    [self apollo_copyIPALinkToPasteboard];
     [self apollo_openSideloader:ApolloUpdateSideloaderFlareStore name:@"FlareStore" dismissOnSuccess:NO];
+}
+
+// FlareStore drops a link that arrives while it is closed, so the plain IPA link also goes on
+// the clipboard (this device only, expiring) to paste into its import field. Copied before the
+// open: the completion handler doesn't run while another app is in front.
+- (void)apollo_copyIPALinkToPasteboard {
+    NSURL *ipa = _info.downloadURL;
+    if (!ipa) return;
+    [[UIPasteboard generalPasteboard] setItems:@[@{@"public.utf8-plain-text": ipa.absoluteString}]
+                                       options:@{UIPasteboardOptionLocalOnly: @YES,
+                                                 UIPasteboardOptionExpirationDate: [NSDate dateWithTimeIntervalSinceNow:10 * 60]}];
+    ApolloLog(@"[update] copied the IPA link for FlareStore's paste fallback");
 }
 
 - (void)apollo_openSideloader:(ApolloUpdateSideloader)sideloader name:(NSString *)name dismissOnSuccess:(BOOL)dismissOnSuccess {
@@ -681,11 +694,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 // The sheet stays up after a FlareStore hand-off, and FlareStore drops a link that arrives while
-// it isn't running, so tell the user what to do if its field stayed empty.
+// it isn't running, so tell the user what to do if its field stayed empty (the link is on the
+// clipboard, and a second tap sends it again).
 - (void)apollo_noteHandoffToStaySideloader {
     for (UIView *row in _chooserRows.arrangedSubviews) {
         if ([row isKindOfClass:ApolloUpdateChoiceRow.class] && [row.accessibilityIdentifier isEqualToString:@"update.flarestore"]) {
-            [(ApolloUpdateChoiceRow *)row setSubtitle:@"Tap again if nothing was filled in"];
+            [(ApolloUpdateChoiceRow *)row setSubtitle:@"Link copied. Tap again, or paste it in FlareStore"];
         }
     }
 }
