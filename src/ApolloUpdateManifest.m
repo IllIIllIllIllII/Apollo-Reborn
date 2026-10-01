@@ -84,10 +84,8 @@ ApolloUpdateInfo *ApolloUpdateInfoFromManifest(id manifest, NSString *variantKey
 }
 
 NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL) {
-    if (sideloader == ApolloUpdateSideloaderFlareStore) {
-        // FlareStore's documented add-repo path (Settings > URL Schemes): flarestore://addRepo=<url>
-        return [NSURL URLWithString:[@"flarestore://addRepo=" stringByAppendingString:sourceURL.absoluteString]];
-    }
+    // FlareStore is reached through its app page (below), never by adding the source.
+    if (sideloader == ApolloUpdateSideloaderFlareStore) return nil;
     if (sideloader == ApolloUpdateSideloaderFeather) {
         // Feather takes the source URL as the path: feather://source/https://...
         return [NSURL URLWithString:[@"feather://source/" stringByAppendingString:sourceURL.absoluteString]];
@@ -101,14 +99,15 @@ NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL 
 }
 
 NSURL *ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL) {
-    switch (sideloader) {
-        case ApolloUpdateSideloaderFeather:
-            // Feather asks "download and install this file?" then downloads it.
-            return [NSURL URLWithString:[@"feather://install/" stringByAppendingString:ipaURL.absoluteString]];
-        case ApolloUpdateSideloaderFlareStore:
-            // FlareStore's documented downloadApp path (Settings > URL Schemes).
-            return [NSURL URLWithString:[@"flarestore://downloadApp=" stringByAppendingString:ipaURL.absoluteString]];
-        default:
-            return nil;
-    }
+    if (sideloader != ApolloUpdateSideloaderFeather) return nil;
+    // Feather downloads the IPA into its Library. (FlareStore's equivalent, downloadApp=,
+    // only pre-fills its import field and needs another tap, so it uses the app page below.)
+    return [NSURL URLWithString:[@"feather://install/" stringByAppendingString:ipaURL.absoluteString]];
+}
+
+NSURL *ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloader sideloader, NSString *bundleID) {
+    if (sideloader != ApolloUpdateSideloaderFlareStore || bundleID.length == 0) return nil;
+    // FlareStore's documented viewApp path (Settings > URL Schemes): the app's detail page,
+    // with its GET button, from whichever added repo lists this bundle id.
+    return [NSURL URLWithString:[@"flarestore://viewApp=" stringByAppendingString:bundleID]];
 }

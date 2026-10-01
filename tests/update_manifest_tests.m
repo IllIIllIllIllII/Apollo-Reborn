@@ -92,11 +92,7 @@ static void TestSideloaderURLs(void) {
            @"feather://source/https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps_noext.json"],
           @"feather %@", feather);
 
-    NSURL *flare = ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFlareStore, source);
-    CHECK(flare != nil && [flare.absoluteString isEqualToString:
-          @"flarestore://addRepo=https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/apps_noext.json"],
-          @"flarestore %@", flare);
-    CHECK([flare.scheme isEqualToString:@"flarestore"], @"flarestore scheme %@", flare.scheme);
+    CHECK(ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFlareStore, source) == nil, @"flarestore has no source link");
 
     // The source must round-trip out of the query intact.
     NSURLComponents *parsed = [NSURLComponents componentsWithURL:side resolvingAgainstBaseURL:NO];
@@ -109,10 +105,16 @@ static void TestInstallURLs(void) {
     NSURL *ipa = [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn/releases/download/v1.15.11_3.9.0/Apollo-Reborn-3.9.0-GLASS.ipa"];
     NSURL *feather = ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFeather, ipa);
     CHECK([feather.absoluteString isEqualToString:[@"feather://install/" stringByAppendingString:ipa.absoluteString]], @"feather install %@", feather);
-    NSURL *flare = ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFlareStore, ipa);
-    CHECK([flare.absoluteString isEqualToString:[@"flarestore://downloadApp=" stringByAppendingString:ipa.absoluteString]], @"flarestore install %@", flare);
+    CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFlareStore, ipa) == nil, @"flarestore opens the app page instead");
     CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderAltStore, ipa) == nil, @"altstore has no documented install link");
     CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderSideStore, ipa) == nil, @"sidestore has no documented install link");
+}
+
+static void TestAppPageURLs(void) {
+    NSURL *flare = ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloaderFlareStore, @"com.christianselig.Apollo");
+    CHECK([flare.absoluteString isEqualToString:@"flarestore://viewApp=com.christianselig.Apollo"], @"flarestore app page %@", flare);
+    CHECK(ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloaderFlareStore, @"") == nil, @"empty bundle id");
+    CHECK(ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloaderFeather, @"com.christianselig.Apollo") == nil, @"feather has no app page link");
 }
 
 int main(void) {
@@ -122,6 +124,7 @@ int main(void) {
         TestManifestParse();
         TestSideloaderURLs();
         TestInstallURLs();
+        TestAppPageURLs();
     }
     if (sFailures) {
         fprintf(stderr, "update_manifest_tests: %d check(s) failed\n", sFailures);

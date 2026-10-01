@@ -42,13 +42,17 @@ NSComparisonResult ApolloUpdateCompareVersions(NSString *a, NSString *b);
 ApolloUpdateInfo *_Nullable ApolloUpdateInfoFromManifest(id _Nullable manifest,
                                                          NSString *_Nullable variantKey);
 
-// The URL that asks `sideloader` to add the given AltStore-style source.
+// The URL that asks `sideloader` to add the given AltStore-style source (nil for FlareStore).
 NSURL *_Nullable ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL);
 
-// The URL that makes `sideloader` download and install `ipaURL` straight away, whether
-// or not the source is added (Feather's feather://install/, FlareStore's downloadApp).
-// nil for sideloaders without a documented one; callers fall back to the source link.
+// The URL that makes `sideloader` download `ipaURL` straight away, whether or not the source
+// is added (Feather's feather://install/). nil for sideloaders without one; callers fall back
+// to the source link.
 NSURL *_Nullable ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL);
+
+// The URL that opens the app's own page in `sideloader` (FlareStore's viewApp=<bundle id>).
+// The repo must already be added there. nil for sideloaders without one.
+NSURL *_Nullable ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloader sideloader, NSString *bundleID);
 
 #ifdef __cplusplus
 }
