@@ -10,6 +10,11 @@ static const NSTimeInterval kPageSlideDuration = 0.6;
 static const NSTimeInterval kPageFadeInDelay = 0.12;
 static const CGFloat kPageSlideFraction = 0.28;   // of the sheet width
 
+// Apollo's bundleIdentifier in every apps*.json source, which is what FlareStore's viewApp matches.
+static NSString *const kApolloUpdateAppBundleID = @"com.christianselig.Apollo";
+static NSString *const kFlareStoreSubtitle = @"Open Apollo's page in FlareStore";
+static NSString *const kFlareStoreRetrySubtitle = @"Tap again if FlareStore didn't open Apollo's page";
+
 // SF Symbols are OS-versioned and the device floor is iOS 14, so each row lists
 // fallbacks; the last entry is always available.
 static UIImage *ApolloUpdateSymbol(NSArray<NSString *> *names) {
@@ -484,7 +489,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                                  title:@"Feather" subtitle:(_info.downloadURL ? @"Download to Feather's Library" : @"Continue in Feather")
                             identifier:@"update.feather" action:@selector(apollo_featherTapped)];
         [self apollo_addRowWithIcon:@"update-icon-flarestore" symbols:@[@"flame.fill"] tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1]
-                                 title:@"FlareStore" subtitle:(_info.downloadURL ? @"Opens FlareStore and copies the IPA link" : @"Continue in FlareStore")
+                                 title:@"FlareStore" subtitle:kFlareStoreSubtitle
                             identifier:@"update.flarestore" action:@selector(apollo_flareStoreTapped)];
     }
     if (_info.downloadURL) {
@@ -655,53 +660,33 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     [self apollo_openURL:ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderSideStore, _info.sourceURL) appName:@"SideStore" dismissOnSuccess:YES];
 }
 
-// Feather and FlareStore take the IPA directly, which works whether or not the repo is already
-// added (their source links only add the repo, then leave you where you were).
-// Feather downloads it into its Library with no progress UI. FlareStore pre-fills its import
-// field and waits for a tap, and only acts while it is already running (a cold launch drops
-// the link), so its sheet stays up for a second try.
+// Feather takes the IPA directly, which works whether or not the repo is already added (its
+// source link only adds the repo). It downloads into Feather's Library with no progress UI.
 - (void)apollo_featherTapped {
-    [self apollo_openSideloader:ApolloUpdateSideloaderFeather name:@"Feather" dismissOnSuccess:YES];
+    NSURL *url = _info.downloadURL ? ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFeather, _info.downloadURL) : nil;
+    [self apollo_openURL:url ?: ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFeather, _info.sourceURL)
+                 appName:@"Feather" dismissOnSuccess:YES];
 }
 
+// FlareStore's viewApp lands on Apollo's page (GET button) from an added repo. FlareStore drops
+// a link that arrives while it is closed (it just opens to Home), so the sheet stays up and
+// the row says to tap again.
 - (void)apollo_flareStoreTapped {
-    [self apollo_copyIPALinkToPasteboard];
-    [self apollo_openSideloader:ApolloUpdateSideloaderFlareStore name:@"FlareStore" dismissOnSuccess:NO];
+    [self apollo_setFlareStoreSubtitle:kFlareStoreRetrySubtitle];
+    [self apollo_openURL:ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloaderFlareStore, kApolloUpdateAppBundleID)
+                 appName:@"FlareStore" dismissOnSuccess:NO];
 }
 
-// FlareStore drops a link that arrives while it is closed, so the plain IPA link also goes on
-// the clipboard (this device only, expiring) to paste into its import field. Copied before the
-// open: the completion handler doesn't run while another app is in front.
-- (void)apollo_copyIPALinkToPasteboard {
-    NSURL *ipa = _info.downloadURL;
-    if (!ipa) return;
-    [[UIPasteboard generalPasteboard] setItems:@[@{@"public.utf8-plain-text": ipa.absoluteString}]
-                                       options:@{UIPasteboardOptionLocalOnly: @YES,
-                                                 UIPasteboardOptionExpirationDate: [NSDate dateWithTimeIntervalSinceNow:10 * 60]}];
-    ApolloLog(@"[update] copied the IPA link for FlareStore's paste fallback");
-}
-
-- (void)apollo_openSideloader:(ApolloUpdateSideloader)sideloader name:(NSString *)name dismissOnSuccess:(BOOL)dismissOnSuccess {
-    // Unique per tap (ms clock): FlareStore ignores a link identical to the last one it got.
-    NSString *nonce = [NSString stringWithFormat:@"ar%lld", (long long)([[NSDate date] timeIntervalSince1970] * 1000)];
-    NSURL *url = _info.downloadURL ? ApolloUpdateSideloaderInstallURL(sideloader, _info.downloadURL, nonce) : nil;
-    [self apollo_openURL:url ?: ApolloUpdateSideloaderSourceURL(sideloader, _info.sourceURL)
-                 appName:name dismissOnSuccess:dismissOnSuccess];
+- (void)apollo_setFlareStoreSubtitle:(NSString *)subtitle {
+    for (UIView *row in _chooserRows.arrangedSubviews) {
+        if ([row isKindOfClass:ApolloUpdateChoiceRow.class] && [row.accessibilityIdentifier isEqualToString:@"update.flarestore"]) {
+            [(ApolloUpdateChoiceRow *)row setSubtitle:subtitle];
+        }
+    }
 }
 
 - (void)apollo_downloadTapped {
     [self apollo_openURL:_info.downloadURL appName:nil dismissOnSuccess:YES];
-}
-
-// The sheet stays up after a FlareStore hand-off, and FlareStore drops a link that arrives while
-// it isn't running, so tell the user what to do if its field stayed empty (the link is on the
-// clipboard, and a second tap sends it again).
-- (void)apollo_noteHandoffToStaySideloader {
-    for (UIView *row in _chooserRows.arrangedSubviews) {
-        if ([row isKindOfClass:ApolloUpdateChoiceRow.class] && [row.accessibilityIdentifier isEqualToString:@"update.flarestore"]) {
-            [(ApolloUpdateChoiceRow *)row setSubtitle:@"Link copied. Tap again, or paste it in FlareStore"];
-        }
-    }
 }
 
 // `appName` non-nil => a sideloader hand-off, so a failed open means it isn't installed.
@@ -715,14 +700,12 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
         if (!strongSelf) return;
         if (success) {
             // Handed off; the user finishes the update in the other app.
-            if (dismissOnSuccess) {
-                [strongSelf dismissViewControllerAnimated:YES completion:nil];
-            } else {
-                [(ApolloUpdatePromptViewController *)strongSelf apollo_noteHandoffToStaySideloader];
-            }
+            if (dismissOnSuccess) [strongSelf dismissViewControllerAnimated:YES completion:nil];
             return;
         }
         if (!appName) return;
+        // Not installed: nothing was handed off, so drop the retry hint.
+        [(ApolloUpdatePromptViewController *)strongSelf apollo_setFlareStoreSubtitle:kFlareStoreSubtitle];
         UIAlertController *alert = [UIAlertController
             alertControllerWithTitle:[NSString stringWithFormat:@"Couldn't Open %@", appName]
                              message:@"Make sure it's installed, or choose Download IPA instead."
