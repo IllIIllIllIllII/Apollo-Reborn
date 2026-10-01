@@ -10,9 +10,6 @@ static const NSTimeInterval kPageSlideDuration = 0.6;
 static const NSTimeInterval kPageFadeInDelay = 0.12;
 static const CGFloat kPageSlideFraction = 0.28;   // of the sheet width
 
-// Apollo's bundleIdentifier in every apps*.json source, which is what FlareStore's viewApp matches.
-static NSString *const kApolloUpdateAppBundleID = @"com.christianselig.Apollo";
-
 // SF Symbols are OS-versioned and the device floor is iOS 14, so each row lists
 // fallbacks; the last entry is always available.
 static UIImage *ApolloUpdateSymbol(NSArray<NSString *> *names) {
@@ -42,9 +39,13 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                    tileColor:(UIColor *)tileColor
                        title:(NSString *)title
                     subtitle:(NSString *)subtitle;
+- (void)setSubtitle:(NSString *)subtitle;
 @end
 
-@implementation ApolloUpdateChoiceRow
+@implementation ApolloUpdateChoiceRow {
+    UILabel *_subtitleLabel;
+    NSString *_title;
+}
 
 - (instancetype)initWithIcon:(UIImage *)icon
                      symbols:(NSArray<NSString *> *)symbols
@@ -94,6 +95,8 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     titleLabel.numberOfLines = 0;
 
     UILabel *subtitleLabel = [[UILabel alloc] init];
+    _subtitleLabel = subtitleLabel;
+    _title = [title copy];
     subtitleLabel.text = subtitle;
     subtitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     subtitleLabel.textColor = [UIColor secondaryLabelColor];
@@ -130,6 +133,11 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     [UIView animateWithDuration:0.15 animations:^{ self.alpha = highlighted ? 0.6 : 1.0; }];
 }
 
+
+- (void)setSubtitle:(NSString *)subtitle {
+    _subtitleLabel.text = subtitle;
+    self.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", _title, subtitle];
+}
 @end
 
 #pragma mark - Link
@@ -476,7 +484,7 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                                  title:@"Feather" subtitle:(_info.downloadURL ? @"Download to Feather's Library" : @"Continue in Feather")
                             identifier:@"update.feather" action:@selector(apollo_featherTapped)];
         [self apollo_addRowWithIcon:@"update-icon-flarestore" symbols:@[@"flame.fill"] tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1]
-                                 title:@"FlareStore" subtitle:@"Open Apollo's page in FlareStore"
+                                 title:@"FlareStore" subtitle:(_info.downloadURL ? @"Import the update in FlareStore" : @"Continue in FlareStore")
                             identifier:@"update.flarestore" action:@selector(apollo_flareStoreTapped)];
     }
     if (_info.downloadURL) {
@@ -647,25 +655,39 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
     [self apollo_openURL:ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderSideStore, _info.sourceURL) appName:@"SideStore" dismissOnSuccess:YES];
 }
 
-// Feather takes the IPA directly, which works whether or not the repo is already added (its
-// source link only adds the repo and stays put). It has no deep link to a source or app page,
-// and no progress UI for URL downloads: the app just shows up in its Library when done.
+// Feather and FlareStore take the IPA directly, which works whether or not the repo is already
+// added (their source links only add the repo, then leave you where you were).
+// Feather downloads it into its Library with no progress UI. FlareStore pre-fills its import
+// field and waits for a tap, and only acts while it is already running (a cold launch drops
+// the link), so its sheet stays up for a second try.
 - (void)apollo_featherTapped {
-    NSURL *url = _info.downloadURL ? ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFeather, _info.downloadURL) : nil;
-    [self apollo_openURL:url ?: ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFeather, _info.sourceURL)
-                 appName:@"Feather" dismissOnSuccess:YES];
+    [self apollo_openSideloader:ApolloUpdateSideloaderFeather name:@"Feather" dismissOnSuccess:YES];
 }
 
-// FlareStore's viewApp lands on Apollo's page (GET button) when a repo listing it is added.
-// It only acts while FlareStore is already running: a cold launch drops the link, so the
-// sheet stays up and a second tap works once FlareStore is open.
 - (void)apollo_flareStoreTapped {
-    [self apollo_openURL:ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloaderFlareStore, kApolloUpdateAppBundleID)
-                 appName:@"FlareStore" dismissOnSuccess:NO];
+    [self apollo_openSideloader:ApolloUpdateSideloaderFlareStore name:@"FlareStore" dismissOnSuccess:NO];
+}
+
+- (void)apollo_openSideloader:(ApolloUpdateSideloader)sideloader name:(NSString *)name dismissOnSuccess:(BOOL)dismissOnSuccess {
+    // Unique per tap (ms clock): FlareStore ignores a link identical to the last one it got.
+    NSString *nonce = [NSString stringWithFormat:@"ar%lld", (long long)([[NSDate date] timeIntervalSince1970] * 1000)];
+    NSURL *url = _info.downloadURL ? ApolloUpdateSideloaderInstallURL(sideloader, _info.downloadURL, nonce) : nil;
+    [self apollo_openURL:url ?: ApolloUpdateSideloaderSourceURL(sideloader, _info.sourceURL)
+                 appName:name dismissOnSuccess:dismissOnSuccess];
 }
 
 - (void)apollo_downloadTapped {
     [self apollo_openURL:_info.downloadURL appName:nil dismissOnSuccess:YES];
+}
+
+// The sheet stays up after a FlareStore hand-off, and FlareStore drops a link that arrives while
+// it isn't running, so tell the user what to do if its field stayed empty.
+- (void)apollo_noteHandoffToStaySideloader {
+    for (UIView *row in _chooserRows.arrangedSubviews) {
+        if ([row isKindOfClass:ApolloUpdateChoiceRow.class] && [row.accessibilityIdentifier isEqualToString:@"update.flarestore"]) {
+            [(ApolloUpdateChoiceRow *)row setSubtitle:@"Tap again if nothing was filled in"];
+        }
+    }
 }
 
 // `appName` non-nil => a sideloader hand-off, so a failed open means it isn't installed.
@@ -679,7 +701,11 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
         if (!strongSelf) return;
         if (success) {
             // Handed off; the user finishes the update in the other app.
-            if (dismissOnSuccess) [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            if (dismissOnSuccess) {
+                [strongSelf dismissViewControllerAnimated:YES completion:nil];
+            } else {
+                [(ApolloUpdatePromptViewController *)strongSelf apollo_noteHandoffToStaySideloader];
+            }
             return;
         }
         if (!appName) return;

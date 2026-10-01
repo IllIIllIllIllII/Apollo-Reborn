@@ -84,8 +84,10 @@ ApolloUpdateInfo *ApolloUpdateInfoFromManifest(id manifest, NSString *variantKey
 }
 
 NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL) {
-    // FlareStore is reached through its app page (below), never by adding the source.
-    if (sideloader == ApolloUpdateSideloaderFlareStore) return nil;
+    if (sideloader == ApolloUpdateSideloaderFlareStore) {
+        // FlareStore's documented add-repo path (Settings > URL Schemes): flarestore://addRepo=<url>
+        return [NSURL URLWithString:[@"flarestore://addRepo=" stringByAppendingString:sourceURL.absoluteString]];
+    }
     if (sideloader == ApolloUpdateSideloaderFeather) {
         // Feather takes the source URL as the path: feather://source/https://...
         return [NSURL URLWithString:[@"feather://source/" stringByAppendingString:sourceURL.absoluteString]];
@@ -98,16 +100,28 @@ NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL 
     return components.URL;
 }
 
-NSURL *ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL) {
-    if (sideloader != ApolloUpdateSideloaderFeather) return nil;
-    // Feather downloads the IPA into its Library. (FlareStore's equivalent, downloadApp=,
-    // only pre-fills its import field and needs another tap, so it uses the app page below.)
-    return [NSURL URLWithString:[@"feather://install/" stringByAppendingString:ipaURL.absoluteString]];
-}
-
-NSURL *ApolloUpdateSideloaderAppPageURL(ApolloUpdateSideloader sideloader, NSString *bundleID) {
-    if (sideloader != ApolloUpdateSideloaderFlareStore || bundleID.length == 0) return nil;
-    // FlareStore's documented viewApp path (Settings > URL Schemes): the app's detail page,
-    // with its GET button, from whichever added repo lists this bundle id.
-    return [NSURL URLWithString:[@"flarestore://viewApp=" stringByAppendingString:bundleID]];
+NSURL *ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL, NSString *nonce) {
+    switch (sideloader) {
+        case ApolloUpdateSideloaderFeather:
+            // Feather downloads the IPA into its Library (no progress UI for URL downloads).
+            return [NSURL URLWithString:[@"feather://install/" stringByAppendingString:ipaURL.absoluteString]];
+        case ApolloUpdateSideloaderFlareStore: {
+            // FlareStore's documented downloadApp path (Settings > URL Schemes): it pre-fills its
+            // import field with the IPA, then shows a download bar once the arrow is tapped. Used
+            // over viewApp, which matches the bundle id across every added repo (it opened a
+            // third-party mirror's copy, not ours). Verified on device: FlareStore ignores a link
+            // identical to the last one it received (even one dropped by a cold launch), so each
+            // hand-off carries a unique fragment; URLSession never sends it, and the field and
+            // download still work with it.
+            NSString *link = ipaURL.absoluteString;
+            if (nonce.length > 0) {
+                NSURLComponents *components = [NSURLComponents componentsWithURL:ipaURL resolvingAgainstBaseURL:NO];
+                components.fragment = nonce;
+                link = components.URL.absoluteString ?: link;
+            }
+            return [NSURL URLWithString:[@"flarestore://downloadApp=" stringByAppendingString:link]];
+        }
+        default:
+            return nil;
+    }
 }
