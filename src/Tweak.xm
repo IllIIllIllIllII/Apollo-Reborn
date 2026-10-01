@@ -3795,7 +3795,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     [standardDefaults registerDefaults:defaultValues];
     sAutomaticBackupsEnabled = [standardDefaults boolForKey:UDKeyAutomaticBackupsEnabled];
     sAutomaticBackupIntervalDays = [standardDefaults integerForKey:UDKeyAutomaticBackupIntervalDays];
-    if (![@[@1, @3, @7] containsObject:@(sAutomaticBackupIntervalDays)]) {
+    if (![@[@0, @1, @3, @7] containsObject:@(sAutomaticBackupIntervalDays)]) {
         sAutomaticBackupIntervalDays = 3;
         [standardDefaults setInteger:3 forKey:UDKeyAutomaticBackupIntervalDays];
     }

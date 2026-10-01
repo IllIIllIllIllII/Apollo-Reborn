@@ -42,7 +42,7 @@ static NSError *ApolloAutomaticBackupError(NSString *message) {
 
 static NSInteger ApolloAutomaticBackupDays(NSInteger days) {
     switch (days) {
-        case 1: case 3: case 7: return days;
+        case 0: case 1: case 3: case 7: return days;
         default: return 3;
     }
 }
@@ -639,7 +639,9 @@ static void ApolloAutomaticBackupMigrateOwnership(NSURL *directory, NSDictionary
     // An implausibly future last-success after a clock correction must not defer
     // all backups until that old wall-clock date eventually comes around again.
     if (!last || last.timeIntervalSinceNow > 300) return [NSDate date];
-    return [last dateByAddingTimeInterval:self.intervalDays * 24 * 60 * 60];
+    // Zero is the explicitly selected one-minute testing interval.
+    NSTimeInterval interval = self.intervalDays == 0 ? 60 : self.intervalDays * 24 * 60 * 60;
+    return [last dateByAddingTimeInterval:interval];
 }
 - (NSDate *)nextRetryDate {
     if (!self.enabled || !self.hasSavedFolder || self.isBackingUp || self.suspendedForRestore) return nil;

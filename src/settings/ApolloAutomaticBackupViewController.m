@@ -91,7 +91,8 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
 
     ApolloSettingsRow *interval = [ApolloSettingsRow valueRowWithID:@"automatic.interval"
         title:@"Backup Interval" detail:^NSString * {
-        return manager.intervalDays == 1 ? @"Every Day"
+        return manager.intervalDays == 0 ? @"Every Minute (Testing)"
+            : manager.intervalDays == 1 ? @"Every Day"
             : [NSString stringWithFormat:@"Every %ld Days", (long)manager.intervalDays];
     } onSelect:^{ [weakSelf chooseInterval]; }];
     interval.enabled = canConfigure;
@@ -265,11 +266,11 @@ typedef NS_ENUM(NSUInteger, ApolloBackupPickerPurpose) {
 - (void)chooseInterval {
     ApolloAutomaticBackup *manager = ApolloAutomaticBackup.sharedManager;
     if (manager.isBackingUp) return;
-    NSArray<NSNumber *> *days = @[@1, @3, @7];
+    NSArray<NSNumber *> *days = @[@0, @1, @3, @7];
     NSUInteger current = [days indexOfObject:@(manager.intervalDays)];
     ApolloSettingsPresentPicker(self, [self cellForRowID:@"automatic.interval"], nil,
-                                @[@"Every Day", @"Every 3 Days", @"Every 7 Days"],
-                                current == NSNotFound ? 1 : (NSInteger)current, ^(NSInteger pickedIndex) {
+                                @[@"Every Minute (Testing)", @"Every Day", @"Every 3 Days", @"Every 7 Days"],
+                                current == NSNotFound ? 2 : (NSInteger)current, ^(NSInteger pickedIndex) {
         if (!manager.isBackingUp) [manager setIntervalDays:days[(NSUInteger)pickedIndex].integerValue];
     });
 }

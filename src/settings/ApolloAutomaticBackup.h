@@ -30,7 +30,7 @@ __END_DECLS
 @property (nonatomic, readonly, nullable) NSString *lastErrorMessage;
 
 - (void)setEnabled:(BOOL)enabled;
-- (void)setIntervalDays:(NSInteger)days; // supported values: 1, 3, 7
+- (void)setIntervalDays:(NSInteger)days; // supported values: 0 (one minute, testing), 1, 3, 7
 // Resolves the actual backup directory for an in-app Files browser or restore picker.
 // This does not change the selected destination or its backup schedule.
 - (void)selectedFolderURLWithCompletion:(void (^)(NSURL *_Nullable folderURL, NSError *_Nullable error))completion;
