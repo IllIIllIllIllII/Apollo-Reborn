@@ -470,10 +470,10 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
                                  title:@"SideStore" subtitle:@"Continue in SideStore"
                             identifier:@"update.sidestore" action:@selector(apollo_sideStoreTapped)];
         [self apollo_addRowWithIcon:@"update-icon-feather" symbols:@[@"bird.fill", @"leaf.fill"] tile:[UIColor colorWithRed:0.30 green:0.55 blue:0.98 alpha:1]
-                                 title:@"Feather" subtitle:@"Continue in Feather"
+                                 title:@"Feather" subtitle:(_info.downloadURL ? @"Install the update in Feather" : @"Continue in Feather")
                             identifier:@"update.feather" action:@selector(apollo_featherTapped)];
         [self apollo_addRowWithIcon:@"update-icon-flarestore" symbols:@[@"flame.fill"] tile:[UIColor colorWithRed:0.98 green:0.45 blue:0.20 alpha:1]
-                                 title:@"FlareStore" subtitle:@"Continue in FlareStore"
+                                 title:@"FlareStore" subtitle:(_info.downloadURL ? @"Install the update in FlareStore" : @"Continue in FlareStore")
                             identifier:@"update.flarestore" action:@selector(apollo_flareStoreTapped)];
     }
     if (_info.downloadURL) {
@@ -645,11 +645,18 @@ static UIImage *ApolloUpdateSourceIcon(NSString *name) {
 }
 
 - (void)apollo_featherTapped {
-    [self apollo_openURL:ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFeather, _info.sourceURL) appName:@"Feather"];
+    [self apollo_openSideloader:ApolloUpdateSideloaderFeather name:@"Feather"];
 }
 
 - (void)apollo_flareStoreTapped {
-    [self apollo_openURL:ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloaderFlareStore, _info.sourceURL) appName:@"FlareStore"];
+    [self apollo_openSideloader:ApolloUpdateSideloaderFlareStore name:@"FlareStore"];
+}
+
+// Feather and FlareStore take the IPA directly, which works whether or not the repo is
+// already added (their source links only add the repo, then leave you in the app).
+- (void)apollo_openSideloader:(ApolloUpdateSideloader)sideloader name:(NSString *)name {
+    NSURL *url = _info.downloadURL ? ApolloUpdateSideloaderInstallURL(sideloader, _info.downloadURL) : nil;
+    [self apollo_openURL:url ?: ApolloUpdateSideloaderSourceURL(sideloader, _info.sourceURL) appName:name];
 }
 
 - (void)apollo_downloadTapped {

@@ -99,3 +99,16 @@ NSURL *ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL 
     components.queryItems = @[[NSURLQueryItem queryItemWithName:@"url" value:sourceURL.absoluteString]];
     return components.URL;
 }
+
+NSURL *ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL) {
+    switch (sideloader) {
+        case ApolloUpdateSideloaderFeather:
+            // Feather asks "download and install this file?" then downloads it.
+            return [NSURL URLWithString:[@"feather://install/" stringByAppendingString:ipaURL.absoluteString]];
+        case ApolloUpdateSideloaderFlareStore:
+            // FlareStore's documented downloadApp path (Settings > URL Schemes).
+            return [NSURL URLWithString:[@"flarestore://downloadApp=" stringByAppendingString:ipaURL.absoluteString]];
+        default:
+            return nil;
+    }
+}

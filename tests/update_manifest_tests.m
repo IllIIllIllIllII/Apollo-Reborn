@@ -105,12 +105,23 @@ static void TestSideloaderURLs(void) {
     CHECK([roundTrip isEqualToString:source.absoluteString], @"round trip %@", roundTrip);
 }
 
+static void TestInstallURLs(void) {
+    NSURL *ipa = [NSURL URLWithString:@"https://github.com/Apollo-Reborn/Apollo-Reborn/releases/download/v1.15.11_3.9.0/Apollo-Reborn-3.9.0-GLASS.ipa"];
+    NSURL *feather = ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFeather, ipa);
+    CHECK([feather.absoluteString isEqualToString:[@"feather://install/" stringByAppendingString:ipa.absoluteString]], @"feather install %@", feather);
+    NSURL *flare = ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderFlareStore, ipa);
+    CHECK([flare.absoluteString isEqualToString:[@"flarestore://downloadApp=" stringByAppendingString:ipa.absoluteString]], @"flarestore install %@", flare);
+    CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderAltStore, ipa) == nil, @"altstore has no documented install link");
+    CHECK(ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloaderSideStore, ipa) == nil, @"sidestore has no documented install link");
+}
+
 int main(void) {
     @autoreleasepool {
         TestVersionCompare();
         TestVariantKeys();
         TestManifestParse();
         TestSideloaderURLs();
+        TestInstallURLs();
     }
     if (sFailures) {
         fprintf(stderr, "update_manifest_tests: %d check(s) failed\n", sFailures);

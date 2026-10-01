@@ -45,6 +45,11 @@ ApolloUpdateInfo *_Nullable ApolloUpdateInfoFromManifest(id _Nullable manifest,
 // The URL that asks `sideloader` to add the given AltStore-style source.
 NSURL *_Nullable ApolloUpdateSideloaderSourceURL(ApolloUpdateSideloader sideloader, NSURL *sourceURL);
 
+// The URL that makes `sideloader` download and install `ipaURL` straight away, whether
+// or not the source is added (Feather's feather://install/, FlareStore's downloadApp).
+// nil for sideloaders without a documented one; callers fall back to the source link.
+NSURL *_Nullable ApolloUpdateSideloaderInstallURL(ApolloUpdateSideloader sideloader, NSURL *ipaURL);
+
 #ifdef __cplusplus
 }
 #endif
