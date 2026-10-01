@@ -7,6 +7,7 @@
 #import "ApolloBarkNotifications.h"
 #import "ApolloPushNotifications.h"
 #import "ApolloUsageHeartbeat.h"
+#import "ApolloUpdateChecker.h"
 #import "InlineMediaSettingsViewController.h"
 #import "settings/ApolloPollSettingsViewController.h"
 #import "settings/ApolloSettingsRouter.h"
@@ -3043,6 +3044,17 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     heartbeat.iconSystemName = @"waveform.path.ecg";
     heartbeat.iconTileColor = [UIColor systemPinkColor];
 
+    ApolloSettingsRow *updateChecks =
+        [ApolloSettingsRow switchRowWithID:@"privacy.updateChecks"
+                                     title:@"Check for Updates"
+                                      isOn:^BOOL { return [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyAutomaticUpdateChecks]; }
+                                  onToggle:^(UISwitch *sender) {
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyAutomaticUpdateChecks];
+        }];
+    updateChecks.iconSystemName = @"arrow.down.circle";
+    updateChecks.iconTileColor = [UIColor systemBlueColor];
+    updateChecks.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
+
     // Local crash recording (src/crash/). The pending count re-reads on every
     // configure, so returning from the sub-screen after a delete/submit shows
     // the fresh number without any manual reload plumbing.
@@ -3059,7 +3071,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     crashReports.iconSystemName = @"bandage";
     crashReports.iconTileColor = [UIColor systemOrangeColor];
 
-    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, crashReports ]];
+    return [ApolloSettingsSection sectionWithTitle:@"Privacy" footer:nil rows:@[ heartbeat, updateChecks, crashReports ]];
 }
 
 - (ApolloSettingsSection *)buildAboutSection {
@@ -3186,9 +3198,20 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                    detail:^NSString * { return @TWEAK_VERSION; }
                                  onSelect:nil];
 
+    // Sideloaded builds can't replace themselves, so this reports the newest
+    // release and hands off to the user's sideloader (ApolloUpdateChecker.m).
+    ApolloSettingsRow *updates =
+        [ApolloSettingsRow valueRowWithID:@"about.updates"
+                                    title:@"Check for Updates"
+                                   detail:^NSString * { return ApolloUpdateStatusText(); }
+                                 onSelect:^{
+            ApolloUpdateCheckNow(^{ [weakSelf reloadRowWithID:@"about.updates"]; });
+        }];
+    updates.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
+
     return [ApolloSettingsSection sectionWithTitle:@"About"
                                             footer:@"Request features, report bugs, or browse the source. Apollo Reborn is free and open source."
-                                              rows:@[ featureRequests, bugReports, github, subreddit, thanksTo, privacyPolicy, version ]];
+                                              rows:@[ featureRequests, bugReports, github, subreddit, thanksTo, privacyPolicy, version, updates ]];
 }
 
 #pragma mark - Cell Builders
@@ -3592,7 +3615,9 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:barkTail attributes:plainAttrs]];
     } else if ([sectionTitle isEqualToString:@"Privacy"]) {
         text = [[NSMutableAttributedString alloc]
-            initWithString:@"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our "
+            initWithString:(ApolloUpdateChecksAvailable()
+                ? @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. Checking for updates reads the latest release info from GitHub once a day and shows GitHub only your IP address. More details can be found in our "
+                : @"Sends one anonymous heartbeat so we can estimate active Apollo Reborn installs. No Reddit activity, account details, or feature usage is collected. More details can be found in our ")
             attributes:plainAttrs];
         [text appendAttributedString:[[NSAttributedString alloc] initWithString:@"privacy policy"
             attributes:@{NSFontAttributeName: ApolloSettingsFont(UIFontTextStyleFootnote, self.traitCollection), NSForegroundColorAttributeName: [self apollo_themeAccentColor], NSLinkAttributeName: [NSURL URLWithString:@"https://apolloreborn.app/privacy"]}]];
