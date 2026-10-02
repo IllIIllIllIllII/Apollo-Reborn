@@ -181,6 +181,15 @@ static void ApolloUpdateMaybePrompt(void) {
 void ApolloUpdateCheckIfNeeded(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        // TEST BRANCH ONLY, not for the PR: forget a "Skip this version" (and the daily throttle)
+        // saved by earlier test builds, once, so the prompt can show again.
+        static NSString *const kTestSkipReset = @"UpdateSkipResetForTest1";
+        if (![defaults boolForKey:kTestSkipReset]) {
+            [defaults removeObjectForKey:UDKeyUpdateSkippedVersion];
+            [defaults removeObjectForKey:UDKeyUpdateLastCheck];
+            [defaults setBool:YES forKey:kTestSkipReset];
+            ApolloLog(@"[update] test reset: cleared the skipped version and the daily throttle");
+        }
 #if APOLLO_SIM_BUILD
         // APOLLO_UPDATE_RESET=1 forgets the daily throttle and skipped version, once per launch.
         static dispatch_once_t resetOnce;
