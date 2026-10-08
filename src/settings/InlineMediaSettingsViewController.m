@@ -1190,7 +1190,7 @@ static NSString *ApolloIMMessageMediaFooter(void) {
     for (NSUInteger i = 0; i < values.count; i++) {
         NSInteger value = values[i].integerValue;
         NSString *title = titles[i];
-        if (sInlineImageAlignment == value) title = [title stringByAppendingString:@" (Current)"];
+        if (sInlineImageAlignment == value) title = [title stringByAppendingString:@" ✓"];
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             sInlineImageAlignment = value;
             [[NSUserDefaults standardUserDefaults] setInteger:value forKey:UDKeyInlineImageAlignment];
@@ -1222,7 +1222,7 @@ static NSString *ApolloIMMessageMediaFooter(void) {
     for (NSUInteger i = 0; i < values.count; i++) {
         NSInteger value = values[i].integerValue;
         NSString *title = titles[i];
-        if (sAutoplayInlineGIFMode == value) title = [title stringByAppendingString:@" (Current)"];
+        if (sAutoplayInlineGIFMode == value) title = [title stringByAppendingString:@" ✓"];
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             sAutoplayInlineGIFMode = value;
             // The KVO observer in ApolloMediaAutoplay picks this write up and

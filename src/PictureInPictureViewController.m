@@ -88,7 +88,7 @@ typedef NS_ENUM(NSInteger, PictureInPictureSharedRow) {
 
 // Multi-choice row matching the repo-wide pattern (CustomAPIViewController's
 // "Body Link Previews"/"Autoplay Inline GIFs" etc.): Value1 cell, tap presents
-// an anchored action sheet with a "(Current)" suffix on the active choice.
+// an anchored action sheet with a trailing checkmark on the active choice.
 - (UITableViewCell *)valueCellLabel:(NSString *)label detail:(NSString *)detail enabled:(BOOL)enabled {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -190,11 +190,11 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
 
     // Increasing inclusiveness: unmuted videos → all videos → all videos + GIFs.
     NSString *unmutedTitle = (sPiPActivationMode == ApolloPiPActivationModeUnmutedOnly)
-        ? @"Unmuted Videos Only (Current)" : @"Unmuted Videos Only";
+        ? @"Unmuted Videos Only ✓" : @"Unmuted Videos Only";
     NSString *allTitle = (sPiPActivationMode == ApolloPiPActivationModeAllVideos)
-        ? @"All Videos (Current)" : @"All Videos";
+        ? @"All Videos ✓" : @"All Videos";
     NSString *gifsTitle = (sPiPActivationMode == ApolloPiPActivationModeAllVideosAndGifs)
-        ? @"All Videos & GIFs (Current)" : @"All Videos & GIFs";
+        ? @"All Videos & GIFs ✓" : @"All Videos & GIFs";
 
     __weak __typeof(self) weakSelf = self;
     [sheet addAction:[UIAlertAction actionWithTitle:unmutedTitle style:UIAlertActionStyleDefault
@@ -239,7 +239,7 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
     for (NSInteger position = ApolloPiPStartPositionTopLeft;
          position <= ApolloPiPStartPositionLastPosition; position++) {
         NSString *title = (sPiPStartPosition == position)
-            ? [titles[(NSUInteger)position] stringByAppendingString:@" (Current)"]
+            ? [titles[(NSUInteger)position] stringByAppendingString:@" ✓"]
             : titles[(NSUInteger)position];
         UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
                                                        handler:^(__unused UIAlertAction *a) {
@@ -267,7 +267,7 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
     for (NSNumber *seconds in @[@5, @10, @15, @30]) {
         NSString *title = [NSString stringWithFormat:@"%@ Seconds", seconds];
         if (sPiPSkipSeconds == seconds.integerValue) {
-            title = [title stringByAppendingString:@" (Current)"];
+            title = [title stringByAppendingString:@" ✓"];
         }
         UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
                                                        handler:^(__unused UIAlertAction *a) {

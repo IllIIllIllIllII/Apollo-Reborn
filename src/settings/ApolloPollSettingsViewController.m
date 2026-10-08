@@ -208,7 +208,7 @@ typedef NS_ENUM(NSInteger, ApolloPollSettingsSection) {
     for (NSUInteger i = 0; i < values.count; i++) {
         NSInteger value = values[i].integerValue;
         NSString *title = titles[i];
-        if (sPollOptionAlignment == value) title = [title stringByAppendingString:@" (Current)"];
+        if (sPollOptionAlignment == value) title = [title stringByAppendingString:@" ✓"];
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction *action) {
             sPollOptionAlignment = value;
