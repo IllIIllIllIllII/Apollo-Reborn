@@ -1,6 +1,7 @@
 #import "settings/ApolloWallpapersViewController.h"
 
 #import "settings/ApolloWallpaperViewerViewController.h"
+#import "settings/ApolloSettingsForm.h"
 
 @implementation ApolloWallpapersViewController
 
@@ -147,33 +148,17 @@
     [ApolloWallpaperViewerViewController preloadFirstItemFromItems:
         [self itemsWithURLs:self.goodbyeMacURLs captions:self.goodbyeMacCaptions]];
 
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:nil
-                         message:@"Choose a device"
-                  preferredStyle:UIAlertControllerStyleActionSheet];
     UIImpactFeedbackGenerator *deviceFeedback =
         [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
     [deviceFeedback prepare];
     __weak UIViewController *weakPresenter = presenter;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"iPhone" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [deviceFeedback impactOccurred];
-        [self presentURLs:self.goodbyeIPhoneURLs captions:self.goodbyeCaptions fromViewController:weakPresenter];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"iPad" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [deviceFeedback impactOccurred];
-        [self presentURLs:self.goodbyeIPadURLs captions:self.goodbyeCaptions fromViewController:weakPresenter];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Mac" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [deviceFeedback impactOccurred];
-        [self presentURLs:self.goodbyeMacURLs captions:self.goodbyeMacCaptions fromViewController:weakPresenter];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    UIView *anchor = sourceView ?: presenter.view;
-    popover.sourceView = anchor;
-    popover.sourceRect = anchor.bounds;
-    [presenter presentViewController:sheet animated:YES completion:nil];
+    ApolloSettingsPresentPicker(presenter, sourceView, @"Choose a device",
+        @[@"iPhone", @"iPad", @"Mac"], -1, ^(NSInteger index) {
+            [deviceFeedback impactOccurred];
+            NSArray<NSString *> *urls = index == 0 ? self.goodbyeIPhoneURLs
+                : index == 1 ? self.goodbyeIPadURLs : self.goodbyeMacURLs;
+            [self presentURLs:urls captions:self.goodbyeCaptions fromViewController:weakPresenter];
+        });
 }
 
 @end

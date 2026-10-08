@@ -5,6 +5,7 @@
 
 #import "ApolloState.h"
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloAccountSubscriptions.h"
 #import "ApolloSubredditCustomBannerCache.h"
@@ -1059,36 +1060,32 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
     if (viewableURL) {
-        [sheet addAction:[UIAlertAction actionWithTitle:isIcon ? @"View Icon" : @"View Banner"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(__unused UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(isIcon ? @"View Icon" : @"View Banner",
+                                        UIAlertActionStyleDefault, ^(__unused UIAlertAction *action) {
             [weakSelf apollo_viewImageForAssetKind:assetKind];
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Choose Photo"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Choose Photo", UIAlertActionStyleDefault,
+                                    ^(__unused UIAlertAction *action) {
         [weakSelf apollo_presentPhotoPickerForAssetKind:assetKind];
-    }]];
+    })];
     if (hasCustom) {
-        [sheet addAction:[UIAlertAction actionWithTitle:isIcon ? @"Remove Custom Icon" : @"Remove Custom Banner"
-                                                  style:UIAlertActionStyleDestructive
-                                                handler:^(__unused UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(isIcon ? @"Remove Custom Icon" : @"Remove Custom Banner",
+                                        UIAlertActionStyleDestructive, ^(__unused UIAlertAction *action) {
             if (isIcon) {
                 [[ApolloSubredditCustomIconCache sharedCache] removeIconForSubreddit:subredditName];
             } else {
                 [[ApolloSubredditCustomBannerCache sharedCache] removeBannerForSubreddit:subredditName];
             }
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
 
     UIView *sourceView = isIcon ? self.iconImageView : self.bannerImageView;
-    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-        sheet.popoverPresentationController.sourceView = sourceView;
-        sheet.popoverPresentationController.sourceRect = sourceView.bounds;
-    }
-    [host presentViewController:sheet animated:YES completion:nil];
+    // Native menus use this same artwork anchor on iPhone and iPad.
+    sheet.popoverPresentationController.sourceView = sourceView;
+    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
+    ApolloPresentActionMenu(host, sheet);
 }
 
 // Tap views the artwork when there is any (matching how media behaves

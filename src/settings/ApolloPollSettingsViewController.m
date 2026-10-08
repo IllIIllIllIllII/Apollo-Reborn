@@ -1,9 +1,11 @@
 #import "ApolloPollSettingsViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 #import "ApolloCommon.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloState.h"
+#import "ApolloSettingsForm.h"
 #import "UserDefaultConstants.h"
 
 // Sections. Options is always present (a display preference, independent of
@@ -199,29 +201,20 @@ typedef NS_ENUM(NSInteger, ApolloPollSettingsSection) {
 #pragma mark - Option alignment
 
 - (void)presentAlignmentSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:@"Option Text Alignment"
-                         message:@"How option text lines up next to its selection circle."
-                  preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSNumber *> *values = @[@(ApolloPollOptionAlignmentCenter), @(ApolloPollOptionAlignmentLeft)];
     NSArray<NSString *> *titles = @[@"Center", @"Left"];
-    for (NSUInteger i = 0; i < values.count; i++) {
-        NSInteger value = values[i].integerValue;
-        NSString *title = titles[i];
-        if (sPollOptionAlignment == value) title = [title stringByAppendingString:@" ✓"];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
+    NSInteger currentIndex = (NSInteger)[values indexOfObject:@(sPollOptionAlignment)];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Option Text Alignment",
+        @"How option text lines up next to its selection circle.", titles, nil, currentIndex,
+        ^(NSInteger pickedIndex) {
+            NSInteger value = values[pickedIndex].integerValue;
             sPollOptionAlignment = value;
             [[NSUserDefaults standardUserDefaults] setInteger:value forKey:UDKeyPollOptionAlignment];
-            [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0
-                                                                        inSection:ApolloPollSettingsSectionOptions]]
-                                  withRowAnimation:UITableViewRowAnimationNone];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sourceView ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (sourceView ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+            [weakSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:0
+                                                                            inSection:ApolloPollSettingsSectionOptions]]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+        }, nil);
 }
 
 #pragma mark - Sign-in flow
@@ -231,16 +224,15 @@ typedef NS_ENUM(NSInteger, ApolloPollSettingsSection) {
         alertControllerWithTitle:[NSString stringWithFormat:@"u/%@ is signed in", username]
                          message:@"Sign in again only if polls have stopped working."
                   preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Sign In Again" style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Sign In Again", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
         [self startSignInForUsername:username];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     NSIndexPath *path = [NSIndexPath indexPathForRow:0 inSection:ApolloPollSettingsSectionSignIn];
     UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:path];
     sheet.popoverPresentationController.sourceView = cell ?: self.view;
     sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)startSignInForUsername:(NSString *)username {

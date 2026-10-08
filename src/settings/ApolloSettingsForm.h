@@ -167,9 +167,10 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 extern "C" {
 #endif
 
-// The shared action-sheet picker presents optionTitles with a trailing checkmark
-// on the current option, anchored to sourceView for iPad popovers.
-// apply() runs for ANY pick, including
+// The shared picker uses Apollo's native menu presenter on Liquid Glass, with a
+// checkmark on the current option. Other builds retain the action sheet with a
+// trailing checkmark, anchored to sourceView for iPad popovers.
+// apply() runs after dismissal for ANY pick, including
 // re-picking the current option (legacy sheet semantics — some handlers rely
 // on the re-fire), so apply blocks must be idempotent.
 void ApolloSettingsPresentPicker(UIViewController *presenter,
@@ -178,6 +179,19 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
                                  NSArray<NSString *> *optionTitles,
                                  NSInteger currentIndex,
                                  void (^apply)(NSInteger pickedIndex));
+
+// Adds optional per-index icons and an explanation. Native menus place the
+// explanation behind a separated About… action; classic sheets show the message.
+// onCancel runs when dismissed without choosing an option, including About….
+void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
+                                            UIView *_Nullable sourceView,
+                                            NSString *_Nullable title,
+                                            NSString *_Nullable message,
+                                            NSArray<NSString *> *optionTitles,
+                                            NSDictionary<NSNumber *, UIImage *> *_Nullable optionImages,
+                                            NSInteger currentIndex,
+                                            void (^apply)(NSInteger pickedIndex),
+                                            dispatch_block_t _Nullable onCancel);
 
 // Settings-app-style icon tile: a white SF symbol on a colored 29pt rounded
 // square (cached). Shared with settings search so result rows can render the

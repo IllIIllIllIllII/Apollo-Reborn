@@ -1,4 +1,5 @@
 #import "settings/ApolloAISettingsViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 
 #import "ApolloAICloudBridge.h"
 #import "ApolloAISummary.h"
@@ -1757,23 +1758,21 @@ static void ApolloAIConfigureHeaderTextField(UITextField *field) {
         [UIAlertController alertControllerWithTitle:@"Clear AI Cache?"
                                             message:@"Saved post and comment summaries will be removed and generated again when needed."
                                      preferredStyle:UIAlertControllerStyleActionSheet];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Clear AI Cache"
-                                             style:UIAlertActionStyleDestructive
-                                           handler:^(__unused UIAlertAction *action) {
+    [alert addAction:ApolloMenuAction(@"Clear AI Cache", UIAlertActionStyleDestructive, ^(__unused UIAlertAction *action) {
         NSUInteger removed = ApolloAIClearSummaryCache();
         NSString *detail = removed == 1
             ? @"Removed 1 cached summary"
             : [NSString stringWithFormat:@"Removed %lu cached summaries", (unsigned long)removed];
-        // Let UIKit begin dismissing the action sheet before the transient toast
-        // animates over the underlying settings screen.
+        // Classic sheets begin dismissing before this queued toast; native menu
+        // handlers are delivered after their closing animation has completed.
         dispatch_async(dispatch_get_main_queue(), ^{
             ApolloShowToastWithStyle(@"AI Cache Cleared", detail, ApolloToastStyleSuccess, nil);
         });
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [alert addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     alert.popoverPresentationController.sourceView = cell ?: self.view;
     alert.popoverPresentationController.sourceRect = cell ? cell.bounds : CGRectZero;
-    [self presentViewController:alert animated:YES completion:nil];
+    ApolloPresentActionMenu(self, alert);
 }
 
 - (void)exportLogsTapped {

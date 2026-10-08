@@ -1,4 +1,5 @@
 #import "ApolloThemeManagerViewController.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloThemeTokens.h"
 #import "ApolloThemeStore.h"
 #import "ApolloThemeCompiler.h"
@@ -1423,21 +1424,21 @@ static NSString *SpacedThemeName(NSString *raw) {
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Light Mode" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction(@"Light Mode", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyThemeID:themeID target:ApolloThemeApplyTargetLight];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Dark Mode" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Dark Mode", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyThemeID:themeID target:ApolloThemeApplyTargetDark];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Both Modes" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Both Modes", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyThemeID:themeID target:ApolloThemeApplyTargetBoth];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     sheet.popoverPresentationController.sourceView = self.view;
     sheet.popoverPresentationController.sourceRect = cell
         ? [cell convertRect:cell.bounds toView:self.view]
         : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)applyThemeID:(NSString *)themeID target:(ApolloThemeApplyTarget)target {
@@ -1883,20 +1884,20 @@ static NSString *SpacedThemeName(NSString *raw) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Import Theme"
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"From File…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    [sheet addAction:ApolloMenuAction(@"From File…", UIAlertActionStyleDefault, ^(UIAlertAction *x) {
         [self presentImportDocumentPicker];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"From Photo…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"From Photo…", UIAlertActionStyleDefault, ^(UIAlertAction *x) {
         [self presentImageImportPicker];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Scan with Camera…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Scan with Camera…", UIAlertActionStyleDefault, ^(UIAlertAction *x) {
         [self presentThemeQRScanner];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIView *anchor = [self viewForCreateImportRow] ?: self.view;
     sheet.popoverPresentationController.sourceView = anchor;
     sheet.popoverPresentationController.sourceRect = anchor.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 // The visible "Import Theme…" row cell (Create section), for iPad popover
@@ -2044,18 +2045,18 @@ static NSString *SpacedThemeName(NSString *raw) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Share Theme"
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"As Image…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    [sheet addAction:ApolloMenuAction(@"As Image…", UIAlertActionStyleDefault, ^(UIAlertAction *x) {
         [self shareThemeAsImageFromIndexPath:ip];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"As Theme File…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"As Theme File…", UIAlertActionStyleDefault, ^(UIAlertAction *x) {
         [self shareThemeFile:[[self store] themeWithID:self.editingThemeID]
                     fromView:[self.tableView cellForRowAtIndexPath:ip]];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIView *anchor = [self.tableView cellForRowAtIndexPath:ip] ?: self.view;
     sheet.popoverPresentationController.sourceView = anchor;
     sheet.popoverPresentationController.sourceRect = anchor.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)shareThemeAsImageFromIndexPath:(NSIndexPath *)ip {

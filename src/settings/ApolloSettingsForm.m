@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloNativeActionMenus.h"
 
 typedef NS_ENUM(NSInteger, ApolloSFRowKind) {
     ApolloSFRowKindSwitch = 0,
@@ -915,24 +916,108 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
                                  NSArray<NSString *> *optionTitles,
                                  NSInteger currentIndex,
                                  void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPickerWithDetails(presenter, sourceView, title, nil,
+                                          optionTitles, nil, currentIndex, apply, nil);
+}
+
+void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
+                                            UIView *sourceView,
+                                            NSString *title,
+                                            NSString *message,
+                                            NSArray<NSString *> *optionTitles,
+                                            NSDictionary<NSNumber *, UIImage *> *optionImages,
+                                            NSInteger currentIndex,
+                                            void (^apply)(NSInteger pickedIndex),
+                                            dispatch_block_t onCancel) {
+    if (@available(iOS 15.0, *)) {
+        if (ApolloNativeActionMenusActive()) {
+            // Reuse Apollo's presenter so the initiating row tap opens the menu
+            // immediately. Its proxy anchor survives row reloads and dismissal.
+            UIView *source = sourceView.window ? sourceView : presenter.view;
+            NSObject *context = [NSObject new];
+            __block BOOL choseAction = NO;
+            void (^performAfterDismissal)(dispatch_block_t) = ^(dispatch_block_t action) {
+                // Handlers may reload rows or present another controller.
+                // Keep that work after the native menu's closing animation.
+                if (!ApolloNativeActionMenuPerformAfterDismissal(context, action)) {
+                    dispatch_async(dispatch_get_main_queue(), action);
+                }
+            };
+            NSMutableArray<UIAction *> *actions = [NSMutableArray arrayWithCapacity:optionTitles.count];
+            for (NSInteger i = 0; i < (NSInteger)optionTitles.count; i++) {
+                UIAction *action = [UIAction actionWithTitle:optionTitles[(NSUInteger)i]
+                                                     image:optionImages[@(i)]
+                                                identifier:nil
+                                                   handler:^(__unused UIAction *selected) {
+                    choseAction = YES;
+                    performAfterDismissal(^{ if (apply) apply(i); });
+                }];
+                action.state = i == currentIndex ? UIMenuElementStateOn : UIMenuElementStateOff;
+                [actions addObject:action];
+            }
+            UIMenu *choices = [UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                          options:UIMenuOptionsDisplayInline | UIMenuOptionsSingleSelection
+                                         children:actions];
+            NSMutableArray<UIMenuElement *> *children = [NSMutableArray arrayWithObject:choices];
+            if (message.length > 0) {
+                __weak UIViewController *weakPresenter = presenter;
+                UIAction *about = [UIAction actionWithTitle:@"About…" image:[UIImage systemImageNamed:@"info.circle"]
+                                                 identifier:nil handler:^(__unused UIAction *selected) {
+                    choseAction = YES;
+                    performAfterDismissal(^{
+                        // About opens help without committing a choice. Undo any
+                        // tentative setting just as an outside dismissal would.
+                        if (onCancel) onCancel();
+                        UIViewController *owner = weakPresenter;
+                        if (!owner.viewIfLoaded.window) return;
+                        UIAlertController *info = [UIAlertController alertControllerWithTitle:title
+                            message:message preferredStyle:UIAlertControllerStyleAlert];
+                        [info addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+                        [owner presentViewController:info animated:YES completion:nil];
+                    });
+                }];
+                [children addObject:[UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                                 options:UIMenuOptionsDisplayInline children:@[about]]];
+            }
+            UIMenu *menu = [UIMenu menuWithTitle:title ?: @"" children:children];
+            dispatch_block_t didEnd = ^{
+                if (!choseAction && onCancel) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (!choseAction) onCancel();
+                    });
+                }
+            };
+            // Actions retain the context; the context does not own the menu.
+            if (ApolloNativeActionMenuPresentCaptured(menu, source, context, didEnd)) return;
+        }
+    }
+
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
-                                                                   message:nil
+                                                                   message:message
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSInteger i = 0; i < (NSInteger)optionTitles.count; i++) {
         NSString *optionTitle = (i == currentIndex)
             ? [optionTitles[(NSUInteger)i] stringByAppendingString:@" ✓"]
             : optionTitles[(NSUInteger)i];
-        [sheet addAction:[UIAlertAction actionWithTitle:optionTitle
+        UIAlertAction *action = [UIAlertAction actionWithTitle:optionTitle
                                                   style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
+                                                handler:^(__unused UIAlertAction *selected) {
             // Fires even when the current option is re-picked: every legacy sheet
             // did (their handlers re-write + re-notify, and some rely on it — e.g.
             // re-picking the current provider still marks it user-selected), so
             // apply blocks must be idempotent.
             if (apply) apply(i);
-        }]];
+        }];
+        UIImage *image = optionImages[@(i)];
+        if (image) {
+            // Preserve the icon treatment used by the existing PiP sheets.
+            @try { [action setValue:image forKey:@"image"]; }
+            @catch (__unused NSException *exception) {}
+        }
+        [sheet addAction:action];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel
+        handler:^(__unused UIAlertAction *action) { if (onCancel) onCancel(); }]];
     // Anchor to the screen, not a reusable cell: row reloads can recycle the
     // source cell for a different row while the picker is still open.
     UIView *anchor = presenter.view;

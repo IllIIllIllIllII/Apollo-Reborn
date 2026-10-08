@@ -1,4 +1,5 @@
 #import "ApolloAccountSwitcherViewController.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloMessageDraftStore.h"
@@ -1426,31 +1427,27 @@ static BOOL ApolloAccountReorderSchedulePersist(
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-// A web-session row has no API key to edit, so retain the original action
-// sheet offering re-sign-in or conversion to API-key sign-in.
+// A web-session row has no API key to edit, so offer re-sign-in or conversion
+// to API-key sign-in through the shared action menu presenter.
 - (void)presentWebSessionActionsForUsername:(NSString *)username sourceView:(UIView *)sourceView {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:username
                           message:@"Signed in without an API key (web session)."
                    preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Re-Sign In"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Re-Sign In", UIAlertActionStyleDefault,
+                                    ^(__unused UIAlertAction *action) {
         ApolloWebSessionLoginViewController *vc =
             [ApolloWebSessionLoginViewController loginControllerForAdditionalAccount];
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
         [self presentViewController:nav animated:YES completion:nil];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Use API Key Instead…"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Use API Key Instead…", UIAlertActionStyleDefault,
+                                    ^(__unused UIAlertAction *action) {
         ApolloPresentSwitchToAPIKeyFlow(self, username, ^(BOOL switched) {
             if (switched) [self reloadRows];
         });
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     objc_setAssociatedObject(sheet, kApolloSwitcherFastEllipsisMenuKey, @YES,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     sheet.popoverPresentationController.sourceView = sourceView;
@@ -1458,7 +1455,7 @@ static BOOL ApolloAccountReorderSchedulePersist(
     // The arrow points right toward the ellipsis, placing the popover on the
     // icon's left instead of above it.
     sheet.popoverPresentationController.permittedArrowDirections = UIPopoverArrowDirectionRight;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 #pragma mark - Per-account credential editor

@@ -10,6 +10,7 @@
 #import <stdatomic.h>
 
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloUserProfileCache.h"
@@ -673,14 +674,14 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"View Banner" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"View Banner", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
             ApolloProfileHeaderView *header = weakSelf;
             if (header.window && ApolloPresentProfileBanner(url, header)) {
                 UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
                 [feedback impactOccurred];
             }
-        }]];
+        })];
     sheet.modalPresentationStyle = UIModalPresentationPopover;
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
     popover.delegate = self;
@@ -690,7 +691,7 @@ static NSString *ApolloProfileSettingsPreviewYearClubTitle(NSTimeInterval create
     popover.sourceRect = CGRectMake(CGRectGetMidX(self.avatarBorderView.frame), menuAnchorY, 1.0, 1.0);
     popover.permittedArrowDirections = UIPopoverArrowDirectionUp;
     [self apollo_playBannerPreviewFeedback];
-    [host presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(host, sheet);
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {

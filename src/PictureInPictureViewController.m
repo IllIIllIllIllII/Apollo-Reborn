@@ -1,6 +1,7 @@
 #import "PictureInPictureViewController.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "settings/ApolloSettingsForm.h"
 
 extern NSString *const ApolloPictureInPictureChangedNotification;
 NSString *const ApolloPictureInPictureChangedNotification = @"ApolloPictureInPictureChangedNotification";
@@ -88,7 +89,7 @@ typedef NS_ENUM(NSInteger, PictureInPictureSharedRow) {
 
 // Multi-choice row matching the repo-wide pattern (CustomAPIViewController's
 // "Body Link Previews"/"Autoplay Inline GIFs" etc.): Value1 cell, tap presents
-// an anchored action sheet with a trailing checkmark on the active choice.
+// an anchored picker that marks the active choice.
 - (UITableViewCell *)valueCellLabel:(NSString *)label detail:(NSString *)detail enabled:(BOOL)enabled {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -169,61 +170,31 @@ typedef NS_ENUM(NSInteger, PictureInPictureSharedRow) {
     return [NSIndexPath indexPathForRow:(NSInteger)index inSection:PictureInPictureSectionControls];
 }
 
-// UIAlertAction accepts an image via the long-stable "image" KVC key.
-// Takes the first symbol name that resolves (fallback chain); purely
-// cosmetic, so failures are ignored.
-static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *symbolNames) {
+// Takes the first symbol name that resolves so the corner choices retain their
+// glyphs in both the native menu and the action-sheet picker.
+static UIImage *PiPPositionIcon(NSArray<NSString *> *symbolNames) {
     for (NSString *name in symbolNames) {
         UIImage *image = [UIImage systemImageNamed:name];
-        if (!image) continue;
-        @try {
-            [action setValue:image forKey:@"image"];
-        } @catch (NSException *exception) {}
-        return;
+        if (image) return image;
     }
+    return nil;
 }
 
 - (void)presentActivationModeSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Activate For"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
     // Increasing inclusiveness: unmuted videos → all videos → all videos + GIFs.
-    NSString *unmutedTitle = (sPiPActivationMode == ApolloPiPActivationModeUnmutedOnly)
-        ? @"Unmuted Videos Only ✓" : @"Unmuted Videos Only";
-    NSString *allTitle = (sPiPActivationMode == ApolloPiPActivationModeAllVideos)
-        ? @"All Videos ✓" : @"All Videos";
-    NSString *gifsTitle = (sPiPActivationMode == ApolloPiPActivationModeAllVideosAndGifs)
-        ? @"All Videos & GIFs ✓" : @"All Videos & GIFs";
-
+    NSArray<NSNumber *> *modes = @[@(ApolloPiPActivationModeUnmutedOnly),
+                                   @(ApolloPiPActivationModeAllVideos),
+                                   @(ApolloPiPActivationModeAllVideosAndGifs)];
     __weak __typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:unmutedTitle style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf setActivationMode:ApolloPiPActivationModeUnmutedOnly];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:allTitle style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf setActivationMode:ApolloPiPActivationModeAllVideos];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:gifsTitle style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf setActivationMode:ApolloPiPActivationModeAllVideosAndGifs];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloSettingsPresentPicker(self, sourceView, @"Activate For",
+                                @[@"Unmuted Videos Only", @"All Videos", @"All Videos & GIFs"],
+                                (NSInteger)[modes indexOfObject:@(sPiPActivationMode)],
+                                ^(NSInteger pickedIndex) {
+        [weakSelf setActivationMode:modes[(NSUInteger)pickedIndex].integerValue];
+    });
 }
 
 - (void)presentStartPositionSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Default Position"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
     NSArray<NSString *> *titles = @[@"Top Left", @"Top Right", @"Bottom Left", @"Bottom Right", @"Last Position"];
     // Corner glyphs show a small rect docked in the matching corner; Last
     // Position uses the center-inset rect from the same family ("wherever
@@ -235,54 +206,32 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
         @[@"rectangle.inset.bottomright.filled"],
         @[@"rectangle.center.inset.filled", @"clock.arrow.circlepath"],
     ];
-    __weak __typeof(self) weakSelf = self;
+    NSMutableDictionary<NSNumber *, UIImage *> *images = [NSMutableDictionary dictionary];
     for (NSInteger position = ApolloPiPStartPositionTopLeft;
          position <= ApolloPiPStartPositionLastPosition; position++) {
-        NSString *title = (sPiPStartPosition == position)
-            ? [titles[(NSUInteger)position] stringByAppendingString:@" ✓"]
-            : titles[(NSUInteger)position];
-        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-                                                       handler:^(__unused UIAlertAction *a) {
-            [weakSelf setStartPosition:position];
-        }];
-        PiPSetSheetActionIcon(action, symbols[(NSUInteger)position]);
-        [sheet addAction:action];
+        UIImage *image = PiPPositionIcon(symbols[(NSUInteger)position]);
+        if (image) images[@(position)] = image;
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    __weak __typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Default Position", nil,
+                                           titles, images, sPiPStartPosition,
+                                           ^(NSInteger pickedIndex) {
+        [weakSelf setStartPosition:pickedIndex];
+    }, nil);
 }
 
 - (void)presentSkipSecondsSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Skip Amount"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
+    NSArray<NSNumber *> *amounts = @[@5, @10, @15, @30];
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:amounts.count];
+    for (NSNumber *seconds in amounts) {
+        [titles addObject:[NSString stringWithFormat:@"%@ Seconds", seconds]];
+    }
     __weak __typeof(self) weakSelf = self;
-    for (NSNumber *seconds in @[@5, @10, @15, @30]) {
-        NSString *title = [NSString stringWithFormat:@"%@ Seconds", seconds];
-        if (sPiPSkipSeconds == seconds.integerValue) {
-            title = [title stringByAppendingString:@" ✓"];
-        }
-        UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
-                                                       handler:^(__unused UIAlertAction *a) {
-            [weakSelf setSkipSeconds:seconds.integerValue];
-        }];
-        [sheet addAction:action];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloSettingsPresentPicker(self, sourceView, @"Skip Amount", titles,
+                                (NSInteger)[amounts indexOfObject:@(sPiPSkipSeconds)],
+                                ^(NSInteger pickedIndex) {
+        [weakSelf setSkipSeconds:amounts[(NSUInteger)pickedIndex].integerValue];
+    });
 }
 
 #pragma mark - Table view data source

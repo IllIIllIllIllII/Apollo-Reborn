@@ -2,7 +2,7 @@
 //
 // Opt-in gate on the Subreddits-list star button. When Confirm Favorite Changes
 // is on, tapping the star (native control or the polish star-hit proxy) shows
-// an action sheet before Apollo mutates FavoriteSubreddits. Confirm re-fires
+// a confirmation menu before Apollo mutates FavoriteSubreddits. Confirm re-fires
 // the control so every other favoriteSubredditButtonTapped: hook still wraps
 // the real mutation; Cancel leaves the list untouched.
 //
@@ -16,6 +16,7 @@
 #import <UIKit/UIKit.h>
 
 #import "ApolloFavoriteConfirm.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloCommon.h"
 #import "ApolloFollowingSection.h"
 #import "ApolloState.h"
@@ -197,29 +198,31 @@ void ApolloFavoriteConfirmRun(UIView *sourceView,
                                             message:nil
                                      preferredStyle:UIAlertControllerStyleActionSheet];
     __weak UIAlertController *weakSheet = sheet;
-    [sheet addAction:[UIAlertAction actionWithTitle:actionTitle
-                                              style:actionStyle
-                                            handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(actionTitle, actionStyle, ^(__unused UIAlertAction *action) {
         // Wait until the sheet has fully dismissed before mutating — running
         // while UIKit is still tearing the sheet down can glitch presentation
         // / layout of the list underneath.
         UIViewController *strongHost = weakHost;
         UIAlertController *strongSheet = weakSheet;
         if (!strongHost || !strongSheet) return;
+        // The native presenter has already finished dismissing before invoking
+        // this callback; the original sheet is only its retained action model.
+        if (!strongSheet.presentingViewController && !strongSheet.viewIfLoaded.window) {
+            ApolloFavoriteConfirmPerformAfterDismiss(strongHost, promptedName, providerCopy, performCopy);
+            return;
+        }
         ApolloFavoriteConfirmWaitForDismissal(strongSheet, strongHost,
                                               promptedName, providerCopy, performCopy,
                                               CFAbsoluteTimeGetCurrent() + 10.0);
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
 
     if (sheet.popoverPresentationController) {
         sheet.popoverPresentationController.sourceView = sourceView;
         sheet.popoverPresentationController.sourceRect = sourceView.bounds;
     }
 
-    [host presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(host, sheet);
 }
 
 #pragma mark - Hook
