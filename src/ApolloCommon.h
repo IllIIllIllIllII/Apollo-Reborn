@@ -78,6 +78,9 @@ void ApolloApplyInheritedSettingsTableTheme(UITableViewController *controller);
 // cells' colors can be stale — callers sampling a cell's color from an
 // inherited source table should check this before trusting the sample.
 BOOL ApolloThemeSourceTableIsStale(UITableView *sourceTable);
+// Draws both tile appearances; nil traits uses current traits.
+UIImage *ApolloSettingsTileImage(UIColor *color, CGFloat size, UITraitCollection *traits,
+                                void (^drawContent)(BOOL dark, UIColor *resolvedColor));
 UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size);
 UIImage *ApolloBuyMeACoffeeSettingsIcon(CGFloat size);
 UIImage *ApolloRebornOptionsSettingsIcon(CGFloat size);
