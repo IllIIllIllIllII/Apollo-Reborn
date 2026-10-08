@@ -1,4 +1,5 @@
 #import "settings/SavedCategoriesViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 
 static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
 
@@ -74,18 +75,18 @@ static NSString *const kGroupSuiteName = @"group.com.christianselig.apollo";
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
 
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:name message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Rename" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Rename", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
         [self renameCategoryWithName:name];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Delete" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Delete", UIAlertActionStyleDestructive, ^(UIAlertAction *action) {
         [self deleteCategoryWithName:name];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     if (sheet.popoverPresentationController) {
-        sheet.popoverPresentationController.sourceView = cell;
-        sheet.popoverPresentationController.sourceRect = cell.bounds;
+        sheet.popoverPresentationController.sourceView = cell ?: self.view;
+        sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {

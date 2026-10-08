@@ -1,5 +1,6 @@
 #import "ApolloThemeGalleryViewController.h"
 
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloThemeCompiler.h"
 #import "ApolloThemeGalleryCatalog.h"
 #import "ApolloThemeManagerViewController.h"
@@ -531,19 +532,19 @@ typedef void (^ApolloThemeGalleryAction)(NSString *slug);
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
     __weak UIViewController *weakPresented = presented;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Light Mode" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction(@"Light Mode", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyGallerySlug:slug target:ApolloThemeApplyTargetLight dismissing:weakPresented];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Dark Mode" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Dark Mode", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyGallerySlug:slug target:ApolloThemeApplyTargetDark dismissing:weakPresented];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Both Modes" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    })];
+    [sheet addAction:ApolloMenuAction(@"Both Modes", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf applyGallerySlug:slug target:ApolloThemeApplyTargetBoth dismissing:weakPresented];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     sheet.popoverPresentationController.sourceView = presented.view;
     sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(presented.view.bounds), CGRectGetMidY(presented.view.bounds), 1, 1);
-    [presented presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(presented, sheet);
 }
 
 - (void)applyGallerySlug:(NSString *)slug target:(ApolloThemeApplyTarget)target dismissing:(UIViewController *)presented {

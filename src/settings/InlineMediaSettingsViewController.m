@@ -3,6 +3,7 @@
 #import "ApolloDirectChatWeb.h"
 #import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
+#import "ApolloSettingsForm.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsPinnedPreview.h"
 #import <QuartzCore/QuartzCore.h>
@@ -1177,67 +1178,53 @@ static NSString *ApolloIMMessageMediaFooter(void) {
     [self syncPreviewState];
 }
 
-// MARK: Sheets
+// MARK: Pickers
 
 - (void)presentAlignmentSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Inline Media Alignment"
-                                                                   message:@"Horizontal position of inline media narrower than the row."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSNumber *> *values = @[@(ApolloInlineImageAlignmentCenter),
                                     @(ApolloInlineImageAlignmentLeft),
                                     @(ApolloInlineImageAlignmentRight)];
     NSArray<NSString *> *titles = @[@"Center", @"Left", @"Right"];
-    for (NSUInteger i = 0; i < values.count; i++) {
-        NSInteger value = values[i].integerValue;
-        NSString *title = titles[i];
-        if (sInlineImageAlignment == value) title = [title stringByAppendingString:@" ✓"];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    NSInteger currentIndex = (NSInteger)[values indexOfObject:@(sInlineImageAlignment)];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Inline Media Alignment",
+        @"Horizontal position of inline media narrower than the row.", titles, nil, currentIndex,
+        ^(NSInteger pickedIndex) {
+            NSInteger value = values[pickedIndex].integerValue;
             sInlineImageAlignment = value;
             [[NSUserDefaults standardUserDefaults] setInteger:value forKey:UDKeyInlineImageAlignment];
             // Re-measure visible comments so the change applies without
             // leaving the thread.
             [[NSNotificationCenter defaultCenter] postNotificationName:ApolloInlineMediaLayoutDidChangeNotification
                                                                 object:nil];
-            [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:ApolloIMOptionsRowAlignment
-                                                                        inSection:ApolloIMSectionOptions]]
-                                  withRowAnimation:UITableViewRowAnimationNone];
-            [self syncPreviewState];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sourceView;
-    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+            [weakSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:ApolloIMOptionsRowAlignment
+                                                                            inSection:ApolloIMSectionOptions]]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+            [weakSelf syncPreviewState];
+        }, nil);
 }
 
 - (void)presentAutoplayModeSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Autoplay Inline GIFs"
-                                                                   message:@"Tap to Play pauses GIFs behind a play button; tapping plays or pauses that GIF inline."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     NSArray<NSNumber *> *values = @[@(ApolloAutoplayInlineGIFModeAlways),
                                     @(ApolloAutoplayInlineGIFModeWiFiOnly),
                                     @(ApolloAutoplayInlineGIFModeTapToPlay),
                                     @(ApolloAutoplayInlineGIFModeNever)];
     NSArray<NSString *> *titles = @[@"Always", @"WiFi Only", @"Tap to Play", @"Never"];
-    for (NSUInteger i = 0; i < values.count; i++) {
-        NSInteger value = values[i].integerValue;
-        NSString *title = titles[i];
-        if (sAutoplayInlineGIFMode == value) title = [title stringByAppendingString:@" ✓"];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    NSInteger currentIndex = (NSInteger)[values indexOfObject:@(sAutoplayInlineGIFMode)];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Autoplay Inline GIFs",
+        @"Tap to Play pauses GIFs behind a play button; tapping plays or pauses that GIF inline.",
+        titles, nil, currentIndex, ^(NSInteger pickedIndex) {
+            NSInteger value = values[pickedIndex].integerValue;
             sAutoplayInlineGIFMode = value;
             // The KVO observer in ApolloMediaAutoplay picks this write up and
             // refreshes every registered on-screen GIF immediately.
             [[NSUserDefaults standardUserDefaults] setInteger:value forKey:UDKeyAutoplayInlineGIFs];
-            [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:ApolloIMOptionsRowAutoplay
-                                                                        inSection:ApolloIMSectionOptions]]
-                                  withRowAnimation:UITableViewRowAnimationNone];
-            [self syncPreviewState];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = sourceView;
-    sheet.popoverPresentationController.sourceRect = sourceView.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+            [weakSelf.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:ApolloIMOptionsRowAutoplay
+                                                                            inSection:ApolloIMSectionOptions]]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+            [weakSelf syncPreviewState];
+        }, nil);
 }
 
 @end

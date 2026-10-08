@@ -1,4 +1,6 @@
 #import "settings/ApolloReportViewController.h"
+#import "../ApolloActionMenuPresenter.h"
+#import "../ApolloNativeActionMenus.h"
 
 #import <WebKit/WebKit.h>
 
@@ -134,19 +136,32 @@ static NSString *const kApolloReportMessageHandler = @"apolloReport";
 }
 
 - (void)attachLogsTapped:(UIBarButtonItem *)sender {
+    NSString *message = @"This adds diagnostics from the current app session to your report. Logs can include feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys. You can remove the attachment from the form before sending.";
+    BOOL needsConsentAlert = ApolloNativeActionMenusActive();
     UIAlertController *sheet =
         [UIAlertController alertControllerWithTitle:@"Attach Reborn Debug Logs?"
-                                            message:@"This adds diagnostics from the current app session to your report. Logs can include feature usage, settings state, websites encountered, and Apollo AI diagnostics. Logs do not contain passwords or API keys. You can remove the attachment from the form before sending."
+                                            message:needsConsentAlert ? nil : message
                                      preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Attach Logs"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) {
-        [self collectLogs];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:ApolloMenuAction(needsConsentAlert ? @"Attach Logs…" : @"Attach Logs", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) {
+            if (!needsConsentAlert) {
+                [weakSelf collectLogs];
+                return;
+            }
+            // Menu headers can truncate. Show the complete explanation in a
+            // regular alert, and collect only after this explicit consent.
+            UIAlertController *consent = [UIAlertController alertControllerWithTitle:@"Attach Reborn Debug Logs?"
+                message:message preferredStyle:UIAlertControllerStyleAlert];
+            [consent addAction:[UIAlertAction actionWithTitle:@"Attach Logs" style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *consentAction) { [weakSelf collectLogs]; }]];
+            [consent addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+            [weakSelf presentViewController:consent animated:YES completion:nil];
+        })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
     popover.barButtonItem = sender;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)collectLogs {

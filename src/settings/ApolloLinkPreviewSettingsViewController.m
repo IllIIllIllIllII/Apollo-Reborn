@@ -930,33 +930,22 @@ static ApolloLPPreviewState *ApolloLPCurrentPreviewState(void) {
     [self presentViewController:picker animated:YES completion:nil];
 }
 
-// Kept bespoke rather than ApolloSettingsPresentPicker: this sheet carries an
-// explanatory message body, and its handler fires even when the current mode is
-// re-picked (re-broadcasting the area) — the shared picker supports neither.
 - (void)presentModeSheetForBody:(BOOL)body fromCell:(UITableViewCell *)cell {
     NSInteger currentMode = body ? sLinkPreviewBodyMode : sLinkPreviewCommentsMode;
     NSString *title = body ? @"Body Link Previews" : @"Comment Link Previews";
     NSString *message = body
         ? @"Choose how rich link preview cards appear in feeds and post bodies."
         : @"Choose how rich link preview cards appear in comments.";
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
     NSArray<NSNumber *> *modes = @[@(ApolloLinkPreviewModeFull), @(ApolloLinkPreviewModeCompact), @(ApolloLinkPreviewModeOff)];
-    for (NSNumber *modeNumber in modes) {
-        NSInteger mode = modeNumber.integerValue;
-        NSString *name = ApolloLPModeName(mode);
-        NSString *actionTitle = (mode == currentMode) ? [NSString stringWithFormat:@"%@ ✓", name] : name;
-        [sheet addAction:[UIAlertAction actionWithTitle:actionTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [self setLinkPreviewMode:mode body:body];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : CGRectZero;
-    [self presentViewController:sheet animated:YES completion:nil];
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:modes.count];
+    for (NSNumber *mode in modes) [titles addObject:ApolloLPModeName(mode.integerValue)];
+    NSInteger currentIndex = (NSInteger)[modes indexOfObject:@(currentMode)];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, cell, title, message, titles, nil, currentIndex,
+        ^(NSInteger pickedIndex) {
+            // Re-picking the current mode still refreshes and broadcasts its area.
+            [weakSelf setLinkPreviewMode:modes[pickedIndex].integerValue body:body];
+        }, nil);
 }
 
 #pragma mark - UIColorPickerViewControllerDelegate

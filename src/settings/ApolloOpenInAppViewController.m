@@ -240,7 +240,7 @@ static NSString *ApolloOpenInAppSavedNitterHost(void) {
 }
 
 // Fetches the live instance list (spinner on the originating row while it
-// loads), then shows it as an action sheet with a Custom... entry. The tracker
+// loads), then shows it in the selection picker with a Custom... entry. The tracker
 // is only contacted from here, on an explicit tap.
 - (void)presentNitterInstancePickerFromRowID:(NSString *)rowID enabling:(BOOL)enabling {
     if (self.nitterInstancesLoading) return;
@@ -275,37 +275,30 @@ static NSString *ApolloOpenInAppSavedNitterHost(void) {
         message = @"Public instances currently reported healthy, best first.";
     }
 
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Nitter Instance"
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     NSString *current = ApolloOpenInAppSavedNitterHost();
-    __weak typeof(self) weakSelf = self;
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:instances.count + 1];
+    NSInteger currentIndex = NSNotFound;
     for (ApolloNitterInstance *instance in instances) {
         NSString *title = instance.host;
         if (instance.averagePingMilliseconds > 0) {
             title = [NSString stringWithFormat:@"%@ (%ld ms)", title, (long)instance.averagePingMilliseconds];
         }
-        if ([instance.host isEqualToString:current]) title = [title stringByAppendingString:@" ✓"];
-        NSString *host = instance.host;
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf applyNitterInstanceHost:host];
-        }]];
+        if ([instance.host isEqualToString:current]) currentIndex = (NSInteger)titles.count;
+        [titles addObject:title];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Custom..." style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [weakSelf presentNitterCustomHostAlertWithText:current enabling:enabling];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
-        [weakSelf nitterPickerCancelledEnabling:enabling];
-    }]];
+    [titles addObject:@"Custom..."];
 
-    // Same anchoring as ApolloSettingsPresentPicker: the screen, not a cell
-    // that a row reload could recycle while the popover is up.
-    UIView *anchor = self.view;
-    UITableViewCell *cell = [self cellForRowID:rowID];
-    sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = cell ? [cell convertRect:cell.bounds toView:anchor]
-        : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, [self cellForRowID:rowID], @"Nitter Instance",
+        message, titles, nil, currentIndex, ^(NSInteger pickedIndex) {
+            if (pickedIndex == (NSInteger)instances.count) {
+                [weakSelf presentNitterCustomHostAlertWithText:current enabling:enabling];
+            } else {
+                [weakSelf applyNitterInstanceHost:instances[pickedIndex].host];
+            }
+        }, ^{
+            [weakSelf nitterPickerCancelledEnabling:enabling];
+        });
 }
 
 - (void)presentNitterCustomHostAlertWithText:(NSString *)text enabling:(BOOL)enabling {

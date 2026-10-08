@@ -1,4 +1,5 @@
 #import "settings/ApolloAutomaticBackupViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 
 #import "settings/ApolloAutomaticBackup.h"
 #import "settings/ApolloLocalBackupsViewController.h"
@@ -228,14 +229,14 @@ static NSString *ApolloBackupDateDescription(NSDate *date) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Backup Failed" message:message
         preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Try Again" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *action) { [weakSelf backUpNow]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Try Again", UIAlertActionStyleDefault,
+        ^(__unused UIAlertAction *action) { [weakSelf backUpNow]; })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UITableViewCell *source = [self cellForRowID:@"automatic.error"];
     sheet.popoverPresentationController.sourceView = source ?: self.view;
     sheet.popoverPresentationController.sourceRect = source ? source.bounds
         : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
