@@ -94,6 +94,8 @@
     { "id": "toon-bot",                 "displayName": "Toon Bot",            "designer": "IllIIllIllIllII", "group": "concepts" },
     { "id": "toon-bot-2",               "displayName": "Happy Toon Bot",      "designer": "IllIIllIllIllII", "group": "concepts" },
     { "id": "jryng-red",                "displayName": "Red",                 "designer": "jryng",           "group": "concepts" },
+    { "id": "test1",                    "displayName": "test1",               "designer": "IllIIllIllIllII", "group": "concepts" },
+    { "id": "test2",                    "displayName": "test2",               "designer": "IllIIllIllIllII", "group": "concepts" },
 
     
     { "id": "helios",                   "displayName": "Helios",              "designer": "IllIIllIllIllII", "group": "helios" },
