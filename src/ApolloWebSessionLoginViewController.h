@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "ApolloWebSessionIdentity.h"
 
 @class WKWebView;
 
@@ -65,18 +66,23 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Attempts to refresh `username`'s stored session WITHOUT any UI, by loading
 // reddit.com in an off-screen WKWebView on the same persistent data store the
-// login flow uses. Reddit rotates its session cookies (token_v2 is a ~24h JWT)
-// server-side, so the webview's jar usually still holds a LIVE login long after
-// our frozen harvested snapshot has gone stale — in that case this re-harvests
-// silently and the "session expired" prompt never needs to show. `completion`
+// login flow uses. The browser may still hold a live login after the stored
+// snapshot has gone stale — in that case this re-harvests silently and the
+// "session expired" prompt never needs to show. `completion`
 // is called on the main thread with YES when a matching logged-in session was
 // re-harvested. It reports NO when the webview session is genuinely logged out,
 // belongs to a different user (shared jar, multi-account), times out, or a
 // recent silent success evidently didn't stick (10-minute cooldown — repeated
-// expiry verdicts right after a "successful" re-harvest mean the problem isn't
-// snapshot staleness). Concurrent attempts for the same username are coalesced
+// failures right after a successful re-harvest are not proof of expiry).
+// Concurrent attempts for the same username are coalesced
 // onto one webview; every caller's completion observes that attempt's outcome.
 + (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL success))completion;
+
+// Expiry detection uses this form: a challenge, timeout, cooldown or failed
+// navigation is inconclusive, so callers preserve the browser's cookies and
+// retry later. RequiresSignIn is reserved for confirmed logout/wrong account.
++ (void)attemptSilentReharvestForUsername:(NSString *)username
+                       resultCompletion:(void (^)(ApolloWebSessionRecoveryResult result))completion;
 
 // "Grab it once": opportunistically captures the already-authenticated Reddit
 // cookies from an OAuth login webview (probes /api/me.json for the username +

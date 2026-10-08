@@ -16,6 +16,8 @@
 #if APOLLO_SIM_BUILD
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloAwards.h"
+#import "ApolloAwardsParsing.h"
 #import "ApolloAsyncDisplayGuard.h"
 #import "ApolloChatRoomDirectory.h"
 #import "ApolloCommentVoteInsights.h"
@@ -1230,6 +1232,40 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
         // mode through the tab's own submit path (list, cards, paging).
         if ([contents hasPrefix:@"searchtab "]) {
             ApolloGoogleSearchTabDebugSubmit([contents substringFromIndex:10]);
+            return;
+        }
+        // "awards" describes native visible nodes; "awards t1_...|t3_..."
+        // exercises the real anonymous fetch and exports only public award
+        // metadata. on/off follows the existing Appearance toggle's path.
+        NSString *awardsCommand = [contents stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([awardsCommand isEqualToString:@"awards"] || [awardsCommand hasPrefix:@"awards "]) {
+            NSString *argument = awardsCommand.length > 7 ? [[awardsCommand substringFromIndex:7]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"";
+            if ([argument isEqualToString:@"animations"]) {
+                Class cls = objc_getClass("ApolloAwardAnimationView");
+                SEL selector = NSSelectorFromString(@"debugSnapshot");
+                if ([cls respondsToSelector:selector]) ApolloLog(@"[Awards][animation-state] %@", ((id (*)(id, SEL))objc_msgSend)(cls, selector));
+            } else if ([argument isEqualToString:@"on"] || [argument isEqualToString:@"off"]) {
+                [NSUserDefaults.standardUserDefaults setBool:[argument isEqualToString:@"on"] forKey:@"ShowAwards"];
+                [NSNotificationCenter.defaultCenter postNotificationName:@"com.christianselig.PostCellAppearanceUpdated" object:nil];
+            } else if ([argument hasPrefix:@"fixture "]) {
+                NSString *fullName = [argument substringFromIndex:8];
+                NSString *html = [NSString stringWithContentsOfFile:@"/tmp/apollo-awards-fixture.html"
+                    encoding:NSUTF8StringEncoding error:nil];
+                NSArray *awards = ApolloAwardsParseLeaderboard(html, fullName);
+                ApolloAwardsDebugSeed(fullName, awards);
+                [NSNotificationCenter.defaultCenter postNotificationName:@"com.christianselig.PostCellAppearanceUpdated" object:nil];
+                ApolloLog(@"[Awards][debug] seeded fixture %@ (%lu types)", fullName, (unsigned long)awards.count);
+            } else if (argument.length > 0) {
+                ApolloAwardsFetch(argument, ^(NSArray<NSDictionary *> *awards) {
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:awards ?: @[]
+                        options:NSJSONWritingPrettyPrinted error:nil];
+                    [json writeToFile:@"/tmp/apollo-awards-result.json" atomically:YES];
+                    ApolloLog(@"[Awards][debug] fetch %@ %@ (%lu types)", argument,
+                              awards ? @"succeeded" : @"unavailable", (unsigned long)awards.count);
+                });
+            }
+            ApolloLog(@"[Awards][debug] %@", ApolloAwardsDebugSnapshot());
             return;
         }
         // "devvitjs <js>" command: evaluate JS in the live interactive-post

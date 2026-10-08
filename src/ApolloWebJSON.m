@@ -114,7 +114,7 @@ BOOL ApolloWebJSONURLIsProbe(NSURL *url) {
 
 // nil if `url` carries no account marker (e.g. it's a probe, or an unrelated
 // request that never went through ApolloWebJSONRewriteRequest).
-static NSString *ApolloWebJSONAccountFromURL(NSURL *url) {
+NSString *ApolloWebJSONAccountFromURL(NSURL *url) {
     NSString *fragment = url.fragment;
     if (![fragment hasPrefix:kApolloWebJSONAccountMarkerPrefix]) return nil;
     NSString *encoded = [fragment substringFromIndex:kApolloWebJSONAccountMarkerPrefix.length];
@@ -733,28 +733,11 @@ NSError *ApolloWebJSONAccountSessionError(NSString *username) {
                           userInfo:@{NSLocalizedDescriptionKey: @"Your Reddit session expired. Sign in again to load this account."}];
 }
 
-typedef NS_ENUM(NSInteger, ApolloWebJSONProbeVerdict) {
-    ApolloWebJSONProbeInconclusive, ApolloWebJSONProbeAlive, ApolloWebJSONProbeDead
-};
-
-static ApolloWebJSONProbeVerdict ApolloWebJSONIdentityVerdict(NSString *username, NSData *data,
-                                                            NSHTTPURLResponse *response, NSError *error) {
-    if (error || !response) return ApolloWebJSONProbeInconclusive;
-    if (response.statusCode == 401) return ApolloWebJSONProbeDead;
-    // Preserve the existing block-page recovery path; silent WK re-harvest
-    // still gets a chance to recover before any visible sign-in prompt.
-    if (response.statusCode == 403 && [response.MIMEType.lowercaseString isEqualToString:@"text/html"]) return ApolloWebJSONProbeDead;
-    if (response.statusCode != 200 || data.length == 0) return ApolloWebJSONProbeInconclusive;
-    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-    if (![json isKindOfClass:[NSDictionary class]]) return ApolloWebJSONProbeInconclusive;
-    // Only an empty object or a well-formed identity is conclusive. Error JSON,
-    // HTML challenges and rate limits must not invalidate a healthy account.
-    if ([json count] == 0) return ApolloWebJSONProbeDead;
-    id user = json[@"data"];
-    id name = [user isKindOfClass:[NSDictionary class]] ? user[@"name"] : nil;
-    if (![name isKindOfClass:[NSString class]] || [name length] == 0) return ApolloWebJSONProbeInconclusive;
-    return [name caseInsensitiveCompare:username] == NSOrderedSame
-        ? ApolloWebJSONProbeAlive : ApolloWebJSONProbeDead;
+static ApolloWebSessionIdentityVerdict ApolloWebJSONIdentityVerdict(NSString *username, NSData *data,
+                                                                   NSHTTPURLResponse *response, NSError *error) {
+    if (!response) return ApolloWebSessionIdentityInconclusive;
+    id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    return ApolloWebSessionClassifyIdentity(username, response.statusCode, response.MIMEType, json, error);
 }
 
 // Backoff state for inconclusive probes (rate limit / server error / network
@@ -800,6 +783,31 @@ void ApolloWebJSONNoteSessionReauthenticationDeferred(NSString *username) {
     ApolloLog(@"[WebJSON] Re-armed the expired-session prompt for u/%@ after re-authentication was deferred", key);
 }
 
+static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username);
+
+// A browser challenge or network error during recovery needs the same paced
+// retry as an inconclusive native identity response; neither proves logout.
+static void ApolloWebJSONRetryIdentityProbe(NSString *username, NSHTTPURLResponse *http) {
+    NSUInteger attempt;
+    @synchronized (ApolloWebJSONExpiryLock()) {
+        if (!sProbeBackoffAttemptsByUser) sProbeBackoffAttemptsByUser = [NSMutableDictionary dictionary];
+        attempt = sProbeBackoffAttemptsByUser[username].unsignedIntegerValue;
+        sProbeBackoffAttemptsByUser[username] = @(attempt + 1);
+    }
+    NSTimeInterval delay = kProbeBackoffDelays[MIN(attempt, kProbeBackoffDelayCount - 1)];
+    NSTimeInterval retryAfter = [http.allHeaderFields[@"Retry-After"] doubleValue];
+    if (retryAfter > delay) delay = MIN(retryAfter, 900.0);
+    ApolloLog(@"[WebJSON] Preserving session for u/%@ after an inconclusive identity check — retrying in %.0fs", username, delay);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        BOOL needsRetry;
+        @synchronized (ApolloWebJSONExpiryLock()) {
+            // Public HTTP successes cannot cancel an account-identity check.
+            needsRetry = sProbeBackoffAttemptsByUser[username] != nil;
+        }
+        if (needsRetry) ApolloWebJSONVerifySessionThenAnnounce(username);
+    });
+}
+
 // Verify each account independently. Probe requests bypass normal URL rewriting
 // and response accounting to avoid recursively triggering recovery.
 static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
@@ -838,54 +846,62 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
             if (retry) ApolloWebJSONVerifySessionThenAnnounce(username);
             return;
         }
-        ApolloWebJSONProbeVerdict verdict = ApolloWebJSONIdentityVerdict(username, data, http, error);
+        ApolloWebSessionIdentityVerdict verdict = ApolloWebJSONIdentityVerdict(username, data, http, error);
         // The probe skips ApolloWebJSONNoteResponse (probe fragment), but its
         // 429 limits the session all the same, and at launch it's often the
         // first request out, so start the hold (and the notice) from it too.
         if (http.statusCode == 429) ApolloWebJSONRecordRateLimit(username, req, http);
-        BOOL malformedAccountResponse;
-        @synchronized (ApolloWebJSONExpiryLock()) {
-            malformedAccountResponse = [sMalformedAccountResponseUsers containsObject:username];
-        }
-        // A malformed account listing plus an identity endpoint that cannot
-        // identify anyone is an unusable session, even when both say HTTP 200.
-        // Try the browser's authenticated identity before deciding to prompt.
-        // Ordinary public 200s, rate limits and network failures do not qualify.
-        BOOL needsRecovery = verdict == ApolloWebJSONProbeDead ||
-            (verdict == ApolloWebJSONProbeInconclusive && !error && http.statusCode == 200 && malformedAccountResponse);
+        // Two inconclusive responses (for example a CAPTCHA on both identity
+        // and account listings) do not add up to proof of an expired login.
+        BOOL needsRecovery = verdict == ApolloWebSessionIdentityUnavailable;
 
-        if (verdict == ApolloWebJSONProbeAlive) {
+        if (verdict == ApolloWebSessionIdentityMatches) {
             ApolloWebJSONResetBlockStreak(username);
             @synchronized (ApolloWebJSONExpiryLock()) {
                 [sMalformedAccountResponseUsers removeObject:username];
                 [sProbeBackoffAttemptsByUser removeObjectForKey:username];
+                if ([sInvalidSessionCookies[username] isEqualToString:cookie]) {
+                    [sInvalidSessionCookies removeObjectForKey:username];
+                }
             }
             // Persist rotations only after verifying the account identity.
             ApolloWebJSONMergeSetCookiesFromResponse(username, http);
             ApolloLog(@"[WebJSON] Session probe for u/%@ still authenticates — suppressing false expiry prompt", username);
         } else if (needsRecovery) {
+            // A conclusive native identity failure must block account data
+            // immediately, even if the browser later hits a challenge. Keep
+            // that snapshot verdict separate from the decision to ask for a
+            // new login: the browser may still have a recoverable session.
+            @synchronized (ApolloWebJSONExpiryLock()) {
+                if (!sInvalidSessionCookies) sInvalidSessionCookies = [NSMutableDictionary dictionary];
+                sInvalidSessionCookies[username] = cookie;
+            }
             // The browser may still have a valid login. Successful recovery
             // resets expiry state through ApolloWebJSONNoteSessionReauthenticated.
             ApolloLog(@"[WebJSON] Session probe for u/%@ came back logged-out (HTTP %ld) — attempting silent re-harvest before prompting",
                       username, (long)http.statusCode);
-            [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username completion:^(BOOL success) {
+            [ApolloWebSessionLoginViewController attemptSilentReharvestForUsername:username resultCompletion:^(ApolloWebSessionRecoveryResult result) {
                 @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }
-                if (success) return;
+                if (result == ApolloWebSessionRecoveryRecovered) return;
                 if (![ApolloWebSessionFor(username).cookieHeader isEqualToString:cookie]) {
                     BOOL retry;
                     @synchronized (ApolloWebJSONExpiryLock()) { retry = [sMalformedAccountResponseUsers containsObject:username]; }
                     if (retry) ApolloWebJSONVerifySessionThenAnnounce(username);
                     return;
                 }
+                if (result != ApolloWebSessionRecoveryRequiresSignIn) {
+                    // A failed/blocked browser probe must not send the user to
+                    // the re-login flow that clears their existing web cookies.
+                    ApolloWebJSONRetryIdentityProbe(username, nil);
+                    return;
+                }
                 // Retain the account and its snapshot for reauthentication;
                 // do not silently display anonymous data as account data.
                 @synchronized (ApolloWebJSONExpiryLock()) {
                     [sSessionExpiredAnnouncedUsers addObject:username];
-                    if (!sInvalidSessionCookies) sInvalidSessionCookies = [NSMutableDictionary dictionary];
-                    sInvalidSessionCookies[username] = cookie;
                     [sProbeBackoffAttemptsByUser removeObjectForKey:username];
                 }
-                ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ failed — session expired, prompting re-login", username);
+                ApolloLog(@"[WebJSON] Stored and browser identities for u/%@ both confirm sign-in is required", username);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionExpiredNotification
                                                                           object:nil
@@ -893,29 +909,8 @@ static void ApolloWebJSONVerifySessionThenAnnounce(NSString *username) {
                 });
             }];
         } else {
-            // Inconclusive: schedule a backoff re-probe. Honor Retry-After when
-            // the server sent one; otherwise walk the exponential table.
-            NSUInteger attempt;
-            @synchronized (ApolloWebJSONExpiryLock()) {
-                if (!sProbeBackoffAttemptsByUser) sProbeBackoffAttemptsByUser = [NSMutableDictionary dictionary];
-                attempt = sProbeBackoffAttemptsByUser[username].unsignedIntegerValue;
-                sProbeBackoffAttemptsByUser[username] = @(attempt + 1);
-            }
-            NSTimeInterval delay = kProbeBackoffDelays[MIN(attempt, kProbeBackoffDelayCount - 1)];
-            NSTimeInterval retryAfter = [http.allHeaderFields[@"Retry-After"] doubleValue];
-            if (retryAfter > delay) delay = MIN(retryAfter, 900.0);
             ApolloLog(@"[WebJSON] Identity probe metadata: MIME=%@, bytes=%lu, finalPath=%@", http.MIMEType, (unsigned long)data.length, http.URL.path);
-            ApolloLog(@"[WebJSON] Session probe for u/%@ inconclusive (HTTP %ld%@) — not treating as expiry, re-probing in %.0fs",
-                      username, (long)http.statusCode, error ? [@", " stringByAppendingString:error.localizedDescription] : @"", delay);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                BOOL needsRetry;
-                @synchronized (ApolloWebJSONExpiryLock()) {
-                    // Public HTTP successes reset the old block streak but
-                    // cannot cancel an inconclusive account-identity check.
-                    needsRetry = sProbeBackoffAttemptsByUser[username] != nil;
-                }
-                if (needsRetry) ApolloWebJSONVerifySessionThenAnnounce(username);
-            });
+            ApolloWebJSONRetryIdentityProbe(username, http);
         }
         if (!needsRecovery) {
             @synchronized (ApolloWebJSONExpiryLock()) { [sSessionProbeInFlightUsers removeObject:username]; }

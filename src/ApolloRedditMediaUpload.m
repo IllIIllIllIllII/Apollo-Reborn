@@ -658,16 +658,12 @@ static void ApolloRequestRedditMediaAssetViaCookie(NSData *mediaData,
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         NSInteger statusCode = http.statusCode;
 
-        // Expired/revoked cookie → Reddit serves its 403 text/html block page.
-        // Surface the same "session expired" prompt the chokepoint observer would
-        // (this request carries the probe header, so it bypasses that observer).
-        NSString *contentType = [[http.allHeaderFields[@"Content-Type"] description] lowercaseString] ?: @"";
-        if (statusCode == 403 && [contentType containsString:@"text/html"]) {
-            ApolloLog(@"[RedditUpload] Keyless web media lease got a 403 HTML block page — session likely expired");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:ApolloWebJSONSessionExpiredNotification object:nil];
-            });
-            completion(nil, nil, nil, ApolloRedditUploadError(403, @"Reddit web session expired — sign in again"));
+        // Reddit also serves CAPTCHA/block pages to valid sessions. This
+        // upload response cannot establish account identity; let the central
+        // account probe decide expiry instead of opening cookie-clearing login.
+        if (statusCode == 403 && [http.MIMEType.lowercaseString isEqualToString:@"text/html"]) {
+            ApolloLog(@"[RedditUpload] Keyless web media lease got a 403 HTML block page — preserving the web session");
+            completion(nil, nil, nil, ApolloRedditUploadError(403, @"Reddit blocked this upload request. Try again later."));
             return;
         }
 

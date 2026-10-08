@@ -53,6 +53,18 @@ ApolloReborn_FILES = \
     $(WHATS_NEW_GEN_M) \
     $(SRC_DIR)/Tweak.xm \
     $(SRC_DIR)/ApolloCommon.m \
+    $(SRC_DIR)/ApolloAwards.xm \
+    $(SRC_DIR)/ApolloAwardsData.m \
+    $(SRC_DIR)/ApolloAwardsStore.m \
+    $(SRC_DIR)/ApolloAwardsParsing.m \
+    $(SRC_DIR)/ApolloAwardsListing.m \
+    $(SRC_DIR)/ApolloAwardsListingHooks.xm \
+    $(SRC_DIR)/ApolloAwardsGiving.m \
+    $(SRC_DIR)/ApolloAwardsGivingHooks.xm \
+    $(SRC_DIR)/ApolloAwardAnimation.xm \
+    $(SRC_DIR)/ApolloAwardAnimation.swift \
+    $(SRC_DIR)/ApolloAwardAnimationData.swift \
+    $(shell find $(MODULES_DIR)/Lottie/Sources -name '*.swift' | sort) \
     $(SRC_DIR)/ApolloInlineImageMetadata.m \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
@@ -305,6 +317,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloWebSessionStore.m \
+    $(SRC_DIR)/ApolloWebSessionIdentity.m \
     $(SRC_DIR)/ApolloPollVoting.xm \
     $(SRC_DIR)/ApolloPollCompose.xm \
     $(SRC_DIR)/settings/ApolloPollSettingsViewController.m \
@@ -356,7 +369,9 @@ ApolloReborn_FILES = \
     $(KSCRASH_FILES) \
     $(SSZIPARCHIVE_FILES)
 ApolloReborn_FRAMEWORKS = UIKit Security AVFoundation AVKit OSLog NaturalLanguage ImageIO StoreKit Photos PhotosUI SafariServices SystemConfiguration WebKit AuthenticationServices CoreImage Vision LinkPresentation SwiftUI UniformTypeIdentifiers Metal QuartzCore CoreMotion
-ApolloReborn_LIBRARIES = z iconv
+ApolloReborn_LIBRARIES = z iconv xml2
+# Award leaderboard HTML is parsed without executing Reddit's page scripts.
+src/ApolloAwardsParsing.m_CFLAGS = -I$(ISYSROOT)/usr/include/libxml2
 # FoundationModels (Apple on-device AI) only ships in the iOS 26+ SDK. Weak-link
 # it so the dylib still loads on older OSes (the Swift bridge guards every call
 # behind #available(iOS 26)), but ONLY when the build SDK actually contains the
@@ -409,6 +424,12 @@ ApolloReborn_LIBRARIES += c++
 
 ApolloReborn_BUNDLE_RESOURCE_DIRS = Resources
 ApolloReborn_BUNDLE_RESOURCES = \
+    modules/Lottie/LICENSE \
+    modules/Lottie/LICENSE-Epoxy \
+    modules/Lottie/LICENSE-LRUCache \
+    modules/Lottie/LICENSE-ZIPFoundation \
+    modules/Lottie/README.apollo.md \
+    modules/Lottie/Sources/PrivacyInfo.xcprivacy \
     assets/bark-icons/low-battery.png \
     assets/bark-icons/palette.png \
     widgets/Sources/Assets.xcassets/ApolloAvatar.imageset/apollo-avatar@3x.png
