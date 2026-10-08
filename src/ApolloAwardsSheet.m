@@ -176,6 +176,7 @@ static NSArray<NSDictionary *> *ApolloAwardsSheetSnapshot(id thing, NSString *fu
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 96;
     [self.tableView registerClass:ApolloAwardsSheetCell.class forCellReuseIdentifier:@"award"];
+    [self.tableView registerClass:UITableViewHeaderFooterView.class forHeaderFooterViewReuseIdentifier:@"award-count"];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(refreshAwards) forControlEvents:UIControlEventValueChanged];
     UIBarButtonItem *give = [[UIBarButtonItem alloc] initWithTitle:@"Give Award" style:UIBarButtonItemStyleDone target:self action:@selector(giveAward)];
@@ -302,6 +303,20 @@ static NSArray<NSDictionary *> *ApolloAwardsSheetSnapshot(id thing, NSString *fu
     ApolloAwardsSheetCell *cell = [tableView dequeueReusableCellWithIdentifier:@"award" forIndexPath:indexPath];
     [cell configureWithAward:self.entries[indexPath.row]];
     return cell;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    UITableViewHeaderFooterView *header = [tableView dequeueReusableHeaderFooterViewWithIdentifier:@"award-count"];
+    UIListContentConfiguration *content = [UIListContentConfiguration groupedHeaderConfiguration];
+    content.text = [self tableView:tableView titleForHeaderInSection:section];
+    content.textProperties.font = ApolloThemeRuntimeFont(content.textProperties.font);
+    content.textProperties.color = ApolloThemeSettingsSecondaryTextColor() ?: UIColor.secondaryLabelColor;
+    // Keep UIKit's self-sizing count header, but bring it closer to the title.
+    NSDirectionalEdgeInsets margins = content.directionalLayoutMargins;
+    margins.top = 8;
+    content.directionalLayoutMargins = margins;
+    header.contentConfiguration = content;
+    return header;
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
