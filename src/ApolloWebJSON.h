@@ -295,11 +295,6 @@ NSURL *ApolloWebJSONProbeURL(NSURL *url);
 // JSON rewrite, no User-Agent stamping (they pick their UA deliberately).
 BOOL ApolloWebJSONURLIsProbe(NSURL *url);
 
-// The exact account attached to a cookie-rewritten request's in-memory URL.
-// Returns nil for unmarked/OAuth responses; callers must not infer their
-// origin from whichever account is active when an asynchronous read finishes.
-NSString *ApolloWebJSONAccountFromURL(NSURL *url);
-
 // Seconds the tweak's optional reads (author avatars, subreddit header info)
 // for `username`'s web session should wait, or 0 when they may go ahead.
 // Reddit doesn't report a web session's remaining request budget (cookie

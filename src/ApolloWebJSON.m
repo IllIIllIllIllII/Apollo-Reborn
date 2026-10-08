@@ -114,7 +114,7 @@ BOOL ApolloWebJSONURLIsProbe(NSURL *url) {
 
 // nil if `url` carries no account marker (e.g. it's a probe, or an unrelated
 // request that never went through ApolloWebJSONRewriteRequest).
-NSString *ApolloWebJSONAccountFromURL(NSURL *url) {
+static NSString *ApolloWebJSONAccountFromURL(NSURL *url) {
     NSString *fragment = url.fragment;
     if (![fragment hasPrefix:kApolloWebJSONAccountMarkerPrefix]) return nil;
     NSString *encoded = [fragment substringFromIndex:kApolloWebJSONAccountMarkerPrefix.length];
