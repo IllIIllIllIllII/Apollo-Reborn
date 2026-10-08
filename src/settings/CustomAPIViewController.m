@@ -3404,6 +3404,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                     title:@"Version"
                                    detail:^NSString * { return @TWEAK_VERSION; }
                                  onSelect:nil];
+    version.iconSystemName = @"number";
+    version.iconTileColor = [UIColor systemGrayColor];
 
     // Sideloaded builds can't replace themselves, so this reports the newest
     // release and hands off to the user's sideloader (ApolloUpdateChecker.m).
@@ -3414,6 +3416,8 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                  onSelect:^{
             ApolloUpdateCheckNow(^{ [weakSelf reloadRowWithID:@"about.updates"]; });
         }];
+    updates.iconSystemName = @"arrow.triangle.2.circlepath";
+    updates.iconTileColor = [UIColor systemBlueColor];
     updates.visible = ^BOOL { return ApolloUpdateChecksAvailable(); };
 
     return [ApolloSettingsSection sectionWithTitle:@"About"
