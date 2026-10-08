@@ -167,9 +167,9 @@ typedef UITableViewCell *_Nonnull (^ApolloSettingsCellBlock)(UITableView *tableV
 extern "C" {
 #endif
 
-// The shared "(Current)"-suffix action-sheet picker every settings screen used
-// to hand-roll: presents optionTitles with the current one suffixed, anchored
-// to sourceView for iPad popovers. apply() runs for ANY pick, including
+// The shared action-sheet picker presents optionTitles with a trailing checkmark
+// on the current option, anchored to sourceView for iPad popovers.
+// apply() runs for ANY pick, including
 // re-picking the current option (legacy sheet semantics — some handlers rely
 // on the re-fire), so apply blocks must be idempotent.
 void ApolloSettingsPresentPicker(UIViewController *presenter,

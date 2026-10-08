@@ -606,7 +606,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"media.gifFallback"];
 }
 
-// Title + options + "(Current)" only — the shared picker replicates it exactly
+// Title + options + selection checkmark — shared picker
 // (apply fires even when the current option is re-picked; the setter is idempotent).
 - (void)presentPreferredGIFFallbackFormatSheetFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
@@ -632,7 +632,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"media.unmuteComments"];
 }
 
-// Title + options + "(Current)" only — shared picker (option index == stored mode).
+// Title + options + selection checkmark — shared picker (option index == stored mode).
 - (void)presentUnmuteCommentsVideosModeSheetFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsPresentPicker(self, sourceView, @"Unmute Videos in Comments",
@@ -686,7 +686,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     [self reloadRowWithID:@"media.unmuteFeed"];
 }
 
-// Title + options + "(Current)" only — shared picker (option index == stored mode).
+// Title + options + selection checkmark — shared picker (option index == stored mode).
 - (void)presentUnmuteFeedVideosModeSheetFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsPresentPicker(self, sourceView, @"Unmute Videos in Feed",
@@ -733,9 +733,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                                    message:@"Where to upload media attached to posts and comments."
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    NSString *imgurTitle = (sImageUploadProvider == ImageUploadProviderImgur) ? @"Imgur (Current)" : @"Imgur";
-    NSString *redditTitle = (sImageUploadProvider == ImageUploadProviderReddit) ? @"Reddit (Current)" : @"Reddit";
-    NSString *imgChestTitle = (sImageUploadProvider == ImageUploadProviderImgChest) ? @"Image Chest (Current)" : @"Image Chest";
+    NSString *imgurTitle = (sImageUploadProvider == ImageUploadProviderImgur) ? @"Imgur ✓" : @"Imgur";
+    NSString *redditTitle = (sImageUploadProvider == ImageUploadProviderReddit) ? @"Reddit ✓" : @"Reddit";
+    NSString *imgChestTitle = (sImageUploadProvider == ImageUploadProviderImgChest) ? @"Image Chest ✓" : @"Image Chest";
 
     [sheet addAction:[UIAlertAction actionWithTitle:imgurTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self setImageUploadProvider:ImageUploadProviderImgur];
@@ -794,9 +794,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                                    message:@"Images added to a comment or reply upload to this host and are inserted as a plain link instead of a native Reddit image — so they still work in subreddits that don't allow images or GIFs in comments. Apollo shows the linked image inline; other apps and the website show a tappable link. Posts keep using the Media Upload Host.\n\nTo use this host only where it's needed, turn on Prefer Native Images: comment images then upload to Reddit and display inline wherever the subreddit allows them."
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    NSString *offTitle = (sCommentLinkHost == CommentLinkHostOff) ? @"Off (Current)" : @"Off";
-    NSString *imgurTitle = (sCommentLinkHost == CommentLinkHostImgur) ? @"Imgur (Current)" : @"Imgur";
-    NSString *imgChestTitle = (sCommentLinkHost == CommentLinkHostImgChest) ? @"Image Chest (Current)" : @"Image Chest";
+    NSString *offTitle = (sCommentLinkHost == CommentLinkHostOff) ? @"Off ✓" : @"Off";
+    NSString *imgurTitle = (sCommentLinkHost == CommentLinkHostImgur) ? @"Imgur ✓" : @"Imgur";
+    NSString *imgChestTitle = (sCommentLinkHost == CommentLinkHostImgChest) ? @"Image Chest ✓" : @"Image Chest";
 
     [sheet addAction:[UIAlertAction actionWithTitle:offTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self setCommentLinkHost:CommentLinkHostOff];
@@ -4827,7 +4827,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
     for (size_t i = 0; i < sizeof(kVideoHoldSpeeds) / sizeof(kVideoHoldSpeeds[0]); i++) {
         float speed = kVideoHoldSpeeds[i];
         BOOL isCurrent = fabsf(sVideoHoldSpeed - speed) < 0.001f;
-        NSString *title = isCurrent ? [ApolloVideoHoldSpeedTitle(speed) stringByAppendingString:@" (Current)"]
+        NSString *title = isCurrent ? [ApolloVideoHoldSpeedTitle(speed) stringByAppendingString:@" ✓"]
                                     : ApolloVideoHoldSpeedTitle(speed);
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             [self setVideoHoldSpeed:speed];

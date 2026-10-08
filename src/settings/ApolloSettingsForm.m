@@ -920,7 +920,7 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSInteger i = 0; i < (NSInteger)optionTitles.count; i++) {
         NSString *optionTitle = (i == currentIndex)
-            ? [optionTitles[(NSUInteger)i] stringByAppendingString:@" (Current)"]
+            ? [optionTitles[(NSUInteger)i] stringByAppendingString:@" ✓"]
             : optionTitles[(NSUInteger)i];
         [sheet addAction:[UIAlertAction actionWithTitle:optionTitle
                                                   style:UIAlertActionStyleDefault
