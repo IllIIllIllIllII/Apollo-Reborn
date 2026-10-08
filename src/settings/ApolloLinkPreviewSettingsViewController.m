@@ -947,7 +947,7 @@ static ApolloLPPreviewState *ApolloLPCurrentPreviewState(void) {
     for (NSNumber *modeNumber in modes) {
         NSInteger mode = modeNumber.integerValue;
         NSString *name = ApolloLPModeName(mode);
-        NSString *actionTitle = (mode == currentMode) ? [NSString stringWithFormat:@"%@ (Current)", name] : name;
+        NSString *actionTitle = (mode == currentMode) ? [NSString stringWithFormat:@"%@ ✓", name] : name;
         [sheet addAction:[UIAlertAction actionWithTitle:actionTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             [self setLinkPreviewMode:mode body:body];
         }]];

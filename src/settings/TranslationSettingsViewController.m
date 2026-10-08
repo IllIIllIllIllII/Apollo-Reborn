@@ -560,7 +560,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
 }
 
 // Not an ApolloSettingsPresentPicker candidate: this sheet carries a message,
-// has no "(Current)" option, and shows a placeholder action when every
+// has no current selection, and shows a placeholder action when every
 // language is already added.
 - (void)presentSkipLanguageSheetFromSourceView:(UIView *)sourceView {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Don't Translate"

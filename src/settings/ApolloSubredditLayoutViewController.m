@@ -372,7 +372,7 @@ static NSInteger const ApolloCommunityHighlightsPreviewViewTag = 8102;
     [self apollo_refreshHighlightsPreviewAnimated:keepsCarouselHeight];
 }
 
-// Title + options + "(Current)" only — shared picker (option index == mode).
+// Title + options + selection checkmark — shared picker (option index == mode).
 - (void)presentCommunityHighlightsModeSheetFromSourceView:(UIView *)sourceView {
     __weak typeof(self) weakSelf = self;
     ApolloCommunityHighlightsMode current = [self currentHighlightsMode];

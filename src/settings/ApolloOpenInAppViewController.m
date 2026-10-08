@@ -285,7 +285,7 @@ static NSString *ApolloOpenInAppSavedNitterHost(void) {
         if (instance.averagePingMilliseconds > 0) {
             title = [NSString stringWithFormat:@"%@ (%ld ms)", title, (long)instance.averagePingMilliseconds];
         }
-        if ([instance.host isEqualToString:current]) title = [title stringByAppendingString:@" (Current)"];
+        if ([instance.host isEqualToString:current]) title = [title stringByAppendingString:@" ✓"];
         NSString *host = instance.host;
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             [weakSelf applyNitterInstanceHost:host];
