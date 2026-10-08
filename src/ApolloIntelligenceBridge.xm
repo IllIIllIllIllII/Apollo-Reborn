@@ -448,8 +448,14 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
 // The post header row in the detail screen (Apple: annotate the header with
 // the container entity, separately from the comment rows below it).
 %hook _TtC6Apollo22CommentsHeaderCellNode
-- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateNode(self, YES); }
-- (void)didExitVisibleState { ApolloSiriAnnotateNode(self, NO); %orig; }
+- (void)didEnterVisibleState {
+    %orig;
+    ApolloSiriAnnotateNode(self, YES);
+}
+- (void)didExitVisibleState {
+    ApolloSiriAnnotateNode(self, NO);
+    %orig;
+}
 %end
 %hook _TtC6Apollo15CommentCellNode
 // Swift's designated CommentSectionController initializer bypasses ObjC
@@ -467,16 +473,34 @@ static void ApolloSiriAnnotateDetail(UIViewController *controller) {
         ApolloSiriObserveComment(ivar ? object_getIvar(node, ivar) : nil);
     });
 }
-- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateCommentNode(self, YES); }
-- (void)didExitVisibleState { ApolloSiriAnnotateCommentNode(self, NO); %orig; }
+- (void)didEnterVisibleState {
+    %orig;
+    ApolloSiriAnnotateCommentNode(self, YES);
+}
+- (void)didExitVisibleState {
+    ApolloSiriAnnotateCommentNode(self, NO);
+    %orig;
+}
 %end
 %hook _TtC6Apollo17LargePostCellNode
-- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateNode(self, YES); }
-- (void)didExitVisibleState { ApolloSiriAnnotateNode(self, NO); %orig; }
+- (void)didEnterVisibleState {
+    %orig;
+    ApolloSiriAnnotateNode(self, YES);
+}
+- (void)didExitVisibleState {
+    ApolloSiriAnnotateNode(self, NO);
+    %orig;
+}
 %end
 %hook _TtC6Apollo19CompactPostCellNode
-- (void)didEnterVisibleState { %orig; ApolloSiriAnnotateNode(self, YES); }
-- (void)didExitVisibleState { ApolloSiriAnnotateNode(self, NO); %orig; }
+- (void)didEnterVisibleState {
+    %orig;
+    ApolloSiriAnnotateNode(self, YES);
+}
+- (void)didExitVisibleState {
+    ApolloSiriAnnotateNode(self, NO);
+    %orig;
+}
 %end
 %end
 

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "ApolloWebSessionIdentity.h"
 #define ApolloLog(...) do { if (NO) NSLog(__VA_ARGS__); } while (0)
 static BOOL sWebJSONEnabled = YES;
 static NSString *const kApolloWebJSONProbeMarker = @"probe";
@@ -22,6 +23,8 @@ static NSUInteger probes;
 static NSUInteger merges;
 static BOOL ApolloWebJSONURLIsProbe(NSURL *url) { (void)url; return NO; }
 static NSString *ApolloWebJSONAccountFromURL(NSURL *url) { (void)url; return @"alice"; }
+static void ApolloWebJSONNoteWebBearerResponse(NSURLRequest *request, NSHTTPURLResponse *response) { (void)request; (void)response; }
+static BOOL ApolloWebJSONPathNeedsWebBearer(NSString *path) { (void)path; return NO; }
 @interface TestTask : NSObject
 @property(copy) void (^completion)(NSData *, NSURLResponse *, NSError *);
 - (void)resume;
@@ -43,10 +46,10 @@ static NSString *ApolloWebJSONAccountFromURL(NSURL *url) { (void)url; return @"a
 - (void)finishTasksAndInvalidate {}
 @end
 @interface ApolloWebSessionLoginViewController : NSObject
-+ (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL))completion;
++ (void)attemptSilentReharvestForUsername:(NSString *)username resultCompletion:(void (^)(ApolloWebSessionRecoveryResult))completion;
 @end
 @implementation ApolloWebSessionLoginViewController
-+ (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL))completion {
++ (void)attemptSilentReharvestForUsername:(NSString *)username resultCompletion:(void (^)(ApolloWebSessionRecoveryResult))completion {
     (void)username; [silent addObject:[completion copy]];
 }
 @end
@@ -58,32 +61,58 @@ static NSString *ApolloWebJSONAccountFromURL(NSURL *url) { (void)url; return @"a
 #undef NSURLSession
 #undef NSURLSessionDataTask
 static void ApolloWebJSONMergeSetCookiesFromResponse(NSString *username, NSHTTPURLResponse *response) { (void)username; (void)response; merges++; }
+static void ApolloWebJSONRecordRateLimit(NSString *username, NSURLRequest *request, NSHTTPURLResponse *response) { (void)username; (void)request; (void)response; }
 static void require(BOOL okay) { if (!okay) { NSLog(@"FAIL"); abort(); } }
 static NSHTTPURLResponse *response(NSInteger status, NSString *mime) {
     return [[NSHTTPURLResponse alloc] initWithURL:[NSURL URLWithString:@"https://www.reddit.com/api/me.json"] statusCode:status HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":mime}];
 }
 static NSData *body(NSString *s) { return [s dataUsingEncoding:NSUTF8StringEncoding]; }
-static void answer(NSString *json) {
+static void answerWithStatus(NSString *json, NSInteger status, NSString *mime, NSError *error) {
     TestTask *t = pending.firstObject; require(t != nil); [pending removeObjectAtIndex:0];
-    t.completion(body(json), response(200,@"application/json"), nil);
+    t.completion(body(json), response(status, mime), error);
 }
-static void finishSilent(BOOL success) {
-    void (^block)(BOOL) = silent.firstObject; require(block != nil); [silent removeObjectAtIndex:0]; block(success);
+static void answer(NSString *json) { answerWithStatus(json, 200, @"application/json", nil); }
+static void finishSilent(ApolloWebSessionRecoveryResult result) {
+    void (^block)(ApolloWebSessionRecoveryResult) = silent.firstObject; require(block != nil); [silent removeObjectAtIndex:0]; block(result);
 }
 static void setCookie(NSString *name, NSString *cookie) { Entry *e=[Entry new];e.cookieHeader=cookie;entries[name]=e; }
 int main(void) { @autoreleasepool {
     entries=[NSMutableDictionary new];pending=[NSMutableArray new];silent=[NSMutableArray new];delayed=[NSMutableArray new];
     for (NSString *name in @[@"alice",@"bob"]) setCookie(name, [name stringByAppendingString:@"=old"]);
-    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{}"), response(200,@"application/json"), nil)==ApolloWebJSONProbeDead);
-    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{\"data\":{\"name\":\"ALICE\"}}"), response(200,@"application/json"), nil)==ApolloWebJSONProbeAlive);
-    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{\"data\":{\"name\":\"bob\"}}"), response(200,@"application/json"), nil)==ApolloWebJSONProbeDead);
+    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{}"), response(200,@"application/json"), nil)==ApolloWebSessionIdentityUnavailable);
+    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{\"data\":{\"name\":\"ALICE\"}}"), response(200,@"application/json"), nil)==ApolloWebSessionIdentityMatches);
+    require(ApolloWebJSONIdentityVerdict(@"alice", body(@"{\"data\":{\"name\":\"bob\"}}"), response(200,@"application/json"), nil)==ApolloWebSessionIdentityUnavailable);
     for (NSString *json in @[@"<html>challenge</html>", @"[]", @"{\"error\":429}", @"{\"data\":\"wrong\"}"]) {
-        require(ApolloWebJSONIdentityVerdict(@"alice",body(json),response(200,@"application/json"),nil)==ApolloWebJSONProbeInconclusive);
+        require(ApolloWebJSONIdentityVerdict(@"alice",body(json),response(200,@"application/json"),nil)==ApolloWebSessionIdentityInconclusive);
     }
-    for (NSNumber *status in @[@429,@500,@503]) require(ApolloWebJSONIdentityVerdict(@"alice",body(@"{}"),response(status.integerValue,@"application/json"),nil)==ApolloWebJSONProbeInconclusive);
-    require(ApolloWebJSONIdentityVerdict(@"alice",body(@"{}"),response(200,@"application/json"),[NSError errorWithDomain:NSURLErrorDomain code:-1009 userInfo:nil])==ApolloWebJSONProbeInconclusive);
-    require(ApolloWebJSONIdentityVerdict(@"alice",nil,response(401,@"application/json"),nil)==ApolloWebJSONProbeDead);
-    require(ApolloWebJSONIdentityVerdict(@"alice",nil,response(403,@"text/html"),nil)==ApolloWebJSONProbeDead);
+    for (NSNumber *status in @[@403,@429,@500,@503]) require(ApolloWebJSONIdentityVerdict(@"alice",body(@"{}"),response(status.integerValue,@"application/json"),nil)==ApolloWebSessionIdentityInconclusive);
+    NSError *offline = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNotConnectedToInternet userInfo:nil];
+    require(ApolloWebJSONIdentityVerdict(@"alice",body(@"{}"),response(200,@"application/json"),offline)==ApolloWebSessionIdentityInconclusive);
+    require(ApolloWebJSONIdentityVerdict(@"alice",nil,response(401,@"application/json"),nil)==ApolloWebSessionIdentityUnavailable);
+    for (NSNumber *status in @[@200,@401,@403]) {
+        require(ApolloWebJSONIdentityVerdict(@"alice",body(@"<html>Prove your humanity</html>"),response(status.integerValue,@"text/html"),nil)==ApolloWebSessionIdentityInconclusive);
+    }
+    // Browser probes preserve response metadata instead of treating every
+    // failed fetch/JSON parse as an empty, signed-out username.
+    NSDictionary *matching = @{@"status":@200,@"contentType":@"application/json; charset=utf-8",@"json":@{@"data":@{@"name":@"ALICE",@"modhash":@"test"}}};
+    require(ApolloWebSessionClassifyBrowserIdentity(@"alice",matching,nil)==ApolloWebSessionIdentityMatches);
+    require(ApolloWebSessionClassifyBrowserIdentity(@"bob",matching,nil)==ApolloWebSessionIdentityUnavailable);
+    require(ApolloWebSessionClassifyBrowserIdentity(@"alice",matching,offline)==ApolloWebSessionIdentityInconclusive);
+    require(ApolloWebSessionClassifyBrowserIdentity(@"alice",@{@"status":@200,@"contentType":@"application/json",@"json":@{}},nil)==ApolloWebSessionIdentityUnavailable);
+    require(ApolloWebSessionClassifyBrowserIdentity(@"alice",@{@"status":@401,@"contentType":@"application/json",@"json":@{@"error":@401}},nil)==ApolloWebSessionIdentityUnavailable);
+    for (id result in @[[NSNull null], @"", @{},
+                       @{@"status":@"200",@"contentType":@"application/json",@"json":@{}},
+                       @{@"status":@200.5,@"contentType":@"application/json",@"json":@{}},
+                       @{@"status":@0,@"contentType":@"application/json",@"json":@{}},
+                       @{@"status":@200,@"json":@{}},
+                       @{@"status":@200,@"contentType":@"application/json",@"json":[NSNull null]},
+                       @{@"status":@200,@"contentType":@"application/json",@"json":@{@"data":@{@"name":@1}}},
+                       @{@"status":@200,@"contentType":@"application/json",@"json":@{@"data":@{@"name":@""}}}]) {
+        require(ApolloWebSessionClassifyBrowserIdentity(@"alice",result,nil)==ApolloWebSessionIdentityInconclusive);
+    }
+    for (NSNumber *status in @[@200,@401,@403,@429,@503]) {
+        require(ApolloWebSessionClassifyBrowserIdentity(@"alice",@{@"status":status,@"contentType":@"text/html; charset=utf-8",@"json":[NSNull null]},nil)==ApolloWebSessionIdentityInconclusive);
+    }
     // First account request probes even without any 403 streak. Parallel
     // requests share a single check. Public success cannot suppress it.
     NSMutableURLRequest *publicRequest=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://www.reddit.com/r/all.json"]];
@@ -92,10 +121,11 @@ int main(void) { @autoreleasepool {
     ApolloWebJSONNoteResponse(publicRequest,response(302,@"text/html"));require(merges==0);
     ApolloWebJSONCheckAccountSession(@"alice");ApolloWebJSONCheckAccountSession(@"alice");require(probes==1);
     answer(@"{}"); require(silent.count==1);
+    require(ApolloWebJSONAccountSessionError(@"alice")!=nil); // blocked while browser recovery is pending
     ApolloWebJSONVerifySessionThenAnnounce(@"alice");require(probes==1); // in-flight through reharvest
     __block NSString *promptAccount=nil;
     id observer=[[NSNotificationCenter defaultCenter] addObserverForName:ApolloWebJSONSessionExpiredNotification object:nil queue:nil usingBlock:^(NSNotification *note) { promptAccount=note.userInfo[@"username"]; }];
-    finishSilent(NO);
+    finishSilent(ApolloWebSessionRecoveryRequiresSignIn);
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
     require([promptAccount isEqualToString:@"alice"]);
     [[NSNotificationCenter defaultCenter] removeObserver:observer];
@@ -109,12 +139,11 @@ int main(void) { @autoreleasepool {
     // A late failure from an old snapshot must not invalidate a new login.
     ApolloWebJSONCheckAccountSession(@"bob");setCookie(@"bob",@"bob=new");answer(@"{}");require(silent.count==0);require(ApolloWebJSONAccountSessionError(@"bob")==nil);
     // Same protection when login changes while silent reharvest is pending.
-    ApolloWebJSONVerifySessionThenAnnounce(@"bob");answer(@"{}");setCookie(@"bob",@"bob=newer");finishSilent(NO);require(ApolloWebJSONAccountSessionError(@"bob")==nil);
+    ApolloWebJSONVerifySessionThenAnnounce(@"bob");answer(@"{}");setCookie(@"bob",@"bob=newer");finishSilent(ApolloWebSessionRecoveryRequiresSignIn);require(ApolloWebJSONAccountSessionError(@"bob")==nil);
     // Matching identity leaves the account usable.
     ApolloWebJSONVerifySessionThenAnnounce(@"bob");answer(@"{\"data\":{\"name\":\"bob\"}}");require(ApolloWebJSONAccountSessionError(@"bob")==nil);
-    // Production log sequence: identity HTTP 200 is inconclusive, then
-    // malformed account listings arrive. Public successes must not cancel
-    // the pending retry, and that retry must reach browser recovery/prompt.
+    // CAPTCHA can replace both identity and account listings with HTTP 200.
+    // That combination must preserve the session, with no recovery/prompt.
     setCookie(@"charlie",@"charlie=old");
     ApolloWebJSONCheckAccountSession(@"charlie");answer(@"<html>not an identity</html>");
     require(delayed.count > 0 && silent.count == 0);
@@ -126,13 +155,43 @@ int main(void) { @autoreleasepool {
     // Bearer rotation during the probe must recheck the new snapshot rather
     // than lose the only recovery trigger (also observed in the device log).
     setCookie(@"charlie",@"charlie=rotated");answer(@"<html>not an identity</html>");
-    require(pending.count==1);answer(@"<html>not an identity</html>");require(silent.count==1);
+    require(pending.count==1);answer(@"<html>not an identity</html>");require(silent.count==0);
     __block NSString *retryPrompt=nil;
     id retryObserver=[[NSNotificationCenter defaultCenter] addObserverForName:ApolloWebJSONSessionExpiredNotification object:nil queue:nil usingBlock:^(NSNotification *note) { retryPrompt=note.userInfo[@"username"]; }];
-    finishSilent(NO);require(ApolloWebJSONAccountSessionError(@"charlie")!=nil);
+    require(ApolloWebJSONAccountSessionError(@"charlie")==nil);
+    require([ApolloWebSessionFor(@"charlie").cookieHeader isEqualToString:@"charlie=rotated"]);
+    ApolloWebJSONVerifySessionThenAnnounce(@"charlie");
+    answerWithStatus(@"<html>Prove your humanity</html>",403,@"text/html",nil);
+    require(silent.count==0 && ![sSessionExpiredAnnouncedUsers containsObject:@"charlie"]);
+    // A native signed-out response can still encounter a blocked browser.
+    // Inconclusive recovery (including timeout/cooldown) must not prompt or
+    // clear browser cookies, but the conclusively anonymous native snapshot
+    // remains blocked until matching identity or a fresh harvest proves it.
+    ApolloWebJSONVerifySessionThenAnnounce(@"charlie");answer(@"{}");require(silent.count==1);
+    NSUInteger beforeRecoveryRetry=delayed.count;
+    finishSilent(ApolloWebSessionRecoveryInconclusive);
+    require(delayed.count==beforeRecoveryRetry+1 && ApolloWebJSONAccountSessionError(@"charlie")!=nil);
+    require([ApolloWebSessionFor(@"charlie").cookieHeader isEqualToString:@"charlie=rotated"]);
+    require(![sSessionExpiredAnnouncedUsers containsObject:@"charlie"]);
+    ApolloWebJSONVerifySessionThenAnnounce(@"charlie");answer(@"{\"data\":{\"name\":\"charlie\"}}");
+    require(sProbeBackoffAttemptsByUser[@"charlie"]==nil);
+    require(ApolloWebJSONAccountSessionError(@"charlie")==nil);
+    before=probes; retry=delayed.lastObject;[delayed removeLastObject];retry();require(probes==before);
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
-    require([retryPrompt isEqualToString:@"charlie"]);
+    require(retryPrompt==nil);
     [[NSNotificationCenter defaultCenter] removeObserver:retryObserver];
+    // A different account remains a conclusive failure and cannot be used as
+    // this account's identity. Successful browser recovery still avoids UI.
+    setCookie(@"dana",@"dana=old");ApolloWebJSONVerifySessionThenAnnounce(@"dana");
+    answer(@"{\"data\":{\"name\":\"someoneelse\"}}");require(silent.count==1);
+    finishSilent(ApolloWebSessionRecoveryInconclusive);
+    require(ApolloWebJSONAccountSessionError(@"dana")!=nil);
+    require(![sSessionExpiredAnnouncedUsers containsObject:@"dana"]);
+    ApolloWebJSONVerifySessionThenAnnounce(@"dana");answer(@"{\"data\":{\"name\":\"someoneelse\"}}");
+    finishSilent(ApolloWebSessionRecoveryRequiresSignIn);require(ApolloWebJSONAccountSessionError(@"dana")!=nil);
+    setCookie(@"ellen",@"ellen=old");ApolloWebJSONVerifySessionThenAnnounce(@"ellen");answer(@"{}");
+    setCookie(@"ellen",@"ellen=refreshed");ApolloWebJSONNoteSessionReauthenticated(@"ellen"); // real harvest resets expiry state
+    finishSilent(ApolloWebSessionRecoveryRecovered);require(ApolloWebJSONAccountSessionError(@"ellen")==nil);
     require(ApolloWebJSONAccountSessionError(@"alice")==nil);
-    NSLog(@"PASS: identity verdicts, cooldown, expiry, account isolation, deferred/replaced sessions and recovery");
+    NSLog(@"PASS: native/browser identity verdicts, challenge preservation, paced recovery, confirmed expiry, account isolation and replaced sessions");
 } }

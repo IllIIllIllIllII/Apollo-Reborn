@@ -71,8 +71,9 @@ static const NSUInteger kMaxIncompleteHarvestAttempts = 5;
 @interface ApolloWebSessionSilentReharvester : NSObject <WKNavigationDelegate>
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, copy) NSString *username;      // lowercased target
-@property (nonatomic, copy) void (^completion)(BOOL);
+@property (nonatomic, copy) void (^completion)(ApolloWebSessionRecoveryResult);
 @property (nonatomic) BOOL done;
+@property (nonatomic) BOOL probing;
 // Classification of the session being refreshed, captured at entry: a
 // re-harvest must store the fresh cookies with the SAME visibility the dying
 // entry had. The chat unread poller triggers re-harvests for auxiliary
@@ -81,7 +82,7 @@ static const NSUInteger kMaxIncompleteHarvestAttempts = 5;
 // back (the exact opposite of the "your sign-in choice will not change"
 // promise the feature sign-in makes).
 @property (nonatomic) BOOL pollOnly;
-- (void)_finish:(BOOL)success;
+- (void)_finish:(ApolloWebSessionRecoveryResult)result;
 @end
 
 // In-flight attempts, keyed by lowercased username. Retains the reharvester
@@ -762,18 +763,25 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
 #pragma mark - Silent re-harvest entry point
 
 + (void)attemptSilentReharvestForUsername:(NSString *)username completion:(void (^)(BOOL success))completion {
+    [self attemptSilentReharvestForUsername:username resultCompletion:^(ApolloWebSessionRecoveryResult result) {
+        if (completion) completion(result == ApolloWebSessionRecoveryRecovered);
+    }];
+}
+
++ (void)attemptSilentReharvestForUsername:(NSString *)username
+                       resultCompletion:(void (^)(ApolloWebSessionRecoveryResult result))completion {
     completion = [completion copy];
     dispatch_async(dispatch_get_main_queue(), ^{
         NSString *key = [[username ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-        if (key.length == 0) { if (completion) completion(NO); return; }
+        if (key.length == 0) { if (completion) completion(ApolloWebSessionRecoveryInconclusive); return; }
 
         // Repeated expiry verdicts right after a "successful" silent re-harvest
         // mean the problem isn't snapshot staleness (the one thing this can
-        // fix) — don't loop silently, let the visible prompt take over.
+        // fix). Avoid another browser request without inferring logout.
         NSDate *last = sLastReharvestSuccess[key];
         if (last && -last.timeIntervalSinceNow < kReharvestSuccessCooldown) {
-            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ already succeeded %.0fs ago and the session died again — not retrying silently", key, -last.timeIntervalSinceNow);
-            if (completion) completion(NO);
+            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ succeeded %.0fs ago — preserving the browser session during cooldown", key, -last.timeIntervalSinceNow);
+            if (completion) completion(ApolloWebSessionRecoveryInconclusive);
             return;
         }
         // Coalesce concurrent attempts: one webview does the work, but every
@@ -782,12 +790,12 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         // a successful re-harvest unnoticed for up to 30 minutes).
         ApolloWebSessionSilentReharvester *inflight = sReharvestsInFlight[key];
         if (inflight) {
-            void (^prior)(BOOL) = inflight.completion;
-            void (^added)(BOOL) = completion;
+            void (^prior)(ApolloWebSessionRecoveryResult) = inflight.completion;
+            void (^added)(ApolloWebSessionRecoveryResult) = completion;
             if (added) {
-                inflight.completion = ^(BOOL success) {
-                    if (prior) prior(success);
-                    added(success);
+                inflight.completion = ^(ApolloWebSessionRecoveryResult result) {
+                    if (prior) prior(result);
+                    added(result);
                 };
             }
             return;
@@ -812,9 +820,8 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
         if (!sReharvestsInFlight) sReharvestsInFlight = [NSMutableDictionary dictionary];
         sReharvestsInFlight[key] = r;
 
-        // Load the real homepage (not /api/me.json directly): that's the load
-        // that makes Reddit's edge refresh a stale token_v2 via Set-Cookie,
-        // exactly like the visible login flow does.
+        // Establish Reddit's origin using the same persistent browser store
+        // as visible login. Any refresh remains under Reddit's control.
         [r.webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"https://www.reddit.com/"]]];
 
         __weak ApolloWebSessionSilentReharvester *weakR = r;
@@ -822,7 +829,7 @@ static void ApolloWebSessionHarvestFromCookieStore(WKHTTPCookieStore *cookieStor
             ApolloWebSessionSilentReharvester *sr = weakR;
             if (sr && !sr.done) {
                 ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ timed out after %.0fs", sr.username, kReharvestTimeout);
-                [sr _finish:NO];
+                [sr _finish:ApolloWebSessionRecoveryInconclusive];
             }
         });
     });
@@ -882,63 +889,63 @@ decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
 
 @implementation ApolloWebSessionSilentReharvester
 
-- (void)_finish:(BOOL)success {
+- (void)_finish:(ApolloWebSessionRecoveryResult)result {
     if (self.done) return;
     self.done = YES;
     self.webView.navigationDelegate = nil;
     [self.webView stopLoading];
-    if (success) {
+    if (result == ApolloWebSessionRecoveryRecovered) {
         if (!sLastReharvestSuccess) sLastReharvestSuccess = [NSMutableDictionary dictionary];
         sLastReharvestSuccess[self.username] = [NSDate date];
     }
     [sReharvestsInFlight removeObjectForKey:self.username];
-    if (self.completion) self.completion(success);
+    if (self.completion) self.completion(result);
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    if (self.done) return;
+    if (self.done || self.probing) return;
+    self.probing = YES;
     __weak typeof(self) weakSelf = self;
-    ApolloWebSessionProbeMeField(webView, @"name", ^(NSString *user) {
+    // Return status and parsed identity together: the older field-only probe
+    // collapsed CAPTCHA, network failure, and logout into the same empty name.
+    NSString *js = @"try { const r = await fetch('https://www.reddit.com/api/me.json', {credentials:'include', cache:'no-store'}); "
+                    "let json = null; try { json = await r.json(); } catch (_) {} "
+                    "return {status:r.status, contentType:r.headers.get('content-type') || '', json}; "
+                    "} catch (_) { return null; }";
+    [webView callAsyncJavaScript:js arguments:nil inFrame:nil inContentWorld:WKContentWorld.pageWorld
+              completionHandler:^(id result, NSError *error) {
         typeof(self) s = weakSelf;
         if (!s || s.done) return;
-        // The persistent jar is shared across every web-session account: only
-        // harvest when it holds a live login for the SAME user whose snapshot
-        // died — anything else (logged out, different account) is a real
-        // expiry for our target and must go to the visible prompt.
-        if (![user.lowercaseString isEqualToString:s.username]) {
-            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ found %@ in the webview jar — reporting recovery failure to caller",
-                      s.username, user.length > 0 ? [NSString stringWithFormat:@"u/%@", user] : @"no login");
-            [s _finish:NO];
+        ApolloWebSessionIdentityVerdict verdict = ApolloWebSessionClassifyBrowserIdentity(s.username, result, error);
+        if (verdict != ApolloWebSessionIdentityMatches) {
+            BOOL confirmed = verdict == ApolloWebSessionIdentityUnavailable;
+            ApolloLog(@"[WebJSON] Silent re-harvest identity for u/%@ is %@", s.username,
+                      confirmed ? @"confirmed unavailable" : @"inconclusive; preserving browser session");
+            [s _finish:confirmed ? ApolloWebSessionRecoveryRequiresSignIn : ApolloWebSessionRecoveryInconclusive];
             return;
         }
-        ApolloWebSessionProbeMeField(webView, @"modhash", ^(NSString *modhash) {
-            typeof(self) s2 = weakSelf;
-            if (!s2 || s2.done) return;
-            WKHTTPCookieStore *store = webView.configuration.websiteDataStore.httpCookieStore;
-            // Store the fresh cookies with the classification captured at
-            // entry. The transport expiry detection only fires for primary
-            // sessions, but the chat unread poller also triggers re-harvests
-            // for auxiliary (poll-only) sessions — those must stay auxiliary
-            // or an API-key account would silently become a Web JSON account.
-            ApolloWebSessionHarvestFromCookieStore(store, s2.username, modhash, s2.pollOnly,
-                                                   ^(NSUInteger cookieCount) {
-                ApolloLog(@"[WebJSON] Silently re-harvested %@ session for u/%@ (%lu cookies, modhash %@) — expiry prompt suppressed",
-                          s2.pollOnly ? @"auxiliary" : @"primary",
-                          s2.username, (unsigned long)cookieCount, modhash.length > 0 ? @"captured" : @"absent");
-                [s2 _finish:cookieCount > 0];
-            });
+        // Identity and modhash come from the same verified response. Never
+        // harvest the shared cookie jar under another account's username.
+        id value = result[@"json"][@"data"][@"modhash"];
+        NSString *modhash = [value isKindOfClass:[NSString class]] ? value : @"";
+        WKHTTPCookieStore *store = webView.configuration.websiteDataStore.httpCookieStore;
+        // Preserve the primary/auxiliary classification captured at entry.
+        ApolloWebSessionHarvestFromCookieStore(store, s.username, modhash, s.pollOnly, ^(NSUInteger cookieCount) {
+            ApolloLog(@"[WebJSON] Silent re-harvest for u/%@ %@ (%lu cookies)", s.username,
+                      cookieCount > 0 ? @"recovered" : @"found no usable cookies", (unsigned long)cookieCount);
+            [s _finish:cookieCount > 0 ? ApolloWebSessionRecoveryRecovered : ApolloWebSessionRecoveryInconclusive];
         });
-    });
+    }];
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     ApolloLog(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
-    [self _finish:NO];
+    [self _finish:ApolloWebSessionRecoveryInconclusive];
 }
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     ApolloLog(@"[WebJSON] Silent re-harvest navigation failed for u/%@: %@", self.username, error.localizedDescription);
-    [self _finish:NO];
+    [self _finish:ApolloWebSessionRecoveryInconclusive];
 }
 
 @end
