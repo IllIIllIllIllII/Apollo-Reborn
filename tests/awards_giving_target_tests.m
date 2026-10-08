@@ -53,6 +53,10 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         expect(ApolloAwardsGivingURLForThing(thing) == nil);
     }
     expect(ApolloAwardsGivingURLForThing([NSObject new]) == nil);
+    expect(ApolloAwardsGivingIsReferenceURL([NSURL URLWithString:@"https://www.reddit.com/policies/econ-terms"]));
+    expect(ApolloAwardsGivingIsReferenceURL([NSURL URLWithString:@"https://www.reddit.com/help/gold"]));
+    expect(!ApolloAwardsGivingIsReferenceURL([NSURL URLWithString:@"https://www.reddit.com/gold/checkout"]));
+    expect(!ApolloAwardsGivingIsReferenceURL([NSURL URLWithString:@"https://www.reddit.com/comments/1q02umz/"]));
     expect(argc == 2);
     JSContext *context = [JSContext new];
     context.exceptionHandler = ^(JSContext *unused, JSValue *exception) {
@@ -61,6 +65,8 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
         abort();
     };
     context[@"openChooser"] = [context evaluateScript:[NSString stringWithFormat:@"(async function(fullName){%@})", ApolloAwardsGivingOpenChooserScript()]];
+    context[@"isolateChooser"] = [context evaluateScript:[NSString stringWithFormat:@"(async function(isolationStyle,generation,navigationGeneration){%@})", ApolloAwardsGivingIsolateChooserScript()]];
+    context[@"isolationStyle"] = ApolloAwardsGivingIsolationStyle();
     context[@"record"] = ^(BOOL success) { expect(success); };
     __block BOOL finished = NO;
     context[@"finish"] = ^{ finished = YES; };

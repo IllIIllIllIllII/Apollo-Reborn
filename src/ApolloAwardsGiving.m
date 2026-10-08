@@ -53,7 +53,24 @@ NSURL *ApolloAwardsGivingURLForThing(id thing) {
     return [NSURL URLWithString:[NSString stringWithFormat:@"https://sh.reddit.com/comments/%@/", identifier]];
 }
 
-@interface ApolloAwardsGivingViewController : UIViewController <WKNavigationDelegate, WKUIDelegate, UIAdaptivePresentationControllerDelegate>
+static BOOL ApolloAwardsGivingIsReferenceURL(NSURL *url) {
+    NSString *host = url.host.lowercaseString, *path = url.path.lowercaseString;
+    if (![url.scheme.lowercaseString isEqualToString:@"https"] ||
+        !([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) return NO;
+    return [path isEqualToString:@"/help"] || [path hasPrefix:@"/help/"] ||
+        [path hasPrefix:@"/policies/"] || [path hasPrefix:@"/wiki/"];
+}
+
+@interface ApolloAwardsGivingMessageHandler : NSObject <WKScriptMessageHandler>
+@property (nonatomic, weak) id<WKScriptMessageHandler> delegate;
+@end
+@implementation ApolloAwardsGivingMessageHandler
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    [self.delegate userContentController:controller didReceiveScriptMessage:message];
+}
+@end
+
+@interface ApolloAwardsGivingViewController : UIViewController <WKNavigationDelegate, WKUIDelegate, UIAdaptivePresentationControllerDelegate, WKScriptMessageHandler>
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic, copy) NSString *fullName;
 @property (nonatomic, strong) NSURL *targetURL;
@@ -75,6 +92,7 @@ NSURL *ApolloAwardsGivingURLForThing(id thing) {
 @property (nonatomic) BOOL verifying;
 @property (nonatomic) BOOL openedChooser;
 @property (nonatomic) BOOL initialIdentityVerified;
+@property (nonatomic) BOOL initialChooserPresented;
 @property (nonatomic) BOOL refreshedAfterDismissal;
 @property (nonatomic) BOOL finished;
 @end
@@ -101,6 +119,67 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
         "} catch (_) {return false;}";
 }
 
+static NSString *ApolloAwardsGivingIsolationStyle(void) {
+    // Visibility, unlike display:none, leaves the bootstrap page's lazy
+    // loaders working. Only the verified dialog portal is ever exposed.
+    return @"html,body{background:Canvas!important;color-scheme:light dark;}"
+        "body{overflow:hidden!important;}body *{visibility:hidden!important;pointer-events:none!important;}"
+        "[data-apollo-award-portal],[data-apollo-award-portal] *{visibility:visible!important;pointer-events:auto!important;}"
+        "[data-apollo-award-portal]{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;}"
+        "[data-apollo-award-portal] award-dialog{display:block!important;flex:1 1 auto!important;width:100%!important;height:100%!important;min-height:0!important;max-height:none!important;}"
+        "[data-apollo-award-portal] award-dialog>rpl-modal-card{height:100%!important;max-height:100%!important;min-height:0!important;border-radius:0!important;}";
+}
+
+static NSString *ApolloAwardsGivingIsolateChooserScript(void) {
+    // Reddit exposes these refs on rpl-dialog-sheet and rpl-dialog. Keep its
+    // actual portal in place so selection, gold top-up and checkout retain
+    // their existing component context and event listeners.
+    return @"try {"
+        "const waitFor=read=>{const value=read();if(value)return Promise.resolve(value);"
+        "return new Promise(resolve=>{let timer;const finish=value=>{observer.disconnect();clearTimeout(timer);resolve(value);};"
+        "const observer=new MutationObserver(()=>{const value=read();if(value)finish(value);});"
+        "observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true});"
+        "timer=setTimeout(()=>finish(null),3500);});};"
+        "const dialog=await waitFor(()=>document.querySelector('[dialog-id=\"award-dialog\"]'));"
+        "if (!dialog) return false;"
+        "await Promise.race([customElements.whenDefined(dialog.localName),new Promise(resolve=>setTimeout(resolve,3500))]);"
+        "if (dialog.updateComplete) await dialog.updateComplete;"
+        "if (dialog.elementRef && dialog.elementRef.updateComplete) await dialog.elementRef.updateComplete;"
+        "await new Promise(resolve=>requestAnimationFrame(resolve));"
+        "const currentPortal=()=>{try {const portal=dialog.portalContainer,panel=dialog.panelRef&&dialog.panelRef.value,root=dialog.portalShadowRoot;"
+        "return dialog.open&&portal&&portal.isConnected&&panel&&panel.isConnected&&root?{portal,panel,root}:null;}catch(_){return null;}};"
+        "const mounted=await waitFor(currentPortal);"
+        "if (!mounted) return false;const {portal,panel,root}=mounted;"
+        "let pageStyle=document.getElementById('apollo-award-isolation');"
+        "if (!pageStyle){pageStyle=document.createElement('style');pageStyle.id='apollo-award-isolation';document.documentElement.appendChild(pageStyle);}"
+        "pageStyle.textContent=isolationStyle;"
+        "const panelCSS='.dialog{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;}"
+        ".dialog-overlay,[part=overlay],[part=handle-container]{display:none!important;}"
+        ".dialog-panel,[part=panel]{position:fixed!important;inset:0!important;margin:0!important;width:100%!important;"
+        "height:100%!important;max-width:none!important;min-width:0!important;max-height:none!important;"
+        "border-radius:0!important;transform:none!important;display:flex!important;flex-direction:column!important;"
+        "touch-action:auto!important;overflow:hidden!important;}';"
+        "let activePortal=null;const styledRoots=new WeakSet();"
+        "const prepare=current=>{if(!current)return;const {portal,root}=current;"
+        "if(!styledRoots.has(root)){const style=document.createElement('style');style.textContent=panelCSS;root.appendChild(style);styledRoots.add(root);}"
+        "const award=portal.querySelector('award-dialog');const awardRoot=award&&award.shadowRoot;"
+        "if(awardRoot&&!styledRoots.has(awardRoot)){const style=document.createElement('style');style.textContent=':host,slot{height:100%!important;min-height:0!important;}';awardRoot.appendChild(style);styledRoots.add(awardRoot);}"
+        "if(activePortal!==portal){if(activePortal)activePortal.removeAttribute('data-apollo-award-portal');"
+        "portal.setAttribute('data-apollo-award-portal','');activePortal=portal;}};"
+        "prepare(mounted);"
+        "const replacements=new MutationObserver(()=>prepare(currentPortal()));"
+        "replacements.observe(document.documentElement,{childList:true,subtree:true});"
+        "if(dialog.shadowRoot)replacements.observe(dialog.shadowRoot,{childList:true,subtree:true});"
+        "let closed=false;const close=event=>{"
+        "if (closed || (event && event.target!==dialog && event.target!==dialog.elementRef)) return;"
+        "closed=true;replacements.disconnect();if(activePortal)activePortal.removeAttribute('data-apollo-award-portal');"
+        "window.webkit.messageHandlers.apolloAwardSheet.postMessage({action:'close',generation,navigationGeneration});};"
+        "dialog.addEventListener(dialog.localName+':hide',close);"
+        "dialog.addEventListener(dialog.localName+':after-hide',close);"
+        "return true;"
+        "} catch (_) {return false;}";
+}
+
 @implementation ApolloAwardsGivingViewController
 
 - (void)viewDidLoad {
@@ -108,26 +187,11 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     self.title = @"Give Award";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.view.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone
-        target:self action:@selector(close)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
-        target:self action:@selector(start)];
-
-    UILabel *instruction = [UILabel new];
-    instruction.text = @"Choose an award on Reddit, then confirm. Reddit shows your balance and any cost.";
-    instruction.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    instruction.textColor = UIColor.secondaryLabelColor;
-    instruction.numberOfLines = 0;
-    instruction.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:instruction];
     self.browserHost = [UIView new];
     self.browserHost.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.browserHost];
     [NSLayoutConstraint activateConstraints:@[
-        [instruction.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
-        [instruction.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [instruction.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [self.browserHost.topAnchor constraintEqualToAnchor:instruction.bottomAnchor constant:8],
+        [self.browserHost.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:24],
         [self.browserHost.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.browserHost.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.browserHost.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor]
@@ -155,7 +219,10 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     self.signInButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.signInButton setTitle:@"Sign In to Reddit" forState:UIControlStateNormal];
     [self.signInButton addTarget:self action:@selector(signIn) forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.spinner, self.statusLabel, self.retryButton, self.signInButton]];
+    UIButton *cancelButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [cancelButton setTitle:@"Cancel" forState:UIControlStateNormal];
+    [cancelButton addTarget:self action:@selector(close) forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[self.spinner, self.statusLabel, self.retryButton, self.signInButton, cancelButton]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentFill;
     stack.spacing = 16;
@@ -175,7 +242,8 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    self.navigationController.presentationController.delegate = self;
+    if (self.navigationController.presentationController.delegate != self)
+        self.navigationController.presentationController.delegate = self;
 }
 
 - (BOOL)accountIsCurrent {
@@ -212,6 +280,7 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     self.verifying = NO;
     self.openedChooser = NO;
     self.initialIdentityVerified = NO;
+    self.initialChooserPresented = NO;
     self.webView.navigationDelegate = nil;
     self.webView.UIDelegate = nil;
     [self.webView stopLoading];
@@ -238,6 +307,14 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     // award chooser. The explicit modern host and mobile mode keep this sheet
     // usable without changing any account-wide Reddit preferences.
     configuration.defaultWebpagePreferences.preferredContentMode = WKContentModeMobile;
+    ApolloAwardsGivingMessageHandler *bridge = [ApolloAwardsGivingMessageHandler new];
+    bridge.delegate = self;
+    [configuration.userContentController addScriptMessageHandler:bridge name:@"apolloAwardSheet"];
+    NSData *styleData = [NSJSONSerialization dataWithJSONObject:@[ApolloAwardsGivingIsolationStyle()] options:0 error:NULL];
+    NSString *styleJSON = [[NSString alloc] initWithData:styleData encoding:NSUTF8StringEncoding];
+    NSString *hidePage = [NSString stringWithFormat:@"(()=>{const s=document.createElement('style');s.id='apollo-award-isolation';s.textContent=%@[0];document.documentElement.appendChild(s);})();", styleJSON];
+    [configuration.userContentController addUserScript:[[WKUserScript alloc] initWithSource:hidePage
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
     WKWebView *webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:configuration];
     self.webView = webView;
     // sh's /api/me.json redirects to www without CORS permission. A separate,
@@ -285,11 +362,11 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         typeof(self) strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.finished || generation != strongSelf.generation || strongSelf.initialIdentityVerified) return;
+        if (!strongSelf || strongSelf.finished || generation != strongSelf.generation || strongSelf.initialChooserPresented) return;
         strongSelf.generation++;
         [strongSelf.webView stopLoading];
         [strongSelf.identityWebView stopLoading];
-        [strongSelf showStatus:@"Reddit is taking too long to verify this session. Try again later." loading:NO signIn:YES];
+        [strongSelf showStatus:@"Reddit is taking too long to open the award chooser. Try again later." loading:NO signIn:YES];
     });
 }
 
@@ -307,13 +384,74 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
 }
 
 - (void)close {
+    if (self.finished) return;
     self.finished = YES;
+    self.statusView.hidden = NO;
     self.generation++;
     [self.webView stopLoading];
     [self.identityWebView stopLoading];
     [self refreshAwardsAfterDismissal];
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
 }
+
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    if (self.finished || !self.initialIdentityVerified || !message.frameInfo.isMainFrame || message.webView != self.webView ||
+        ![message.body isKindOfClass:NSDictionary.class]) return;
+    NSDictionary *body = message.body;
+    if (![body[@"action"] isEqual:@"close"] || ![body[@"generation"] isKindOfClass:NSNumber.class] ||
+        ![body[@"navigationGeneration"] isKindOfClass:NSNumber.class] ||
+        [body[@"generation"] unsignedIntegerValue] != self.generation ||
+        [body[@"navigationGeneration"] unsignedIntegerValue] != self.navigationGeneration) return;
+    [self close];
+}
+
+- (void)isolateVerifiedChooser {
+    WKWebView *webView = self.webView;
+    NSUInteger generation = self.generation, navigationGeneration = self.navigationGeneration;
+    __weak typeof(self) weakSelf = self;
+    [webView callAsyncJavaScript:ApolloAwardsGivingIsolateChooserScript()
+        arguments:@{@"isolationStyle":ApolloAwardsGivingIsolationStyle(), @"generation":@(generation), @"navigationGeneration":@(navigationGeneration)}
+        inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id ready, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.finished || generation != strongSelf.generation ||
+            navigationGeneration != strongSelf.navigationGeneration || webView != strongSelf.webView) return;
+        if (![strongSelf accountIsCurrent]) { [strongSelf checkActiveAccount]; return; }
+#if APOLLO_SIM_BUILD
+        [strongSelf logChooserStructure];
+#endif
+        if (error || ![ready isEqual:@YES]) {
+            [strongSelf showStatus:@"Reddit could not open the award chooser. Try again later." loading:NO signIn:NO];
+            ApolloLog(@"[Awards] chooser isolation unavailable");
+            return;
+        }
+        strongSelf.statusView.hidden = YES;
+        strongSelf.initialChooserPresented = YES;
+        [strongSelf.spinner stopAnimating];
+        webView.userInteractionEnabled = YES;
+        ApolloLog(@"[Awards] isolated Reddit chooser ready");
+    }];
+}
+
+#if APOLLO_SIM_BUILD
+- (void)logChooserStructure {
+    // Structural diagnostics only: no text, links, account attributes, HTML,
+    // cookie values, balances or selection/order state leave the web view.
+    NSString *script = @"try {const d=document.querySelector('[dialog-id=\"award-dialog\"]');"
+        "if(!d)return {dialog:false};const p=d.portalContainer,n=d.panelRef&&d.panelRef.value;"
+        "const r=n&&n.getBoundingClientRect();const a=document.querySelector('award-dialog');"
+        "return {dialog:true,tag:d.localName,open:!!d.open,variant:d.currentVariant||null,"
+        "portal:p?{tag:p.localName,connected:p.isConnected,isolated:p.hasAttribute('data-apollo-award-portal')}:null,"
+        "panel:n?{tag:n.localName,part:n.getAttribute('part'),role:n.getAttribute('role'),"
+        "width:Math.round(r.width),height:Math.round(r.height),x:Math.round(r.x),y:Math.round(r.y)}:null,"
+        "shadow:!!d.portalShadowRoot,viewport:{width:innerWidth,height:innerHeight},"
+        "pages:a?Array.from(a.children).slice(0,8).map(x=>({tag:x.localName,slot:['award-selection','selection','leaderboard','gold-top-up'].includes(x.slot)?x.slot:null})):[]};"
+        "}catch(_){return {diagnosticUnavailable:true};}";
+    [self.webView callAsyncJavaScript:script arguments:nil inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id result, NSError *error) {
+        if ([result isKindOfClass:NSDictionary.class]) ApolloLog(@"[Awards][chooser-structure] %@", result);
+        else ApolloLog(@"[Awards][chooser-structure] unavailable code=%ld", (long)error.code);
+    }];
+}
+#endif
 
 - (void)refreshAwardsAfterDismissal {
     if (self.refreshedAfterDismissal) return;
@@ -369,21 +507,24 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
             [strongSelf showStatus:message loading:NO signIn:YES];
             return;
         }
-        strongSelf.statusView.hidden = YES;
         strongSelf.initialIdentityVerified = YES;
-        [strongSelf.spinner stopAnimating];
-        contentWebView.userInteractionEnabled = YES;
-        strongSelf.title = [NSString stringWithFormat:@"Award as u/%@", strongSelf.username];
+        [strongSelf showStatus:@"Opening award chooser…" loading:YES signIn:NO];
         if (!strongSelf.openedChooser) {
             strongSelf.openedChooser = YES;
             [contentWebView callAsyncJavaScript:ApolloAwardsGivingOpenChooserScript()
                                arguments:@{@"fullName":strongSelf.fullName} inFrame:nil inContentWorld:WKContentWorld.pageWorld
                        completionHandler:^(id opened, NSError *openError) {
-                // A changed Reddit UI stays available for the user's normal
-                // menu interaction. Never try another click or order endpoint.
-                ApolloLog(@"[Awards] Reddit chooser %@", !openError && [opened isEqual:@YES] ? @"opened" : @"available through Reddit's award menu");
+                typeof(self) currentSelf = weakSelf;
+                if (!currentSelf || currentSelf.finished || generation != currentSelf.generation ||
+                    navigationGeneration != currentSelf.navigationGeneration || contentWebView != currentSelf.webView) return;
+                if (![currentSelf accountIsCurrent]) { [currentSelf checkActiveAccount]; return; }
+                if (openError || ![opened isEqual:@YES]) {
+                    [currentSelf showStatus:@"Reddit could not open the award chooser. Try again later." loading:NO signIn:NO];
+                    return;
+                }
+                [currentSelf isolateVerifiedChooser];
             }];
-        }
+        } else [strongSelf isolateVerifiedChooser];
     }];
 }
 
@@ -434,6 +575,12 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
         decisionHandler(identityURL ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
         return;
     }
+    if (action.navigationType == WKNavigationTypeLinkActivated && ApolloAwardsGivingIsReferenceURL(url)) {
+        decisionHandler(WKNavigationActionPolicyCancel);
+        if (!self.presentedViewController)
+            [self presentViewController:[[SFSafariViewController alloc] initWithURL:url] animated:YES completion:nil];
+        return;
+    }
     BOOL reddit = [url.scheme.lowercaseString isEqualToString:@"https"] &&
         ([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"]);
     if (!action.targetFrame.isMainFrame && action.targetFrame) {
@@ -454,7 +601,10 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
     if (self.finished || ![self accountIsCurrent]) { [self checkActiveAccount]; return nil; }
     NSURL *url = action.request.URL;
     NSString *host = url.host.lowercaseString;
-    if ([url.scheme.lowercaseString isEqualToString:@"https"] && ([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) {
+    if (ApolloAwardsGivingIsReferenceURL(url)) {
+        if (!self.presentedViewController)
+            [self presentViewController:[[SFSafariViewController alloc] initWithURL:url] animated:YES completion:nil];
+    } else if ([url.scheme.lowercaseString isEqualToString:@"https"] && ([host isEqualToString:@"reddit.com"] || [host hasSuffix:@".reddit.com"])) {
         [webView loadRequest:action.request];
     } else if ([url.scheme.lowercaseString isEqualToString:@"https"] && !self.presentedViewController) {
         [self presentViewController:[[SFSafariViewController alloc] initWithURL:url] animated:YES completion:nil];
@@ -464,14 +614,42 @@ static NSString *ApolloAwardsGivingOpenChooserScript(void) {
 
 @end
 
-UIViewController *ApolloAwardsGivingControllerForThing(id thing) {
+static ApolloAwardsGivingViewController *ApolloAwardsGivingContentForThing(id thing) {
     NSURL *target = ApolloAwardsGivingURLForThing(thing);
     if (!target) return nil;
     ApolloAwardsGivingViewController *controller = [ApolloAwardsGivingViewController new];
     controller.targetURL = target;
     controller.fullName = ApolloAwardsNormalizeFullName(ApolloAwardsGivingValue(thing, @"fullName"));
     controller.username = ApolloActiveWebSessionUsername().lowercaseString ?: @"";
-    return [[UINavigationController alloc] initWithRootViewController:controller];
+    return controller;
+}
+
+static void ApolloAwardsConfigureGivingSheet(UINavigationController *navigation) {
+    navigation.modalPresentationStyle = UIModalPresentationPageSheet;
+    [navigation setNavigationBarHidden:YES animated:NO];
+    if (@available(iOS 15.0, *)) {
+        UISheetPresentationController *sheet = navigation.sheetPresentationController;
+        sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
+        sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
+        sheet.prefersGrabberVisible = YES;
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = YES;
+    }
+}
+
+UIViewController *ApolloAwardsGivingControllerForThing(id thing) {
+    ApolloAwardsGivingViewController *controller = ApolloAwardsGivingContentForThing(thing);
+    if (!controller) return nil;
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:controller];
+    ApolloAwardsConfigureGivingSheet(navigation);
+    return navigation;
+}
+
+BOOL ApolloAwardsReplaceSheetWithGiving(id thing, UINavigationController *sheetNavigation) {
+    ApolloAwardsGivingViewController *controller = ApolloAwardsGivingContentForThing(thing);
+    if (!controller || !sheetNavigation.presentingViewController) return NO;
+    [sheetNavigation setViewControllers:@[controller] animated:NO];
+    ApolloAwardsConfigureGivingSheet(sheetNavigation);
+    return YES;
 }
 
 BOOL ApolloAwardsPresentGiving(id thing, UIViewController *presenter) {

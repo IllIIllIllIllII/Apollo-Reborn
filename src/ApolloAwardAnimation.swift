@@ -197,6 +197,8 @@ final class ApolloAwardAnimationView: UIView {
              "window": view.window != nil, "hidden": view.isHidden, "failed": view.failed,
              "loading": view.loadToken != nil, "playing": view.player?.isAnimationPlaying ?? false,
              "progress": view.player?.currentProgress ?? -1, "bounds": String(describing: view.bounds),
+             "artworkBounds": String(describing: view.player?.bounds ?? .zero),
+             "masksComposition": view.player?.maskAnimationToBounds ?? false,
              "stillHidden": view.stillImageView?.isHidden ?? false,
              "engine": String(describing: view.player?.currentRenderingEngine)]
         }
@@ -228,6 +230,7 @@ final class ApolloAwardAnimationView: UIView {
         #endif
         isUserInteractionEnabled = false
         isAccessibilityElement = false
+        clipsToBounds = false
         isHidden = true
         for name in [UIAccessibility.reduceMotionStatusDidChangeNotification,
                      UIApplication.didBecomeActiveNotification, UIApplication.willResignActiveNotification,
@@ -314,10 +317,23 @@ final class ApolloAwardAnimationView: UIView {
             player.loopMode = .loop
             player.backgroundBehavior = .pauseAndRestore
             player.contentMode = .scaleAspectFit
+            // Reddit's motion can extend beyond the JSON composition frame.
+            // Lottie masks that frame by default, even when UIKit ancestors
+            // do not clip. The row reserves a larger canvas for this overflow.
+            player.maskAnimationToBounds = false
+            player.clipsToBounds = false
             player.isUserInteractionEnabled = false
-            player.frame = self.bounds
-            player.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            player.translatesAutoresizingMaskIntoConstraints = false
             self.addSubview(player)
+            // Keep the composition's resting size identical to the 48-point
+            // still icon. Enlarging the containing canvas must add motion
+            // space, not scale the artwork up and recreate the same clipping.
+            NSLayoutConstraint.activate([
+                player.widthAnchor.constraint(equalToConstant: 48),
+                player.heightAnchor.constraint(equalToConstant: 48),
+                player.centerXAnchor.constraint(equalTo: self.centerXAnchor),
+                player.centerYAnchor.constraint(equalTo: self.centerYAnchor)
+            ])
             self.player = player
             Self.activePlayers.add(self)
             self.updatePlayback()
