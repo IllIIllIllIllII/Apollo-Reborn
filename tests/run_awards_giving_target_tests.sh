@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 root, output = map(Path, sys.argv[1:])
 source = (root / 'src/ApolloAwardsGiving.m').read_text()
-helper = source[source.index('static id ApolloAwardsGivingValue'):source.index('@interface ApolloAwardsGivingViewController')]
+helper = source[source.index('static id ApolloAwardsGivingValue'):source.index('@interface ApolloAwardsGivingMessageHandler')]
 chooser = source[source.index('static NSString *ApolloAwardsGivingOpenChooserScript'):source.index('@implementation ApolloAwardsGivingViewController')]
 test = (root / 'tests/awards_giving_target_tests.m').read_text()
 (output / 'test.m').write_text(test.replace('// PRODUCTION_TARGET', helper).replace('// PRODUCTION_CHOOSER', chooser))

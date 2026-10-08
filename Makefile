@@ -60,6 +60,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloAwardsListing.m \
     $(SRC_DIR)/ApolloAwardsListingHooks.xm \
     $(SRC_DIR)/ApolloAwardsGiving.m \
+    $(SRC_DIR)/ApolloAwardsSheet.m \
     $(SRC_DIR)/ApolloAwardsGivingHooks.xm \
     $(SRC_DIR)/ApolloAwardAnimation.xm \
     $(SRC_DIR)/ApolloAwardAnimation.swift \

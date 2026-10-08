@@ -1,33 +1,38 @@
 #import "ApolloAwardsGiving.h"
+#import "ApolloAwardsSheet.h"
 #import "ApolloCommon.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static UIViewController *ApolloAwardsReplaceLegacyGifting(UIViewController *candidate) {
+static UIViewController *ApolloAwardsReplaceLegacyPresentation(UIViewController *candidate) {
     UIViewController *content = [candidate isKindOfClass:UINavigationController.class]
         ? ((UINavigationController *)candidate).viewControllers.firstObject : candidate;
     Class gifting = objc_getClass("_TtC6Apollo26AwardGiftingViewController");
-    if (!gifting || ![content isKindOfClass:gifting]) return candidate;
+    Class details = objc_getClass("_TtC6Apollo25AwardsGivenViewController");
+    BOOL isGifting = gifting && [content isKindOfClass:gifting];
+    BOOL isDetails = details && [content isKindOfClass:details];
+    if (!isGifting && !isDetails) return candidate;
     Ivar ivar = class_getInstanceVariable(object_getClass(content), "thingToAward");
     id thing = ivar ? object_getIvar(content, ivar) : nil;
-    return ApolloAwardsGivingControllerForThing(thing) ?: candidate;
+    return (isGifting ? ApolloAwardsGivingControllerForThing(thing)
+                      : ApolloAwardsSheetControllerForThing(thing)) ?: candidate;
 }
 
-// Every stock Give Award action (including a zero-award post/comment) presents
-// this controller. Replace it before viewDidLoad can fetch the retired catalog.
+// Replace Apollo's custom awards overlay and retired gifting catalog before
+// their views load. Both entry points now use native, resizable sheets.
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
-    %orig(ApolloAwardsReplaceLegacyGifting(controller), animated, completion);
+    %orig(ApolloAwardsReplaceLegacyPresentation(controller), animated, completion);
 }
 %end
 
 %hook _TtC6Apollo26ApolloNavigationController
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
-    %orig(ApolloAwardsReplaceLegacyGifting(controller), animated, completion);
+    %orig(ApolloAwardsReplaceLegacyPresentation(controller), animated, completion);
 }
 %end
 
 %ctor {
     %init;
-    ApolloLog(@"[Awards] Reddit gifting presentation hooks installed");
+    ApolloLog(@"[Awards] Awards sheet presentation hooks installed");
 }
