@@ -182,6 +182,63 @@ static NSString *ApolloAwardsGivingIsolateChooserScript(void) {
 
 @implementation ApolloAwardsGivingViewController
 
+- (void)applyChooserBackground:(UIColor *)color {
+    self.view.backgroundColor = color;
+    self.navigationController.view.backgroundColor = color;
+    self.browserHost.backgroundColor = color;
+    self.statusView.backgroundColor = color;
+}
+
+- (void)resetChooserBackground {
+    // Match Reddit's light/dark modal surface while its actual CSS loads.
+    [self applyChooserBackground:[UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? [UIColor colorWithRed:24.0/255.0 green:28.0/255.0 blue:31.0/255.0 alpha:1]
+            : UIColor.whiteColor;
+    }]];
+}
+
+- (void)refreshChooserBackgroundWithCompletion:(void (^)(void))completion {
+    WKWebView *webView = self.webView;
+    NSUInteger generation = self.generation, navigationGeneration = self.navigationGeneration;
+    __weak typeof(self) weakSelf = self;
+    // Read the real modal color rather than assuming Reddit will keep today's
+    // palette. A one-pixel canvas resolves any CSS color syntax to sRGB bytes.
+    NSString *script = @"await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));"
+        "const dialog=document.querySelector('[dialog-id=\"award-dialog\"]');"
+        "const portal=dialog&&dialog.portalContainer;const panel=dialog&&dialog.panelRef&&dialog.panelRef.value;"
+        "const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const context=canvas.getContext('2d');"
+        "for(const element of [portal&&portal.querySelector('award-dialog>rpl-modal-card'),panel]){"
+        "if(!element||!context)continue;context.clearRect(0,0,1,1);"
+        "context.fillStyle=getComputedStyle(element).backgroundColor;context.fillRect(0,0,1,1);"
+        "const rgba=Array.from(context.getImageData(0,0,1,1).data);if(rgba[3]===255)return rgba.slice(0,3);"
+        "}return null;";
+    [webView callAsyncJavaScript:script arguments:nil inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id result, NSError *error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.finished || webView != strongSelf.webView ||
+            generation != strongSelf.generation || navigationGeneration != strongSelf.navigationGeneration) return;
+        if (![strongSelf accountIsCurrent]) { [strongSelf checkActiveAccount]; return; }
+        if (!error && [result isKindOfClass:NSArray.class] && [result count] == 3) {
+            BOOL valid = YES;
+            for (id component in result) {
+                if (![component isKindOfClass:NSNumber.class] || [component doubleValue] < 0 ||
+                    [component doubleValue] > 255) { valid = NO; break; }
+            }
+            if (valid) [strongSelf applyChooserBackground:[UIColor colorWithRed:[result[0] doubleValue]/255.0
+                green:[result[1] doubleValue]/255.0 blue:[result[2] doubleValue]/255.0 alpha:1]];
+        }
+        if (completion) completion();
+    }];
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    if ([self.traitCollection hasDifferentColorAppearanceComparedToTraitCollection:previousTraitCollection]) {
+        [self resetChooserBackground];
+        if (self.initialChooserPresented) [self refreshChooserBackgroundWithCompletion:nil];
+    }
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Give Award";
@@ -198,7 +255,7 @@ static NSString *ApolloAwardsGivingIsolateChooserScript(void) {
     ]];
 
     self.statusView = [UIView new];
-    self.statusView.backgroundColor = UIColor.systemBackgroundColor;
+    [self resetChooserBackground];
     self.statusView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.browserHost addSubview:self.statusView];
     [NSLayoutConstraint activateConstraints:@[
@@ -424,11 +481,15 @@ static NSString *ApolloAwardsGivingIsolateChooserScript(void) {
             ApolloLog(@"[Awards] chooser isolation unavailable");
             return;
         }
-        strongSelf.statusView.hidden = YES;
-        strongSelf.initialChooserPresented = YES;
-        [strongSelf.spinner stopAnimating];
-        webView.userInteractionEnabled = YES;
-        ApolloLog(@"[Awards] isolated Reddit chooser ready");
+        // Fill the native grabber/safe-area insets before showing the web card,
+        // so the chooser appears as one continuous sheet surface.
+        [strongSelf refreshChooserBackgroundWithCompletion:^{
+            strongSelf.statusView.hidden = YES;
+            strongSelf.initialChooserPresented = YES;
+            [strongSelf.spinner stopAnimating];
+            webView.userInteractionEnabled = YES;
+            ApolloLog(@"[Awards] isolated Reddit chooser ready");
+        }];
     }];
 }
 
