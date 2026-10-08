@@ -1,4 +1,5 @@
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloWebSessionStore.h"
@@ -1258,17 +1259,16 @@ static void ApolloPollPresentAccessibilityPicker(id pollNode, RDKLink *link,
         message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     for (RDKPollOption *option in poll.options) {
         if (option.text.length == 0 || option.identifier.length == 0) continue;
-        [sheet addAction:[UIAlertAction actionWithTitle:option.text
-            style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(option.text, UIAlertActionStyleDefault,
+                                         ^(__unused UIAlertAction *action) {
             ApolloPollBeginVote(link, option, username, pollNode);
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-        style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIView *sourceView = ApolloPollNodeView(pollNode) ?: presenter.view;
     sheet.popoverPresentationController.sourceView = sourceView;
     sheet.popoverPresentationController.sourceRect = sourceView.bounds;
-    [presenter presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(presenter, sheet);
 }
 
 // MARK: - Radio list + Vote button (deliberate two-step voting)
@@ -1278,7 +1278,7 @@ static void ApolloPollPresentAccessibilityPicker(id pollNode, RDKLink *link,
 // disabled until something is selected, commits it — the button itself is
 // the confirmation step, so no extra alert is needed. The VoiceOver/Switch
 // Control path (ApolloPollPresentAccessibilityPicker above) stays one-step:
-// picking from that sheet is already a deliberate, explicit action.
+// picking from that chooser is already a deliberate, explicit action.
 //
 // Mechanism mirrors ApolloAISummary.xm: each hooked -layoutSpecThatFits:
 // calls %orig, lazily creates+caches its own subnode(s), and splices them

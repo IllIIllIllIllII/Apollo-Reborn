@@ -14,6 +14,7 @@
 #import "ApolloThemeRuntime.h"
 #import "ApolloWallpapersViewController.h"
 #import "ApolloSettingsTableViewController.h"
+#import "ApolloSettingsForm.h"
 
 // MARK: - Settings View Controller (Custom API row injection)
 
@@ -490,42 +491,25 @@ static UITableView *ApolloRootSettingsTableInView(UIView *view) {
 static void ApolloPresentFeatureRequestsChooser(UIViewController *aboutVC,
                                                  UITableView *tableView,
                                                  NSIndexPath *indexPath) {
-    UIAlertController *sheet =
-        [UIAlertController alertControllerWithTitle:@"Feature Requests"
-                                            message:@"Apollo Reborn has its own board for suggesting and voting on ideas. Apollo's original board is archived and no longer monitored."
-                                     preferredStyle:UIAlertControllerStyleActionSheet];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Apollo Reborn"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        NSURL *url = [NSURL URLWithString:kApolloRebornFeatureRequestsURL];
-        if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
-            ApolloPresentWebURLFromViewController(aboutVC, url);
-        }
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Apollo (Archived)"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        sApolloAboutFeatureRequestsBypass = YES;
-        @try {
-            [(id)aboutVC tableView:tableView didSelectRowAtIndexPath:indexPath];
-        } @catch (NSException *e) {
-            ApolloLog(@"[FeatureRequests] archived tap threw: %@", e);
-        }
-        sApolloAboutFeatureRequestsBypass = NO;
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    // iPad: anchor the sheet to the tapped row.
-    UIPopoverPresentationController *pop = sheet.popoverPresentationController;
-    if (pop) {
-        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-        pop.sourceView = cell ?: tableView;
-        pop.sourceRect = cell ? cell.bounds : CGRectMake(CGRectGetMidX(tableView.bounds), CGRectGetMidY(tableView.bounds), 0, 0);
-    }
-    [aboutVC presentViewController:sheet animated:YES completion:nil];
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    ApolloSettingsPresentPickerWithDetails(aboutVC, cell ?: tableView, @"Feature Requests",
+        @"Apollo Reborn has its own board for suggesting and voting on ideas. Apollo's original board is archived and no longer monitored.",
+        @[@"Apollo Reborn", @"Apollo (Archived)"], nil, -1, ^(NSInteger index) {
+            if (index == 0) {
+                NSURL *url = [NSURL URLWithString:kApolloRebornFeatureRequestsURL];
+                if (!ApolloRouteResolvedURLViaApolloScheme(url)) {
+                    ApolloPresentWebURLFromViewController(aboutVC, url);
+                }
+                return;
+            }
+            sApolloAboutFeatureRequestsBypass = YES;
+            @try {
+                [(id)aboutVC tableView:tableView didSelectRowAtIndexPath:indexPath];
+            } @catch (NSException *e) {
+                ApolloLog(@"[FeatureRequests] archived tap threw: %@", e);
+            }
+            sApolloAboutFeatureRequestsBypass = NO;
+        }, nil);
 }
 
 %hook SettingsAboutViewController

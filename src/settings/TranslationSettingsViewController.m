@@ -1,4 +1,5 @@
 #import "settings/TranslationSettingsViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 
 #import "ApolloTranslation.h"
 #import "ApolloState.h"
@@ -547,50 +548,34 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *ApolloTranslationLanguag
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil
                                                                    message:[NSString stringWithFormat:@"Remove %@ from Don't Translate?", name]
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Remove" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction(@"Remove", UIAlertActionStyleDestructive, ^(__unused UIAlertAction *a) {
         [self removeSkipLanguageCode:code];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
+    if (popover) {
+        popover.sourceView = sourceView ?: self.view;
+        popover.sourceRect = (sourceView ?: self.view).bounds;
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
-// Not an ApolloSettingsPresentPicker candidate: this sheet carries a message,
-// has no current selection, and shows a placeholder action when every
-// language is already added.
 - (void)presentSkipLanguageSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Don't Translate"
-                                                                   message:@"Pick a language to leave untranslated."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
     NSArray<NSString *> *current = [self skipLanguageCodes];
-    NSUInteger added = 0;
+    NSMutableArray<NSString *> *codes = [NSMutableArray array];
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
     for (NSDictionary<NSString *, NSString *> *option in ApolloTranslationLanguageOptions()) {
         NSString *code = option[@"code"];
-        if (code.length == 0) continue;            // skip "Device Default"
-        if ([current containsObject:code]) continue; // already added
-        NSString *name = option[@"name"];
-        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [self addSkipLanguageCode:code];
-        }]];
-        added++;
+        if (code.length == 0 || [current containsObject:code]) continue;
+        [codes addObject:code];
+        [titles addObject:option[@"name"]];
     }
-    if (added == 0) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"All available languages already added"
-                                                  style:UIAlertActionStyleDefault handler:nil]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    if (titles.count == 0) [titles addObject:@"All available languages already added"];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Don't Translate",
+        @"Pick a language to leave untranslated.", titles, nil, -1, ^(NSInteger index) {
+            if ((NSUInteger)index < codes.count) [weakSelf addSkipLanguageCode:codes[(NSUInteger)index]];
+        }, nil);
 }
 
 #pragma mark - Translation mode

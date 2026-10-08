@@ -10,6 +10,7 @@
 //
 
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloGiphyClient.h"
 #import "ApolloImageChestResolver.h"
 #import "ApolloInlineImageMetadata.h"
@@ -2225,27 +2226,26 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
     __weak ApolloImageChestAlbumViewController *weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Save Image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Save Image", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
         [weakSelf apollo_saveImagesAtIndexes:@[@(page)]];
-    }]];
+    })];
     if (self.items.count > 1) {
         NSMutableArray<NSNumber *> *all = [NSMutableArray array];
         for (NSUInteger i = 0; i < self.items.count; i++) [all addObject:@(i)];
-        [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Save All %lu Images", (unsigned long)self.items.count]
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction([NSString stringWithFormat:@"Save All %lu Images", (unsigned long)self.items.count],
+                                        UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_saveImagesAtIndexes:all];
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:self.items.count > 1 ? @"Share Image" : @"Share" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(self.items.count > 1 ? @"Share Image" : @"Share", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
         [weakSelf apollo_shareImageAtIndex:page fromView:sourceView];
-    }]];
+    })];
     if (self.albumURL && self.items.count > 1) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share Album Link" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(@"Share Album Link", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_shareAlbumLinkFromView:sourceView];
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
 
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
     if (popover) {
@@ -2253,7 +2253,7 @@ static UIImage *ApolloAlbumCreateDisplayImage(NSURL *fileURL, NSUInteger maximum
         popover.sourceRect = sourceView && sourceView != self.view ? sourceView.bounds
                                                                    : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)apollo_saveImagesAtIndexes:(NSArray<NSNumber *> *)indexes {

@@ -4,6 +4,7 @@
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloGalleryVideoExport.h"
 
 #import <Photos/Photos.h>
@@ -1772,7 +1773,8 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 - (void)apollo_holdStayedStillForGeneration:(NSUInteger)generation {
     // A newer hold, or this one already lifted, was cancelled, or became a scrub.
     if (generation != self.gestureScrubHoldGeneration) return;
-    if (!self.gestureScrubArmed || self.gestureScrubActive || self.presentedViewController) return;
+    if (!self.gestureScrubArmed || self.gestureScrubActive || self.presentedViewController ||
+        ApolloActionMenuIsPresented(self)) return;
     // Disarm before presenting: the rest of this touch belongs to the sheet,
     // so a drag now can't start scrubbing and the lift can't open a second one.
     self.gestureScrubArmed = NO;
@@ -1881,11 +1883,10 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
         return fabs(velocity.x) > fabs(velocity.y);
     }
     if (gestureRecognizer != self.dismissPan) return YES;
-    // A hold that opened the actions sheet keeps its touch, and that drag must
-    // not start closing the viewer under the sheet: the flick's dismiss would
-    // take down the sheet (our presented child) instead of the viewer, leaving
-    // it black with isDismissing stuck and Done dead.
-    if (self.presentedViewController) return NO;
+    // A hold that opened the actions menu keeps its touch. Do not let its drag
+    // dismiss the viewer underneath either presentation; native menus have no
+    // presented child, so their ownership must be checked separately.
+    if (self.presentedViewController || ApolloActionMenuIsPresented(self)) return NO;
     // A zoomed-in page pans its own content instead.
     if ([self apollo_currentCell].isZoomed) return NO;
     // A hold-scrub in progress owns the drag; a stray vertical drift must not
@@ -2114,33 +2115,33 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     __weak typeof(self) weakSelf = self;
     if (item.playsAsVideo) {
         if (item.videoDownloadURL) {
-            [sheet addAction:[UIAlertAction actionWithTitle:@"Save Video" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [sheet addAction:ApolloMenuAction(@"Save Video", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
                 [weakSelf apollo_saveCurrentVideo];
-            }]];
+            })];
         }
         NSURL *shareURL = item.videoURL ?: item.hostedVideoPageURL;
         if (shareURL) {
-            [sheet addAction:[UIAlertAction actionWithTitle:@"Share Video Link" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [sheet addAction:ApolloMenuAction(@"Share Video Link", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
                 [weakSelf apollo_presentActivityWithItems:@[shareURL] fromView:sourceView];
-            }]];
+            })];
         }
     } else {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Save Image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(@"Save Image", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_saveCurrentImage];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share Image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        })];
+        [sheet addAction:ApolloMenuAction(@"Share Image", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_shareCurrentImageFromView:sourceView];
-        }]];
+        })];
     }
     if (item.postURL) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share Post Link" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [sheet addAction:ApolloMenuAction(@"Share Post Link", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_sharePostLinkFromView:sourceView];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Open Post" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        })];
+        [sheet addAction:ApolloMenuAction(@"Open Post", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
             [weakSelf apollo_openCurrentPost];
-        }]];
+        })];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
 
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
     if (popover) {
@@ -2149,7 +2150,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
             ? sourceView.bounds
             : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1.0, 1.0);
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 // Original bytes when we still have them (a GIF stays animated), otherwise a

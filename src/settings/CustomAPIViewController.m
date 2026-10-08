@@ -1,6 +1,7 @@
 #import "ApolloProfilePicturesPreview.h"
 #import "ApolloSettingsShortcutsViewController.h"
 #import "settings/CustomAPIViewController.h"
+#import "../ApolloActionMenuPresenter.h"
 #import "settings/ApolloSiriSettingsViewController.h"
 #import "ApolloCommon.h"
 #import "ApolloAppIcon.h"
@@ -818,39 +819,20 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)presentImageUploadProviderSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Media Upload Host"
-                                                                   message:@"Where to upload media attached to posts and comments."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSString *imgurTitle = (sImageUploadProvider == ImageUploadProviderImgur) ? @"Imgur ✓" : @"Imgur";
-    NSString *redditTitle = (sImageUploadProvider == ImageUploadProviderReddit) ? @"Reddit ✓" : @"Reddit";
-    NSString *imgChestTitle = (sImageUploadProvider == ImageUploadProviderImgChest) ? @"Image Chest ✓" : @"Image Chest";
-
-    [sheet addAction:[UIAlertAction actionWithTitle:imgurTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self setImageUploadProvider:ImageUploadProviderImgur];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:redditTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self setImageUploadProvider:ImageUploadProviderReddit];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:imgChestTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        // Uploading requires an API token (free at imgchest.com); without one
-        // there is nothing to authenticate the POST with.
-        if (sImageChestAPIToken.length == 0) {
-            [self showAlertWithTitle:@"Image Chest API Key Required"
-                             message:@"Add your Image Chest API key under Apollo Reborn → Accounts & API Keys first, then select Image Chest as the upload host."];
-            return;
-        }
-        [self setImageUploadProvider:ImageUploadProviderImgChest];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-
-    [self presentViewController:sheet animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Media Upload Host",
+        @"Where to upload media attached to posts and comments.",
+        @[@"Imgur", @"Reddit", @"Image Chest"], nil, sImageUploadProvider,
+        ^(NSInteger pickedIndex) {
+            // Uploading requires an API token (free at imgchest.com); without one
+            // there is nothing to authenticate the POST with.
+            if (pickedIndex == ImageUploadProviderImgChest && sImageChestAPIToken.length == 0) {
+                [weakSelf showAlertWithTitle:@"Image Chest API Key Required"
+                                    message:@"Add your Image Chest API key under Apollo Reborn → Accounts & API Keys first, then select Image Chest as the upload host."];
+                return;
+            }
+            [weakSelf setImageUploadProvider:pickedIndex];
+        }, nil);
 }
 
 - (NSString *)commentLinkHostText {
@@ -879,45 +861,26 @@ typedef NS_ENUM(NSInteger, Tag) {
 }
 
 - (void)presentCommentLinkHostSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Comment Link Host"
-                                                                   message:@"Images added to a comment or reply upload to this host and are inserted as a plain link instead of a native Reddit image — so they still work in subreddits that don't allow images or GIFs in comments. Apollo shows the linked image inline; other apps and the website show a tappable link. Posts keep using the Media Upload Host.\n\nTo use this host only where it's needed, turn on Prefer Native Images: comment images then upload to Reddit and display inline wherever the subreddit allows them."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSString *offTitle = (sCommentLinkHost == CommentLinkHostOff) ? @"Off ✓" : @"Off";
-    NSString *imgurTitle = (sCommentLinkHost == CommentLinkHostImgur) ? @"Imgur ✓" : @"Imgur";
-    NSString *imgChestTitle = (sCommentLinkHost == CommentLinkHostImgChest) ? @"Image Chest ✓" : @"Image Chest";
-
-    [sheet addAction:[UIAlertAction actionWithTitle:offTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self setCommentLinkHost:CommentLinkHostOff];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:imgurTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        // Uploads are signed with the Imgur client id at the request chokepoint;
-        // keyless ones just 401 — refuse the host rather than fail silently later.
-        if (sImgurClientId.length == 0) {
-            [self showAlertWithTitle:@"Imgur API Key Required"
-                             message:@"Add your Imgur API key under Apollo Reborn → Accounts & API Keys first, then select Imgur as the comment link host."];
-            return;
-        }
-        [self setCommentLinkHost:CommentLinkHostImgur];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:imgChestTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        // Same gate as the Media Upload Host picker: uploading needs an API token.
-        if (sImageChestAPIToken.length == 0) {
-            [self showAlertWithTitle:@"Image Chest API Key Required"
-                             message:@"Add your Image Chest API key under Apollo Reborn → Accounts & API Keys first, then select Image Chest as the comment link host."];
-            return;
-        }
-        [self setCommentLinkHost:CommentLinkHostImgChest];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-
-    [self presentViewController:sheet animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Comment Link Host",
+        @"Images added to a comment or reply upload to this host and are inserted as a plain link instead of a native Reddit image — so they still work in subreddits that don't allow images or GIFs in comments. Apollo shows the linked image inline; other apps and the website show a tappable link. Posts keep using the Media Upload Host.\n\nTo use this host only where it's needed, turn on Prefer Native Images: comment images then upload to Reddit and display inline wherever the subreddit allows them.",
+        @[@"Off", @"Imgur", @"Image Chest"], nil, sCommentLinkHost,
+        ^(NSInteger pickedIndex) {
+            // Uploads are signed with the Imgur client id at the request chokepoint;
+            // keyless ones just 401 — refuse the host rather than fail silently later.
+            if (pickedIndex == CommentLinkHostImgur && sImgurClientId.length == 0) {
+                [weakSelf showAlertWithTitle:@"Imgur API Key Required"
+                                    message:@"Add your Imgur API key under Apollo Reborn → Accounts & API Keys first, then select Imgur as the comment link host."];
+                return;
+            }
+            // Same gate as the Media Upload Host picker: uploading needs an API token.
+            if (pickedIndex == CommentLinkHostImgChest && sImageChestAPIToken.length == 0) {
+                [weakSelf showAlertWithTitle:@"Image Chest API Key Required"
+                                    message:@"Add your Image Chest API key under Apollo Reborn → Accounts & API Keys first, then select Image Chest as the comment link host."];
+                return;
+            }
+            [weakSelf setCommentLinkHost:pickedIndex];
+        }, nil);
 }
 
 - (NSString *)linkPreviewModeTextForMode:(NSInteger)mode {
@@ -1687,15 +1650,14 @@ typedef NS_ENUM(NSInteger, Tag) {
         alertControllerWithTitle:[NSString stringWithFormat:@"u/%@ is signed in", username]
                          message:@"Sign in again only if web-session features (polls, vote breakdowns) have stopped working."
                   preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Sign In Again" style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *action) {
+    [sheet addAction:ApolloMenuAction(@"Sign In Again", UIAlertActionStyleDefault, ^(UIAlertAction *action) {
         [self startWebSignInForUsername:username];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    })];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UITableViewCell *cell = [self cellForRowID:@"api.webSignIn"];
     sheet.popoverPresentationController.sourceView = cell ?: self.view;
     sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 - (void)startWebSignInForUsername:(NSString *)username {
@@ -3926,23 +3888,13 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
         return;
     }
     __weak typeof(self) weakSelf = self;
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:@"Widget Setup Code"
-                         message:@"Include your account so widgets can show Home and your private multireddits."
-                  preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy with Account" style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf copyWidgetSetupCodeWithAccount:account];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Copy without Account" style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        [weakSelf copyWidgetSetupCodeWithAccount:nil];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     UITableViewCell *cell = [self cellForRowID:@"api.widgetSetupCode"];
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloSettingsPresentPickerWithDetails(self, cell ?: self.view, @"Widget Setup Code",
+        @"Include your account so widgets can show Home and your private multireddits.",
+        @[@"Copy with Account", @"Copy without Account"], nil, -1,
+        ^(NSInteger pickedIndex) {
+            [weakSelf copyWidgetSetupCodeWithAccount:(pickedIndex == 0 ? account : nil)];
+        }, nil);
 }
 
 - (void)copyWidgetSetupCodeWithAccount:(NSDictionary *)account {
@@ -4084,52 +4036,44 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
                          message:@"Dev-only fault injection. This simulates the broken-keychain read on THIS device to exercise the fix — a pass here is a regression check, not field confirmation. \"Disable recovery\" + \"force read-miss\" will actually sign you out (reproduces the bug)."
                   preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:(forceMiss ? @"✓ Force account read-miss (ON)" : @"Force account read-miss (off)")
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction((forceMiss ? @"✓ Force account read-miss (ON)" : @"Force account read-miss (off)"),
+        UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [defaults setBool:!forceMiss forKey:UDKeyDebugForceAccountReadMiss];
         [weakSelf reloadRowWithID:@"adv.loginPersistenceDebug"];
-    }]];
+    })];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:(noRecover ? @"✓ Disable recovery — watch the wipe (ON)" : @"Disable recovery — watch the wipe (off)")
-                                              style:(noRecover ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault)
-                                            handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction((noRecover ? @"✓ Disable recovery — watch the wipe (ON)" : @"Disable recovery — watch the wipe (off)"),
+        (noRecover ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault), ^(UIAlertAction *a) {
         [defaults setBool:!noRecover forKey:UDKeyDebugDisableKeychainRecovery];
         [weakSelf reloadRowWithID:@"adv.loginPersistenceDebug"];
-    }]];
+    })];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Dump account keychain report"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction(@"Dump account keychain report", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
         [weakSelf presentLoginPersistenceDebugResult:ApolloDebugAccountKeychainReport() title:@"Account keychain report"];
-    }]];
+    })];
 
     // Rewrites the account item's protection class to WhenUnlocked, keeping the blob byte-for-byte
     // so the OAuth token stays valid. Toggles: run it once to poison, again to restore.
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Poison account protection class (real -25300)"
-                                              style:UIAlertActionStyleDestructive
-                                            handler:^(UIAlertAction *a) {
+    [sheet addAction:ApolloMenuAction(@"Poison account protection class (real -25300)", UIAlertActionStyleDestructive, ^(UIAlertAction *a) {
         [weakSelf presentLoginPersistenceDebugResult:ApolloDebugPoisonAccountAccessibility() title:@"Poison protection class"];
-    }]];
+    })];
 
     if (forceMiss || noRecover) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Clear all fault flags"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *a) {
+        [sheet addAction:ApolloMenuAction(@"Clear all fault flags", UIAlertActionStyleDefault, ^(UIAlertAction *a) {
             [defaults setBool:NO forKey:UDKeyDebugForceAccountReadMiss];
             [defaults setBool:NO forKey:UDKeyDebugDisableKeychainRecovery];
             [weakSelf reloadRowWithID:@"adv.loginPersistenceDebug"];
-        }]];
+        })];
     }
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
 
     UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
+    if (popover) {
+        popover.sourceView = sourceView ?: self.view;
+        popover.sourceRect = (sourceView ?: self.view).bounds;
     }
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloPresentActionMenu(self, sheet);
 }
 
 #pragma mark - Troubleshooting VC
@@ -4856,28 +4800,19 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 
 - (void)presentVideoHoldSpeedSheetFromSourceView:(UIView *)sourceView {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Hold Speed"
-                                                                   message:@"Speed applied while you hold the right side of a fullscreen video."
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    NSInteger currentIndex = -1;
     for (size_t i = 0; i < sizeof(kVideoHoldSpeeds) / sizeof(kVideoHoldSpeeds[0]); i++) {
         float speed = kVideoHoldSpeeds[i];
-        BOOL isCurrent = fabsf(sVideoHoldSpeed - speed) < 0.001f;
-        NSString *title = isCurrent ? [ApolloVideoHoldSpeedTitle(speed) stringByAppendingString:@" ✓"]
-                                    : ApolloVideoHoldSpeedTitle(speed);
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            [self setVideoHoldSpeed:speed];
-        }]];
+        [titles addObject:ApolloVideoHoldSpeedTitle(speed)];
+        if (fabsf(sVideoHoldSpeed - speed) < 0.001f) currentIndex = (NSInteger)i;
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover && sourceView) {
-        popover.sourceView = sourceView;
-        popover.sourceRect = sourceView.bounds;
-    }
-
-    [self presentViewController:sheet animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    ApolloSettingsPresentPickerWithDetails(self, sourceView, @"Hold Speed",
+        @"Speed applied while you hold the right side of a fullscreen video.",
+        titles, nil, currentIndex, ^(NSInteger pickedIndex) {
+            [weakSelf setVideoHoldSpeed:kVideoHoldSpeeds[pickedIndex]];
+        }, nil);
 }
 
 - (void)promptClearCustomSubredditBannersFromSourceView:(__unused UIView *)sourceView {
@@ -4915,27 +4850,20 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 - (void)restoreSettings {
     if (self.resolvingRestoreFolder || self.presentedViewController) return;
     __weak typeof(self) weakSelf = self;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Restore Settings"
-        message:@"Choose where the backup is stored."
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Local Backup"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            ApolloLocalBackupsViewController *controller =
-                [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-            [weakSelf.navigationController pushViewController:controller animated:YES];
-        }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cloud Backup"
-        style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf presentRestorePickerAtDirectory:nil];
-            });
-        }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     UITableViewCell *source = [self cellForRowID:@"data.restore"];
-    sheet.popoverPresentationController.sourceView = source ?: self.view;
-    sheet.popoverPresentationController.sourceRect = source ? source.bounds
-        : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    ApolloSettingsPresentPickerWithDetails(self, source, @"Restore Settings",
+        @"Choose where the backup is stored.",
+        @[@"Local Backup", @"Cloud Backup"], nil, -1, ^(NSInteger pickedIndex) {
+            if (pickedIndex == 0) {
+                ApolloLocalBackupsViewController *controller =
+                    [[ApolloLocalBackupsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+                [weakSelf.navigationController pushViewController:controller animated:YES];
+            } else {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf presentRestorePickerAtDirectory:nil];
+                });
+            }
+        }, nil);
 }
 
 - (void)presentRestorePickerAtDirectory:(NSURL *)folderURL {

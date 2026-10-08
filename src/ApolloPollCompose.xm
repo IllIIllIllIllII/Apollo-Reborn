@@ -10,6 +10,7 @@
 // session ApolloPollVoting.xm votes with; OAuth accounts harvest one on first
 // use via the existing login flow).
 #import "ApolloCommon.h"
+#import "ApolloActionMenuPresenter.h"
 #import "ApolloAccountCredentials.h"
 #import "ApolloWebSessionLoginViewController.h"
 #import "ApolloWebSessionStore.h"
@@ -478,24 +479,24 @@ UIMenu *ApolloSubmitPostTypesMenu(__unused id actionController, void (^selectRow
     UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"Post Flair"
         message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [picker addAction:[UIAlertAction actionWithTitle:@"None" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [picker addAction:ApolloMenuAction(@"None", UIAlertActionStyleDefault, ^(__unused UIAlertAction *action) {
         weakSelf.selectedFlairOption = nil;
         [weakSelf.tableView reloadSections:[NSIndexSet indexSetWithIndex:2] withRowAnimation:UITableViewRowAnimationNone];
-    }]];
+    })];
     for (NSDictionary *option in self.flairOptions) {
         NSString *title = ApolloPollComposeFlairTitle(option);
-        [picker addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [picker addAction:ApolloMenuAction(title, UIAlertActionStyleDefault, ^(__unused UIAlertAction *action) {
             weakSelf.selectedFlairOption = option;
             [weakSelf.tableView reloadSections:[NSIndexSet indexSetWithIndex:2] withRowAnimation:UITableViewRowAnimationNone];
-        }]];
+        })];
     }
-    [picker addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [picker addAction:ApolloMenuAction(@"Cancel", UIAlertActionStyleCancel, nil)];
     UIPopoverPresentationController *popover = picker.popoverPresentationController;
     if (popover) {
         popover.sourceView = cell ?: self.view;
         popover.sourceRect = cell ? cell.bounds : self.view.bounds;
     }
-    [self presentViewController:picker animated:YES completion:nil];
+    ApolloPresentActionMenu(self, picker);
 }
 
 - (void)textFieldChanged:(UITextField *)field {
