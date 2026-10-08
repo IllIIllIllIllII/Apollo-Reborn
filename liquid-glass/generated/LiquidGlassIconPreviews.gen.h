@@ -107,6 +107,8 @@ static const LGIconRowEntry kLGGroupEntries_concepts[] = {
     { "toon-bot", "Toon Bot", "IllIIllIllIllII", -1 },
     { "toon-bot-2", "Happy Toon Bot", "IllIIllIllIllII", -1 },
     { "jryng-red", "Red", "jryng", -1 },
+    { "test1", "test1", "IllIIllIllIllII", -1 },
+    { "test2", "test2", "IllIIllIllIllII", -1 },
 };
 
 static const char *const kLGGroupCover_original[] = {
@@ -137,7 +139,7 @@ static const LGIconGroupDef kLGIconGroups[] = {
     { "original", "Apollo", "The original Apollo icon in Liquid Glass, crafted by the community.", kLGGroupEntries_original, 10, kLGGroupCover_original, 3 },
     { "classics", "Classics", "Dozens of colorful variants and one-off designs from the original Apollo app, recreated in Liquid Glass.", kLGGroupEntries_classics, 46, kLGGroupCover_classics, 3 },
     { "helios", "Helios", "Icons inspired by the Hyper Suit 4000 icon from Apollo, and the Modern icons by paulo1manso.", kLGGroupEntries_helios, 11, kLGGroupCover_helios, 3 },
-    { "concepts", "Concepts", "A mix of standalone icon concepts, including small thematic sets too short for their own pack.", kLGGroupEntries_concepts, 11, kLGGroupCover_concepts, 3 },
+    { "concepts", "Concepts", "A mix of standalone icon concepts, including small thematic sets too short for their own pack.", kLGGroupEntries_concepts, 13, kLGGroupCover_concepts, 3 },
 };
 
 static const LGIconRowEntry kLGStandardPackEntries_ultra[] = {
