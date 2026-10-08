@@ -169,19 +169,15 @@ static UIImage *ApolloAboutHeliosIcon(UITraitCollection *traits) {
     format.scale = traits.displayScale ?: UIScreen.mainScreen.scale;
     UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
         initWithSize:CGSizeMake(29.0, 29.0) format:format];
-    UIImageAsset *asset = [UIImageAsset new];
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:2];
     for (NSNumber *style in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
         UIImage *artwork = style.integerValue == UIUserInterfaceStyleDark ? darkArtwork : lightArtwork;
         UIImage *image = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
             [artwork drawInRect:CGRectMake(0, 0, 29.0, 29.0)];
         }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
-        UITraitCollection *variant = [UITraitCollection traitCollectionWithTraitsFromCollections:@[
-            [UITraitCollection traitCollectionWithUserInterfaceStyle:style.integerValue],
-            [UITraitCollection traitCollectionWithDisplayScale:image.scale]
-        ]];
-        [asset registerImage:image withTraitCollection:variant];
+        [images addObject:image];
     }
-    return [asset imageWithTraitCollection:traits];
+    return ApolloSettingsIconImage(images[0], images[1], traits);
 }
 
 static UIImage *ApolloGitHubSettingsArtwork(UIImage *artwork, UIImage *darkArtwork,

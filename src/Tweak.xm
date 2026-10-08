@@ -3740,6 +3740,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
+                                    UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceSystem),
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -4047,6 +4048,9 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
+    NSInteger settingsIconAppearance = [standardDefaults integerForKey:UDKeySettingsIconAppearance];
+    sSettingsIconAppearance = settingsIconAppearance >= ApolloSettingsIconAppearanceSystem && settingsIconAppearance <= ApolloSettingsIconAppearanceDark
+        ? (ApolloSettingsIconAppearance)settingsIconAppearance : ApolloSettingsIconAppearanceSystem;
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];

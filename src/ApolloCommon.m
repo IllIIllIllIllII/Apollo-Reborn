@@ -1,6 +1,7 @@
 #import "ApolloCommon.h"
 #import "ApolloExecutableSDK.h"
 #import "ApolloState.h"
+#import "UserDefaultConstants.h"
 #import "ApolloThemeRuntime.h"
 #import <QuartzCore/QuartzCore.h>
 #import <mach-o/dyld.h>
@@ -932,13 +933,102 @@ NSString *ApolloWebsiteNameFromHost(NSString *host) {
 }
 
 // Register both appearances so visible image views follow trait changes.
+static NSMapTable<UIImageAsset *, NSArray<UIImage *> *> *ApolloSettingsIconAssets(void) {
+    static NSMapTable *assets;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ assets = [NSMapTable weakToStrongObjectsMapTable]; });
+    return assets;
+}
+
+static void ApolloRegisterSettingsIconVariants(UIImageAsset *asset, NSArray<UIImage *> *images) {
+    for (NSNumber *style in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
+        BOOL dark = sSettingsIconAppearance == ApolloSettingsIconAppearanceDark ||
+            (sSettingsIconAppearance == ApolloSettingsIconAppearanceSystem && style.integerValue == UIUserInterfaceStyleDark);
+        UIImage *source = images[dark ? 1 : 0];
+        // Keep the stored originals independent of UIKit's asset-owned wrappers.
+        UIImage *image = [[UIImage imageWithCGImage:source.CGImage scale:source.scale orientation:source.imageOrientation]
+                          imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+        [asset registerImage:image withTraitCollection:[UITraitCollection traitCollectionWithTraitsFromCollections:@[
+            [UITraitCollection traitCollectionWithUserInterfaceStyle:style.integerValue],
+            [UITraitCollection traitCollectionWithDisplayScale:source.scale]
+        ]]];
+    }
+}
+
+UIImage *ApolloSettingsIconImage(UIImage *lightImage, UIImage *darkImage, UITraitCollection *traits) {
+    if (!lightImage.CGImage || !darkImage.CGImage) return lightImage;
+    UIImageAsset *asset = [UIImageAsset new];
+    NSArray *images = @[lightImage, darkImage];
+    [ApolloSettingsIconAssets() setObject:images forKey:asset];
+    ApolloRegisterSettingsIconVariants(asset, images);
+    return [asset imageWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection];
+}
+
+UIImage *ApolloResolveSettingsIconImage(UIImage *image, UITraitCollection *traits) {
+    UIImageAsset *asset = image.imageAsset;
+    return asset && [ApolloSettingsIconAssets() objectForKey:asset]
+        ? [asset imageWithTraitCollection:traits ?: UITraitCollection.currentTraitCollection] : image;
+}
+
+static void ApolloRefreshSettingsIconViews(UIView *view) {
+    if ([view isKindOfClass:UIImageView.class]) {
+        UIImageView *imageView = (UIImageView *)view;
+        UIImageAsset *asset = imageView.image.imageAsset;
+        if (asset && [ApolloSettingsIconAssets() objectForKey:asset]) {
+            imageView.image = [asset imageWithTraitCollection:imageView.traitCollection];
+        }
+    }
+    for (UIView *subview in view.subviews) ApolloRefreshSettingsIconViews(subview);
+}
+
+UIImage *ApolloResizeSettingsIconImage(UIImage *image, CGFloat size, UITraitCollection *traits) {
+    if (!image || size <= 0) return image;
+    traits = traits ?: UITraitCollection.currentTraitCollection;
+    NSArray<UIImage *> *variants = image.imageAsset ? [ApolloSettingsIconAssets() objectForKey:image.imageAsset] : nil;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = traits.displayScale ?: UIScreen.mainScreen.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    NSMutableArray<UIImage *> *resized = [NSMutableArray array];
+    for (UIImage *source in variants ?: @[image]) {
+        [resized addObject:[[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+            [source drawInRect:CGRectMake(0, 0, size, size)];
+        }] imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]];
+    }
+    return variants ? ApolloSettingsIconImage(resized[0], resized[1], traits) : resized[0];
+}
+
+static void ApolloRefreshSettingsIconControllers(UIViewController *controller) {
+    ApolloRefreshSettingsIconViews(controller.viewIfLoaded);
+    for (UIViewController *child in controller.childViewControllers) ApolloRefreshSettingsIconControllers(child);
+    if (controller.presentedViewController) ApolloRefreshSettingsIconControllers(controller.presentedViewController);
+}
+
+void ApolloSetSettingsIconAppearance(NSInteger appearance) {
+    if (appearance < ApolloSettingsIconAppearanceSystem || appearance > ApolloSettingsIconAppearanceDark) {
+        appearance = ApolloSettingsIconAppearanceSystem;
+    }
+    if (sSettingsIconAppearance == appearance) return;
+    sSettingsIconAppearance = (ApolloSettingsIconAppearance)appearance;
+    [[NSUserDefaults standardUserDefaults] setInteger:appearance forKey:UDKeySettingsIconAppearance];
+    NSMapTable *assets = ApolloSettingsIconAssets();
+    for (UIImageAsset *asset in assets.keyEnumerator.allObjects) {
+        ApolloRegisterSettingsIconVariants(asset, [assets objectForKey:asset]);
+    }
+    // Include loaded screens behind Appearance so popping back needs no table reload.
+    for (UIWindow *window in ApolloAllWindows()) {
+        ApolloRefreshSettingsIconViews(window);
+        ApolloRefreshSettingsIconControllers(window.rootViewController);
+    }
+    ApolloLog(@"[Settings] icon appearance -> %ld", (long)appearance);
+}
+
 UIImage *ApolloSettingsTileImage(UIColor *color, CGFloat size, UITraitCollection *traits,
                                        void (^drawContent)(BOOL dark, UIColor *resolvedColor)) {
     if (size <= 0) size = 29.0;
     traits = traits ?: UITraitCollection.currentTraitCollection;
     color = color ?: UIColor.secondarySystemFillColor;
     CGFloat cornerRadius = 6.0 * size / 29.0;
-    UIImageAsset *asset = [UIImageAsset new];
+    NSMutableArray<UIImage *> *images = [NSMutableArray arrayWithCapacity:2];
     for (NSNumber *styleValue in @[@(UIUserInterfaceStyleLight), @(UIUserInterfaceStyleDark)]) {
         UIUserInterfaceStyle style = (UIUserInterfaceStyle)styleValue.integerValue;
         UITraitCollection *appearance = [UITraitCollection traitCollectionWithUserInterfaceStyle:style];
@@ -989,11 +1079,9 @@ UIImage *ApolloSettingsTileImage(UIColor *color, CGFloat size, UITraitCollection
             }
             drawContent(dark, resolvedColor);
         }];
-        [asset registerImage:[image imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal]
-        withTraitCollection:[UITraitCollection traitCollectionWithTraitsFromCollections:@[
-            appearance, [UITraitCollection traitCollectionWithDisplayScale:format.scale]]]];
+        [images addObject:image];
     }
-    return [asset imageWithTraitCollection:traits];
+    return ApolloSettingsIconImage(images[0], images[1], traits);
 }
 
 UIImage *ApolloEmojiSettingsIcon(NSString *emoji, UIColor *backgroundColor, CGFloat size) {

@@ -108,7 +108,7 @@ static UIImage *createSettingsIcon(NSString *sfSymbolName, UIColor *color, UITra
 // Use the current pet's transparent sprite, without its baked-in yellow circle.
 static UIImage *ApolloPixelPalsSettingsIcon(UIImage *artwork, UITraitCollection *traits) {
     static char sourceArtworkKey;
-    artwork = objc_getAssociatedObject(artwork, &sourceArtworkKey) ?: artwork;
+    artwork = objc_getAssociatedObject(artwork.imageAsset, &sourceArtworkKey) ?: artwork;
     if (!artwork.CGImage) return nil;
     static NSCache<UIImage *, UIImage *> *cache;
     static dispatch_once_t once;
@@ -173,7 +173,7 @@ static UIImage *ApolloPixelPalsSettingsIcon(UIImage *artwork, UITraitCollection 
         [pet drawInRect:(CGRect){ origin, size }];
     });
     // Preserve the source when native cell reuse hands our tile back to us.
-    objc_setAssociatedObject(tile, &sourceArtworkKey, artwork, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(tile.imageAsset, &sourceArtworkKey, artwork, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return tile;
 }
 
