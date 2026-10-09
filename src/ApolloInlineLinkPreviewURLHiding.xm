@@ -289,7 +289,9 @@ static void ApolloLPInstallURLHidingObserver(void) {
     ApolloLPRegisterURLHidingTextNode(self, attributedText, candidateURLs);
     if (rewritten != attributedText) {
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+        @try {
+            %orig(rewritten);
+        } @catch (__unused NSException *exception) {}
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLPLogURLHide(hiddenCount, self);
         return;
@@ -318,7 +320,9 @@ static void ApolloLPInstallURLHidingObserver(void) {
     ApolloLPRegisterURLHidingTextNode(self, attributedText, candidateURLs);
     if (rewritten != attributedText) {
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, (id)kCFBooleanTrue, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        @try { %orig(rewritten); } @catch (__unused NSException *exception) {}
+        @try {
+            %orig(rewritten);
+        } @catch (__unused NSException *exception) {}
         objc_setAssociatedObject(self, kApolloLPURLHidingReentrancyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ApolloLPLogURLHide(hiddenCount, self);
         return;
