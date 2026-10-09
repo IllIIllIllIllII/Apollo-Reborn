@@ -8,7 +8,6 @@ liquid-glass/
 ├── icons.json                 # single source of truth — icons, groups, and primary icon ID
 ├── icons/<id>/
 │   ├── <id>.icon/             # Icon Composer package, input to actool
-│   ├── <id>.appiconset/       # optional authored Default/Dark bitmap fallbacks
 │   ├── default.png            # in-app picker preview — light mode
 │   ├── dark.png               #                          dark mode
 │   ├── clear-light.png        #                          clear light
@@ -109,32 +108,6 @@ is not needed — the preview PNGs for existing icons are already in Assets.car.
    `generated/LiquidGlassIconPreviews.gen.h`, and updated
    `prebuilt/Assets.car`.
 
-### Count Helios bitmap fallbacks
-
-Count Helios additionally includes an authored `count-helios.appiconset` with
-opaque 1024×1024 Default and Dark PNGs. The rebuild includes these bitmap
-renditions alongside its live Icon Composer layers. This is a compatibility
-candidate for the reported blank Home Screen icon with Apollo set to System
-and iOS set to Dark; it still requires validation on the affected iOS 27.0.1
-device.
-
-When updating either Halloween icon, render Default/Dark with the iOS 27-era
-Icon Composer and Clear Light/Clear Dark with the iOS 26-era version:
-
-```bash
-python3 liquid-glass/scripts/generate_icon_previews.py \
-  --icons count-helios,witching-hour --variants default dark \
-  --ictool "$ICON_COMPOSER_27"
-python3 liquid-glass/scripts/generate_icon_previews.py \
-  --icons count-helios,witching-hour --variants clear-light clear-dark \
-  --ictool "$ICON_COMPOSER_26"
-```
-
-Set each variable to that version's full `Icon Composer.app/Contents/Executables/ictool`
-path. The Default/Dark invocation also regenerates Count Helios's 1024px
-fallbacks. Commit those PNGs together with the source, previews, and rebuilt
-catalog. The rebuild fails if an appiconset references a missing PNG.
-
 ## Rebuilding `prebuilt/Assets.car`
 
 The pre-built catalog is what `patch.sh --liquid-glass` injects into the
@@ -166,8 +139,8 @@ The script:
 3. Synthesises an `.xcassets` bundle preserving every original asset.
 4. Adds the 104×104 preview PNGs from each `icons/<id>/` directory as named
    imagesets (`lg-preview-{id}-{variant}`) so the in-app icon picker can load
-   them via `[UIImage imageNamed:]` directly from the catalog. Also includes
-   optional `<id>.appiconset` directories; these authored bitmap renditions
-   remain enabled while the compiler's generated fallbacks remain disabled.
+   them via `[UIImage imageNamed:]` directly from the catalog.
 5. Invokes `actool` with each `.icon` package listed in `icons.json` and
    writes the result to `liquid-glass/prebuilt/Assets.car`.
+6. Thins the catalog with `assetutil -i phone -p p3` (drops pad idiom, keeps
+   P3 tintable) since sideloaded IPAs bypass App Store thinning.
