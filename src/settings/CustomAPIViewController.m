@@ -2365,7 +2365,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 
     NSString *footer = @"Return Button restores your scroll position after a status bar tap.";
     if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@" Collapse Navigation Actions groups buttons under •••."];
+        footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
