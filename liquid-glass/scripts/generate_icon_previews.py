@@ -4,14 +4,18 @@
 For each icon registered in icons.json, finds <id>/<id>.icon and exports
 four variants (default, dark, clear-light, clear-dark) via ictool into
 icons/<id>/<variant>.png at 104×104 px (@2x for 52pt logical size).
+Icons with a sibling <id>.appiconset also receive opaque 1024px Default/Dark
+fallbacks when those appearances are selected.
 
 Usage:
     python3 scripts/generate_icon_previews.py [--icons <id1,id2,...>] [--size N]
 
     --icons  Comma-separated list of icon IDs to (re)generate.
              Omit to regenerate all icons in icons.json.
-    --size   Output size in logical points for both width and height
+    --size   Output size in pixels for both width and height
              (default: 104).
+    --variants  Space-separated appearances to export (default: all).
+    --ictool    Exact Icon Composer executable, for per-appearance toolchains.
 """
 from __future__ import annotations
 
@@ -78,7 +82,8 @@ PREVIEW_SIZE  = 104
 PREVIEW_SCALE = 1
 
 
-def export_variant(icon_file: str, rendition: str, out_path: str, size: int) -> bool:
+def export_variant(icon_file: str, rendition: str, out_path: str, size: int,
+                   opaque: bool = False) -> bool:
     legacy_cmd = [
         ICTOOL, icon_file,
         "--export-image",
@@ -108,26 +113,38 @@ def export_variant(icon_file: str, rendition: str, out_path: str, size: int) -> 
 
     # ictool may export 16-bit (rgba64be) PNGs; normalise to 8-bit so file
     # sizes are consistent with the other icons.
+    # App-icon bitmap renditions require opaque images. The layered icon still
+    # supplies the normal live rendition; these pixels are only its fallback.
+    convert_cmd = ["magick", out_path]
+    if opaque:
+        convert_cmd += ["-background", "black", "-alpha", "remove", "-alpha", "off"]
     convert = subprocess.run(
-        ["magick", out_path, "-depth", "8", out_path],
+        convert_cmd + ["-depth", "8", out_path],
         capture_output=True, text=True,
     )
     if convert.returncode != 0:
-        print(f"  WARNING: magick depth conversion failed for {out_path}", file=sys.stderr)
+        print(f"  ERROR: magick conversion failed for {out_path}", file=sys.stderr)
         if convert.stderr.strip():
             print(f"  stderr: {convert.stderr.strip()}", file=sys.stderr)
+        return False
 
     return True
 
 
 def main() -> int:
+    global ICTOOL
     parser = argparse.ArgumentParser()
     parser.add_argument("--icons", help="Comma-separated icon IDs to regenerate")
     parser.add_argument("--size", type=int, default=PREVIEW_SIZE,
                         help=f"Output pixel size for both width and height (default: {PREVIEW_SIZE}, declared @2x = 52pt logical)")
+    parser.add_argument("--variants", nargs="+", choices=VARIANTS,
+                        help="Only regenerate these appearances (default: all)")
+    parser.add_argument("--ictool", help="Use this exact Icon Composer executable")
     args = parser.parse_args()
 
     size = args.size
+    if args.ictool:
+        ICTOOL = args.ictool
 
     scripts_dir = os.path.dirname(os.path.abspath(__file__))
     lg_dir = os.path.abspath(os.path.join(scripts_dir, ".."))
@@ -166,6 +183,9 @@ def main() -> int:
         print(f"[{icon_id}] Exporting from {os.path.basename(icon_file)} ...")
         ok = True
         variants = {"default": VARIANTS["default"]} if entries_by_id[icon_id].get("standardPack") else VARIANTS
+        if args.variants:
+            variants = {stem: rendition for stem, rendition in variants.items()
+                        if stem in args.variants}
         for stem, rendition in variants.items():
             out_path = os.path.join(icon_dir, f"{stem}.png")
             success  = export_variant(icon_file, rendition, out_path, size)
@@ -175,8 +195,21 @@ def main() -> int:
                 ok = False
                 errors += 1
 
+            # An optional same-name appiconset opts an icon into authored
+            # Default/Dark bitmap fallbacks. Regenerate them with the matching
+            # preview so a later artwork update cannot leave them stale.
+            fallback_dir = os.path.join(icon_dir, f"{icon_id}.appiconset")
+            if stem in ("default", "dark") and os.path.isdir(fallback_dir):
+                fallback_path = os.path.join(fallback_dir, f"{stem}.png")
+                success = export_variant(icon_file, rendition, fallback_path, 1024,
+                                         opaque=True)
+                print(f"  {stem:<12} 1024px fallback → {'OK' if success else 'FAIL'}")
+                if not success:
+                    ok = False
+                    errors += 1
+
         if ok:
-            print(f"  All variants written to {icon_dir}")
+            print(f"  Selected variants written to {icon_dir}")
 
     if errors:
         print(f"\n{errors} error(s). Check stderr above.", file=sys.stderr)

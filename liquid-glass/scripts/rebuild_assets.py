@@ -387,7 +387,33 @@ def build_xcassets(symbol_variants, raster_groups):
     print(f"  Created {count} imagesets ({sym} symbol SVG, {pdf_count} vector PDF, {png_count} raster PNG)")
 
     write_preview_imagesets(XCASSETS_DIR)
+    write_fallback_appiconsets(XCASSETS_DIR)
     return count
+
+
+def write_fallback_appiconsets(xcassets_path):
+    """Preserve opted-in bitmap renditions alongside the matching live .icon.
+
+    Xcode 26.0.1's no-generated-fallback flag suppresses its synthesized
+    bitmaps, but retains explicitly authored appiconsets with the same name.
+    This lets an individual icon provide fallback artwork without enabling
+    generated fallback data for every icon in the pack.
+    """
+    with open(REGISTRY_PATH) as fp:
+        registry = json.load(fp)
+    for entry in registry.get("icons", []):
+        icon_id = entry["id"]
+        source = os.path.join(ICONS_ROOT, icon_id, f"{icon_id}.appiconset")
+        if not os.path.isdir(source):
+            continue
+        with open(os.path.join(source, "Contents.json")) as fp:
+            contents = json.load(fp)
+        for image in contents["images"]:
+            filename = os.path.join(source, image["filename"])
+            if not os.path.isfile(filename):
+                raise FileNotFoundError(f"Regenerate missing icon fallback: {filename}")
+        shutil.copytree(source, os.path.join(xcassets_path, f"{icon_id}.appiconset"))
+        print(f"  Added authored icon fallbacks for {icon_id}")
 
 
 # ---------------------------------------------------------------------------
