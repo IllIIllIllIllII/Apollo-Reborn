@@ -2122,8 +2122,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         return ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled();
     };
 
-    // Both behavior choices include idle re-expansion. A single picker keeps
-    // the gesture models mutually exclusive and explicit.
+    // A single picker keeps the gesture models mutually exclusive and explicit.
     ApolloSettingsRow *tabBarScrollBehavior =
         [ApolloSettingsRow customRowWithID:@"interface.tabBarScrollBehavior"
                                       cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
@@ -2173,12 +2172,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf tabBarSwipeNavigationSwitchToggled:sender]; }];
     tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
 
-    NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
-        : @"Hide the bars while scrolling.";
-    if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
-    }
+    NSString *footer = IsLiquidGlass()
+        ? @"Swipe across the tab bar to navigate between screens."
+        : nil;
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, inboxUnreadCount, inboxBadgeColor, hideUsernameTab,
@@ -4725,14 +4721,9 @@ replacementString:(NSString *)string {
     if (!ApolloSupportsNativeTabBarScrollBehavior() ||
         ![self apollo_nativeHideBarsOnScrollEnabled]) return;
 
-    // Idle re-expansion is shared by both selectable modes. Keep the legacy
-    // boolean enabled for existing preferences/backups; the classic flag now
-    // selects the gesture model presented by the single row.
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    BOOL behaviorChanged = ![defaults boolForKey:UDKeyAutoHideTabBarShowOnIdle] ||
-        sClassicTabBarScrollBehavior != classic;
+    BOOL behaviorChanged = sClassicTabBarScrollBehavior != classic;
     sClassicTabBarScrollBehavior = classic;
-    [defaults setBool:YES forKey:UDKeyAutoHideTabBarShowOnIdle];
     [defaults setBool:classic forKey:UDKeyClassicTabBarScrollBehavior];
     if (behaviorChanged) {
         [[NSNotificationCenter defaultCenter] postNotificationName:ApolloTabBarScrollBehaviorChangedNotification object:nil];
