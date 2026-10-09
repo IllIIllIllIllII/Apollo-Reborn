@@ -2174,10 +2174,10 @@ typedef NS_ENUM(NSInteger, Tag) {
     tabBarSwipeNavigation.visible = ^BOOL { return IsLiquidGlass(); };
 
     NSString *footer = ApolloSupportsNativeTabBarScrollBehavior()
-        ? @"Two-Gesture hides the tab bar after two downward gestures; Classic uses one. Both reappear after 30 seconds idle."
+        ? @"After the tab bar reappears, Two-Gesture hides it on the second downward gesture; Classic hides it on the first. Both re-expand after 30 seconds of inactivity."
         : @"Hide the bars while scrolling.";
     if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@"\n\nSwipe navigation replaces tab switching."];
+        footer = [footer stringByAppendingString:@"\n\nSwipe Tab Bar to Navigate disables the native drag-to-switch-tab gesture."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
