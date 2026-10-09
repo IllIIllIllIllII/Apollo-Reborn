@@ -2363,9 +2363,9 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
 
-    NSString *footer = @"Return Button restores your position after a status bar tap scrolls to the top.";
+    NSString *footer = @"Return Button restores your scroll position after a status bar tap.";
     if (IsLiquidGlass()) {
-        footer = [footer stringByAppendingString:@"\n\nLiquid Glass: collapse actions into •••, center titles between buttons, and choose the header edge style."];
+        footer = [footer stringByAppendingString:@" Collapse Navigation Actions groups buttons under •••."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
