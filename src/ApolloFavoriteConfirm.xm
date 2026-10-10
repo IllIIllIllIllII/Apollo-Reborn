@@ -204,7 +204,7 @@ void ApolloFavoriteConfirmRun(UIView *sourceView,
         // The native presenter has already finished dismissing before invoking
         // this callback; the original sheet is only its retained action model.
         if (!strongSheet.presentingViewController && !strongSheet.viewIfLoaded.window) {
-            ApolloFavoriteConfirmPerformAfterDismiss(strongHost, promptedName, providerCopy, performCopy);
+            ApolloFavoriteConfirmPerformAfterDismiss(strongHost, name, nameProvider, perform);
             return;
         }
         ApolloFavoriteConfirmWaitForDismissal(strongSheet, strongHost,

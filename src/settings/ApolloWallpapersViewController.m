@@ -157,7 +157,9 @@
             [deviceFeedback impactOccurred];
             NSArray<NSString *> *urls = index == 0 ? self.goodbyeIPhoneURLs
                 : index == 1 ? self.goodbyeIPadURLs : self.goodbyeMacURLs;
-            [self presentURLs:urls captions:self.goodbyeCaptions fromViewController:weakPresenter];
+            [self presentURLs:urls
+                     captions:(index == 2 ? self.goodbyeMacCaptions : self.goodbyeCaptions)
+           fromViewController:weakPresenter];
         });
 }
 
