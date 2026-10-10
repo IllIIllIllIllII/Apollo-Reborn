@@ -7,6 +7,8 @@ extern NSString * const ApolloSubredditInfoUpdatedNotification;
 extern NSString * const ApolloSubredditNameKey;
 
 FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount);
+// Returns YES when the one-time native icon-cache migration runs.
+FOUNDATION_EXPORT BOOL ApolloSubredditMigrateNativeIconCache(NSUserDefaults *defaults);
 
 @interface ApolloSubredditInfo : NSObject
 
@@ -17,6 +19,8 @@ FOUNDATION_EXPORT NSString *ApolloSubredditFormattedMemberCount(NSInteger subscr
 @property(nonatomic, strong) NSURL *bannerURL;
 @property(nonatomic) NSInteger subscriberCount;
 @property(nonatomic, strong) NSDate *fetchedAt;
+// Older versions require a refresh but remain usable offline.
+@property(nonatomic) NSInteger assetSelectionVersion;
 
 // Comment media permissions, derived from `allowed_media_in_comments` on the
 // subreddit's about.json. `commentMediaInfoAvailable` is NO for entries fetched

@@ -10,11 +10,24 @@ NSString * const ApolloSubredditInfoUpdatedNotification = @"ApolloSubredditInfoU
 NSString * const ApolloSubredditNameKey = @"subredditName";
 
 static NSTimeInterval const ApolloSubredditInfoCacheTTL = 7.0 * 24.0 * 60.0 * 60.0;
+static NSInteger const ApolloSubredditAssetSelectionVersion = 1;
 static NSUInteger const ApolloSubredditInfoDiskCacheMaxEntries = 800;
 // Cap stored about text: an empty public_description falls back to the full
 // sidebar markdown, and measuring/drawing thousands of chars makes scrolling
 // near the header laggy. We only ever show a few lines anyway.
 static NSUInteger const ApolloSubredditAboutTextMaxLength = 500;
+
+BOOL ApolloSubredditMigrateNativeIconCache(NSUserDefaults *defaults) {
+    NSString *versionKey = @"ApolloSubredditNativeIconCacheVersion";
+    if ([defaults integerForKey:versionKey] >= 1) return NO;
+
+    // Native list/feed icon URLs never expire. Clear them once to refetch;
+    // custom artwork and icon preferences are stored separately.
+    [defaults removeObjectForKey:@"SubredditIconData"];
+    [defaults setInteger:1 forKey:versionKey];
+    ApolloLog(@"[SubredditHeaders] refreshed native community icon cache policy");
+    return YES;
+}
 
 NSString *ApolloSubredditFormattedMemberCount(NSInteger subscriberCount) {
     if (subscriberCount < 0) return @"";
@@ -136,7 +149,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         _pendingForcedKeys = [NSMutableSet set];
 
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-        configuration.requestCachePolicy = NSURLRequestReturnCacheDataElseLoad;
+        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         configuration.timeoutIntervalForRequest = 15.0;
         configuration.HTTPMaximumConnectionsPerHost = 4;
         _session = [NSURLSession sessionWithConfiguration:configuration];
@@ -201,6 +214,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 }
 
 - (BOOL)isFreshInfo:(ApolloSubredditInfo *)info {
+    if (info.assetSelectionVersion != ApolloSubredditAssetSelectionVersion) return NO;
     if (!info.fetchedAt) return NO;
     return fabs([info.fetchedAt timeIntervalSinceNow]) < ApolloSubredditInfoCacheTTL;
 }
@@ -213,6 +227,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         @"iconURL": info.iconURL.absoluteString ?: @"",
         @"bannerURL": info.bannerURL.absoluteString ?: @"",
         @"fetchedAt": @([info.fetchedAt timeIntervalSince1970]),
+        @"assetSelectionVersion": @(info.assetSelectionVersion),
     } mutableCopy];
     if (info.subscriberCount >= 0) {
         dict[@"subscriberCount"] = @(info.subscriberCount);
@@ -263,6 +278,8 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
                                                     bannerURL:bannerURL
                                               subscriberCount:subscriberCount
                                                     fetchedAt:fetchedAt];
+    id assetVersion = dict[@"assetSelectionVersion"];
+    info.assetSelectionVersion = [assetVersion isKindOfClass:NSNumber.class] ? [assetVersion integerValue] : 0;
     info.commentMediaInfoAvailable = [dict[@"commentMediaInfoAvailable"] boolValue];
     info.allowsImageComments = [dict[@"allowsImageComments"] boolValue];
     info.allowsGifComments = [dict[@"allowsGifComments"] boolValue];
@@ -279,7 +296,11 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 - (void)pruneDiskInfoLocked {
     NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
     for (NSString *key in self.diskInfo) {
-        if (![self isFreshInfo:self.diskInfo[key]]) [staleKeys addObject:key];
+        // Keep entries awaiting migration so failed refreshes preserve their cached identity.
+        NSDate *fetchedAt = self.diskInfo[key].fetchedAt;
+        if (!fetchedAt || fabs([fetchedAt timeIntervalSinceNow]) >= ApolloSubredditInfoCacheTTL) {
+            [staleKeys addObject:key];
+        }
     }
     for (NSString *key in staleKeys) [self.diskInfo removeObjectForKey:key];
 
@@ -370,6 +391,8 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         : [NSString stringWithFormat:@"https://www.reddit.com/r/%@/about.json?raw_json=1", escaped];
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]];
+    // Expired metadata must reach Reddit instead of renewing stale HTTP data.
+    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     request.HTTPMethod = @"GET";
     request.timeoutInterval = 15.0;
     if (token.length > 0) {
@@ -399,11 +422,12 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
         subredditName;
     NSString *aboutText = [self cleanAboutTextFromValue:dataDict[@"public_description"]] ?:
         [self cleanAboutTextFromValue:dataDict[@"description"]];
-    NSURL *iconURL = [self URLFromString:dataDict[@"icon_img"]] ?:
-        [self URLFromString:dataDict[@"community_icon"]];
-    NSURL *bannerURL = [self URLFromString:dataDict[@"banner_img"]] ?:
-        [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
-        [self URLFromString:dataDict[@"banner_background_image"]];
+    // Legacy fields can retain old artwork after moderators update modern Reddit.
+    NSURL *iconURL = [self URLFromString:dataDict[@"community_icon"]] ?:
+        [self URLFromString:dataDict[@"icon_img"]];
+    NSURL *bannerURL = [self URLFromString:dataDict[@"mobile_banner_image"]] ?:
+        [self URLFromString:dataDict[@"banner_background_image"]] ?:
+        [self URLFromString:dataDict[@"banner_img"]];
     NSInteger subscriberCount = -1;
     id subscriberValue = dataDict[@"subscribers"];
     if ([subscriberValue respondsToSelector:@selector(integerValue)]) {
@@ -417,6 +441,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
                                                     bannerURL:bannerURL
                                               subscriberCount:subscriberCount
                                                     fetchedAt:[NSDate date]];
+    info.assetSelectionVersion = ApolloSubredditAssetSelectionVersion;
 
     // Only present on an authenticated fetch; leaving it nil otherwise is what
     // lets callers tell "not subscribed" apart from "nobody asked reddit as
@@ -504,9 +529,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 - (void)startFetchForKey:(NSString *)key cached:(ApolloSubredditInfo *)cached forced:(BOOL)forced attempt:(NSInteger)attempt {
     NSMutableURLRequest *request = [[self requestForSubreddit:key] mutableCopy];
     if (forced) {
-        // The session policy is ReturnCacheDataElseLoad; without this a
-        // "refetch" (post-Join subscriber sync, pull-to-refresh) happily
-        // serves days-old HTTP-cached about.json.
+        // Explicit refreshes also ask intermediary caches to revalidate.
         request.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
     }
 
