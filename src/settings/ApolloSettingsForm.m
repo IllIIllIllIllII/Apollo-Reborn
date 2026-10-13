@@ -949,25 +949,16 @@ static const NSUInteger kApolloSFMaxFooterMeasureChanges = 4;
 
 #pragma mark - Shared picker
 
-void ApolloSettingsPresentPicker(UIViewController *presenter,
-                                 UIView *sourceView,
-                                 NSString *title,
-                                 NSArray<NSString *> *optionTitles,
-                                 NSInteger currentIndex,
-                                 void (^apply)(NSInteger pickedIndex)) {
-    ApolloSettingsPresentPickerWithDetails(presenter, sourceView, title, nil,
-                                          optionTitles, nil, currentIndex, apply, nil);
-}
-
-void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
-                                            UIView *sourceView,
-                                            NSString *title,
-                                            NSString *message,
-                                            NSArray<NSString *> *optionTitles,
-                                            NSDictionary<NSNumber *, UIImage *> *optionImages,
-                                            NSInteger currentIndex,
-                                            void (^apply)(NSInteger pickedIndex),
-                                            dispatch_block_t onCancel) {
+static void ApolloSettingsPresentPickerInternal(UIViewController *presenter,
+                                                UIView *sourceView,
+                                                NSString *title,
+                                                NSString *message,
+                                                NSArray<NSString *> *optionTitles,
+                                                NSDictionary<NSNumber *, UIImage *> *optionImages,
+                                                NSInteger currentIndex,
+                                                void (^apply)(NSInteger pickedIndex),
+                                                dispatch_block_t onCancel,
+                                                BOOL applyAfterDismissal) {
     if (@available(iOS 15.0, *)) {
         if (ApolloNativeActionMenusActive()) {
             // Reuse Apollo's presenter so the initiating row tap opens the menu
@@ -976,8 +967,8 @@ void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
             NSObject *context = [NSObject new];
             __block BOOL choseAction = NO;
             void (^performAfterDismissal)(dispatch_block_t) = ^(dispatch_block_t action) {
-                // Handlers may reload rows or present another controller.
-                // Keep that work after the native menu's closing animation.
+                // Callers that may present another controller must wait for
+                // the native menu's closing animation before doing so.
                 if (!ApolloNativeActionMenuPerformAfterDismissal(context, action)) {
                     dispatch_async(dispatch_get_main_queue(), action);
                 }
@@ -989,7 +980,13 @@ void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
                                                 identifier:nil
                                                    handler:^(__unused UIAction *selected) {
                     choseAction = YES;
-                    performAfterDismissal(^{ if (apply) apply(i); });
+                    if (applyAfterDismissal) {
+                        performAfterDismissal(^{ if (apply) apply(i); });
+                    } else if (apply) {
+                        // The proxy anchor survives row updates. Live settings
+                        // can update now while the menu closes normally.
+                        apply(i);
+                    }
                 }];
                 action.state = i == currentIndex ? UIMenuElementStateOn : UIMenuElementStateOff;
                 [actions addObject:action];
@@ -1064,4 +1061,37 @@ void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
     sheet.popoverPresentationController.sourceRect = sourceView ? [sourceView convertRect:sourceView.bounds toView:anchor]
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
     [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+void ApolloSettingsPresentPicker(UIViewController *presenter,
+                                 UIView *sourceView,
+                                 NSString *title,
+                                 NSArray<NSString *> *optionTitles,
+                                 NSInteger currentIndex,
+                                 void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPickerInternal(presenter, sourceView, title, nil,
+                                       optionTitles, nil, currentIndex, apply, nil, YES);
+}
+
+void ApolloSettingsPresentLivePicker(UIViewController *presenter,
+                                     UIView *sourceView,
+                                     NSString *title,
+                                     NSArray<NSString *> *optionTitles,
+                                     NSInteger currentIndex,
+                                     void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPickerInternal(presenter, sourceView, title, nil,
+                                       optionTitles, nil, currentIndex, apply, nil, NO);
+}
+
+void ApolloSettingsPresentPickerWithDetails(UIViewController *presenter,
+                                            UIView *sourceView,
+                                            NSString *title,
+                                            NSString *message,
+                                            NSArray<NSString *> *optionTitles,
+                                            NSDictionary<NSNumber *, UIImage *> *optionImages,
+                                            NSInteger currentIndex,
+                                            void (^apply)(NSInteger pickedIndex),
+                                            dispatch_block_t onCancel) {
+    ApolloSettingsPresentPickerInternal(presenter, sourceView, title, message,
+                                       optionTitles, optionImages, currentIndex, apply, onCancel, YES);
 }
