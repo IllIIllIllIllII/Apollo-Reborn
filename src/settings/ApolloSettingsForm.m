@@ -1013,3 +1013,15 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
         : CGRectMake(CGRectGetMidX(anchor.bounds), CGRectGetMidY(anchor.bounds), 1, 1);
     [presenter presentViewController:sheet animated:YES completion:nil];
 }
+
+// Keep the live-picker contract available without the native-menu conversion.
+// Classic UIAlertAction timing stays intact; the menu integration implements
+// this entry point with immediate UIAction delivery for in-place settings.
+void ApolloSettingsPresentLivePicker(UIViewController *presenter,
+                                     UIView *sourceView,
+                                     NSString *title,
+                                     NSArray<NSString *> *optionTitles,
+                                     NSInteger currentIndex,
+                                     void (^apply)(NSInteger pickedIndex)) {
+    ApolloSettingsPresentPicker(presenter, sourceView, title, optionTitles, currentIndex, apply);
+}
