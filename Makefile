@@ -257,6 +257,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloSubredditListEditing.xm \
     $(SRC_DIR)/ApolloSubredditListLaunchSettle.xm \
+    $(SRC_DIR)/ApolloSubredditListIcons.xm \
     $(SRC_DIR)/ApolloQuickActions.xm \
     $(SRC_DIR)/ApolloHideModSubreddits.xm \
     $(SRC_DIR)/ApolloMultiredditEdit.xm \

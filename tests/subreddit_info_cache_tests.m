@@ -117,6 +117,42 @@ static NSData *InfoResponse(NSArray<NSDictionary *> *subreddits) {
                                            options:0 error:NULL];
 }
 
+static void CheckNativeIconArtworkEntries(void) {
+    NSURL *icon = [NSURL URLWithString:@"https://styles.redditmedia.com/communityIcon.png?width=256&s=hash"];
+    NSData *blob = TrackerBlob(@[
+        @[@"ApolloReborn", icon, @"8400ff", @"ignored trailing field"],
+        @[@"  Pics  ", icon],
+        @[@"u_User-Name", icon, [NSNull null]],
+        @[@"Numbers", icon, @42],
+        @[@"EmptyColor", icon, @""],
+        @[@"noicon", [NSURL URLWithString:@"https://NULL.org/path"], @"ffffff"],
+        @[@"insecure", [NSURL URLWithString:@"http://example.com/icon.png"]],
+        @[@"relative", [NSURL URLWithString:@"/icon.png"]],
+        @[@"hostless", [NSURL URLWithString:@"https:/icon.png"]],
+        @[@"stringurl", @"https://example.com/icon.png"],
+        @[@"", icon],
+        @[@" \n ", icon],
+        @[@"bad/name", icon],
+        @[@42, icon],
+        @[[NSNull null], icon],
+        @[@"missingurl"],
+        @"unknown entry shape",
+    ]);
+    Check([ApolloNativeSubredditIconArtworkEntries(blob) isEqual:(@[
+        @[@"apolloreborn", icon, @"8400ff"],
+        @[@"pics", icon, NSNull.null],
+        @[@"u_user-name", icon, NSNull.null],
+        @[@"numbers", icon, NSNull.null],
+        @[@"emptycolor", icon, @""],
+    ])], @"artwork preserves order, normalizes names, distinguishes empty from absent color, and skips unusable entries");
+    Check(ApolloNativeSubredditIconArtworkEntries(nil).count == 0 &&
+          ApolloNativeSubredditIconArtworkEntries([NSData data]).count == 0 &&
+          ApolloNativeSubredditIconArtworkEntries([@"junk" dataUsingEncoding:NSUTF8StringEncoding]).count == 0,
+          @"missing or unreadable tracker data has no artwork");
+    Check(ApolloNativeSubredditIconArtworkEntries(TrackerBlob(@[])).count == 0,
+          @"an empty tracker has no artwork");
+}
+
 static void CheckNativeIconTracker(void) {
     NSString *oldIcon = @"https://styles.redditmedia.com/t5_1/styles/communityIcon_old.png?width=256&s=a";
     NSString *newIcon = @"https://styles.redditmedia.com/t5_1/styles/communityIcon_new.png?width=256&s=b";
@@ -209,6 +245,7 @@ int main(void) {
         ApolloSubredditInfo *fresh = CheckArtworkPriority(cache);
         CheckMetadataMigration(cache, fresh);
         CheckNativeIconTracker();
+        CheckNativeIconArtworkEntries();
         CheckRequests(cache);
         printf("PASS: %lu subreddit info cache checks\n", (unsigned long)checks);
     }

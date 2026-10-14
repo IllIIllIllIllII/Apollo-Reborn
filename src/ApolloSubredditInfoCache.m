@@ -3,6 +3,7 @@
 #import "ApolloAccountCredentials.h"   // ApolloActiveAccountUsername() — userIsSubscriber stamping
 #import "ApolloCommon.h"               // ApolloLog
 #import "ApolloNativeSubredditIcons.h"
+#import "ApolloSubredditListIcons.h"
 #import "ApolloState.h"
 #import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff, ApolloWebJSONHasUsableSession
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
@@ -762,6 +763,7 @@ static BOOL ApolloSubredditInfoErrorIsTransient(NSError *error) {
 }
 
 - (void)clearAllCaches {
+    ApolloSubredditListIconsClearCache();
     dispatch_async(self.queue, ^{
         [self.infoCache removeAllObjects];
         [self.diskInfo removeAllObjects];
