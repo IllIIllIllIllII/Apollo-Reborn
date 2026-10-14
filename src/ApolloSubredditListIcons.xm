@@ -331,7 +331,9 @@ static void ApolloListIconRestore(UITableViewCell *cell, ApolloListIconCapture *
 - (NSUUID *)downloadImageWithURL:(NSURL *)URL completion:(void (^)(id result))completion {
     if (![sListIconRequestedURLs objectForKey:URL.absoluteString]) return %orig;
     NSUInteger generation = sListIconCacheGeneration;
-    return %orig(URL, ^(id result) {
+    // CI's pinned Logos parser cannot consume a multiline block inside %orig.
+    // Keep the callback separate so both device and simulator generators agree.
+    void (^wrappedCompletion)(id) = ^(id result) {
         UIImage *image = ApolloListIconResultImage(result);
         if (image) dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != sListIconCacheGeneration) return;
@@ -342,7 +344,8 @@ static void ApolloListIconRestore(UITableViewCell *cell, ApolloListIconCapture *
             }
         });
         if (completion) completion(result);
-    });
+    };
+    return %orig(URL, wrappedCompletion);
 }
 %end
 
