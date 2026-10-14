@@ -12,6 +12,12 @@ NS_ASSUME_NONNULL_BEGIN
 // missing or unreadable blob.
 FOUNDATION_EXPORT NSArray<NSString *> *ApolloNativeSubredditIconNames(NSData *_Nullable blob);
 
+// Usable artwork in blob order: [lowercased name, HTTPS NSURL, saved key-color
+// string or NSNull]. Preserves an empty string as a present color, distinct from
+// missing/non-string colors. Omits malformed entries and Apollo's null.org no-icon
+// marker; ignores trailing fields. Used to warm native image caches without a fetch.
+FOUNDATION_EXPORT NSArray<NSArray *> *ApolloNativeSubredditIconArtworkEntries(NSData *_Nullable blob);
+
 // Lowercased display name -> current icon URL string, parsed from an
 // /api/info.json?sr_name=... listing. Prefers community_icon over the legacy
 // icon_img; subreddits with neither are left out.

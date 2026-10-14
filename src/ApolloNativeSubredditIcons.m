@@ -8,7 +8,7 @@ static NSTimeInterval const ApolloNativeSubredditIconRefreshInterval = 7.0 * 24.
 
 static NSArray *ApolloNativeSubredditIconEntries(NSData *blob) {
     if (blob.length == 0) return nil;
-    NSSet *classes = [NSSet setWithObjects:NSArray.class, NSString.class, NSURL.class, NSNull.class, nil];
+    NSSet *classes = [NSSet setWithObjects:NSArray.class, NSString.class, NSURL.class, NSNull.class, NSNumber.class, nil];
     id root = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes fromData:blob error:NULL];
     return [root isKindOfClass:NSArray.class] ? root : nil;
 }
@@ -28,6 +28,25 @@ NSArray<NSString *> *ApolloNativeSubredditIconNames(NSData *blob) {
         if (name) [names addObject:name];
     }
     return names;
+}
+
+NSArray<NSArray *> *ApolloNativeSubredditIconArtworkEntries(NSData *blob) {
+    NSMutableArray<NSArray *> *artwork = [NSMutableArray array];
+    NSCharacterSet *invalidNameCharacters = [[NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyz0123456789_-"] invertedSet];
+    for (id entry in ApolloNativeSubredditIconEntries(blob)) {
+        NSString *name = [[ApolloNativeSubredditIconEntryName(entry)
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+        if (name.length == 0 || [name rangeOfCharacterFromSet:invalidNameCharacters].location != NSNotFound) continue;
+        NSURL *url = entry[1];
+        if (![url.scheme.lowercaseString isEqualToString:@"https"] || url.host.length == 0 ||
+            [url.host.lowercaseString isEqualToString:@"null.org"]) continue;
+        // Swift Optional distinguishes Some("") from None: the former reaches
+        // Apollo's color parser, while the latter leaves transparent art unfilled.
+        id color = [entry count] > 2 && [entry[2] isKindOfClass:NSString.class] ? entry[2] : NSNull.null;
+        [artwork addObject:@[name, url, color]];
+    }
+    return artwork;
 }
 
 static NSString *ApolloNativeSubredditIconURLString(id value) {
