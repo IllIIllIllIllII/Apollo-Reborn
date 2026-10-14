@@ -1,98 +1,63 @@
-// ApolloProfileMoreMenu.xm
-//
-// A "..." for the signed-in user's own profile tab, so the button is universal
-// across profiles instead of vanishing on your own.
-//
-// Apollo only ever shows its more-options "..." on someone ELSE'S profile
-// (Private Message / Follow / Add Friend / Block / Share — all things you
-// can't do to yourself), so the signed-in tab historically had a bare corner:
-// the tweak's Recently Read clock sat where the "..." would be, and editing
-// hid behind an Edit pill floating over the header art. This module gives the
-// own profile the same "..." affordance, holding everything self-directed:
-//
-//   • Gallery View                — the same grid the subreddit/profile
-//                                   menus open, pointed at your own posts
-//   • Edit Profile                — Reddit's profile editor, opened inside
-//                                   Apollo and signed in as this account
-//                                   (ApolloProfileEditorWebViewController.m);
-//                                   what the header's Edit pill used to do
-//                                   (the pill itself is deleted from
-//                                   ApolloUserAvatars.xm)
-//   • Recently Read               — what the standalone clock button used to
-//                                   do (retired in ApolloRecentlyRead.xm)
-//   • Share Profile               — share sheet for your
-//                                   reddit.com/user/<name> URL, mirroring the
-//                                   Share row on other people's menus
-//
-// The button is a plain UIBarButtonItem with a UIMenu (iOS 14+), which renders
-// as the same pull-down Apollo's converted "..." menus use on Liquid Glass and
-// as a standard pull-down on the legacy chrome — no ActionController involved,
-// since this menu is entirely ours.
-//
-// This module is also the single owner of a profile screen's right-bar
-// LAYOUT (see ApolloProfileMoreMenuNormalize): Apollo rewrites a pushed
-// profile's rightBarButtonItems when the user's data arrives, which would
-// wipe any tweak button appended at viewDidLoad — so our "..." is enforced
-// through UINavigationItem setter hooks instead of one-shot appends.
-//
-// Rules, re-checked on every normalization pass:
-//   • Apollo's own moreOptionsBarButtonItem installed → someone else's
-//     profile; keep our button out (ApolloGalleryMenu.xm handles injecting
-//     Gallery View into Apollo's menu there).
-//   • The screen clearly shows a different user than the active account →
-//     leave it alone even if Apollo's "..." hasn't landed yet.
-//   • PUSHED profiles (not the tab root) must positively resolve to the
-//     signed-in account before ours installs — "not clearly someone else"
-//     isn't enough while the username is still nil, so ours never flashes on
-//     a pushed profile that turns out to be someone else's.
-//   • Signed out → nothing to edit or share; no "...".
-// Menu handlers re-resolve the username at tap time, so a menu built before
-// the profile finished loading still acts on the right user.
+// Own-profile Recently Read and More actions. Liquid Glass uses a shared
+// navigation pill; legacy chrome uses standard bar items.
 
 #import <UIKit/UIKit.h>
-#import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloAccountCredentials.h"
+#import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
+#import "ApolloNavigationActions.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryViewController.h"
 #import "ApolloProfileEditorWebViewController.h"
 
-// Defined in ApolloUserAvatars.xm.
 extern NSString *ApolloUsernameFromProfileViewController(UIViewController *viewController);
-// Defined in ApolloRecentlyRead.xm.
 extern void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController);
 
-// Our bar button, associated to the profile view controller that owns it.
 static char kApolloProfileMoreMenuItemKey;
-// Set on a profile view controller's UINavigationItem: an NSHashTable holding
-// the view controller weakly, so the setter hooks below can find their way
-// back without retaining it.
+static char kApolloProfileRecentlyReadItemKey;
+static char kApolloProfileActionsItemKey;
 static char kApolloProfileMoreMenuNavOwnerKey;
-// Set (to @YES) on the specific UINavigationItem the normalizer is currently
-// writing, so the setter hooks pass that write through untouched. Per-item
-// rather than a global flag: everything here is main-thread, but if a write
-// ever triggers Apollo into synchronously rewriting a DIFFERENT profile's nav
-// item from inside our setter call, that item's normalize still runs instead
-// of being silently suppressed by a process-wide guard.
+// Guard each navigation item separately against setter re-entry.
 static char kApolloProfileMoreMenuNormalizingKey;
 
-static BOOL ApolloProfileMoreMenuIsNormalizing(UINavigationItem *navigationItem) {
-    return [objc_getAssociatedObject(navigationItem, &kApolloProfileMoreMenuNormalizingKey) boolValue];
+// ApolloNavigationActions supplies the glass and collapse/expansion behavior.
+@interface ApolloProfileRecentActionsView : UIView
+@property(nonatomic, strong) UIButton *moreButton;
+- (instancetype)initWithRecentlyRead:(UIBarButtonItem *)recent more:(UIBarButtonItem *)more;
+@end
+
+@implementation ApolloProfileRecentActionsView
+- (instancetype)initWithRecentlyRead:(UIBarButtonItem *)recent more:(UIBarButtonItem *)more {
+    self = [super initWithFrame:CGRectMake(0, 0, 93, 32)];
+    if (!self) return nil;
+    UIButton *clock = [UIButton buttonWithType:UIButtonTypeSystem];
+    clock.frame = CGRectMake(5, 0, 44, 32);
+    [clock addAction:recent.primaryAction forControlEvents:UIControlEventTouchUpInside];
+    [clock setImage:recent.image forState:UIControlStateNormal];
+    clock.accessibilityLabel = recent.accessibilityLabel;
+    [self addSubview:clock];
+
+    self.moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.moreButton.frame = CGRectMake(49, 0, 44, 32);
+    [self.moreButton setImage:more.image forState:UIControlStateNormal];
+    self.moreButton.accessibilityLabel = more.accessibilityLabel;
+    self.moreButton.menu = more.menu;
+    self.moreButton.showsMenuAsPrimaryAction = YES;
+    [self addSubview:self.moreButton];
+    return self;
 }
+@end
 
 #pragma mark - Resolution helpers
 
-// Apollo's own "..." item. The ivar always exists (it's a stored `let` on the
-// Swift class); whether it's INSTALLED in the navigation item is what varies.
 static UIBarButtonItem *ApolloProfileMoreMenuApolloItem(UIViewController *viewController) {
     id value = ApolloObjectIvar(viewController, "moreOptionsBarButtonItem");
     return [value isKindOfClass:[UIBarButtonItem class]] ? (UIBarButtonItem *)value : nil;
 }
 
-// The username this menu should act on: whatever the profile screen resolves
-// to, else the active account (covers the tab before userInfo loads).
+// The tab may not have loaded userInfo yet; fall back to the active account.
 static NSString *ApolloProfileMoreMenuUsername(UIViewController *viewController) {
     NSString *resolved = ApolloUsernameFromProfileViewController(viewController);
     if (resolved.length > 0) return resolved;
@@ -132,10 +97,16 @@ static void ApolloProfileMoreMenuShare(UIViewController *viewController) {
 
     UIActivityViewController *activity =
         [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
-    // iPad presents this as a popover and requires an anchor; our "..." is the
-    // natural one.
-    UIBarButtonItem *anchor = objc_getAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey);
-    activity.popoverPresentationController.barButtonItem = anchor;
+    UIBarButtonItem *toolbar = objc_getAssociatedObject(viewController, &kApolloProfileActionsItemKey);
+    ApolloProfileRecentActionsView *content = (id)ApolloNavigationActionsContentView(toolbar);
+    if (content.moreButton.window) {
+        // The glass strip replaces the bar item; anchor the popover to its visible button.
+        activity.popoverPresentationController.sourceView = content.moreButton;
+        activity.popoverPresentationController.sourceRect = content.moreButton.bounds;
+    } else {
+        activity.popoverPresentationController.barButtonItem =
+            objc_getAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey);
+    }
     [viewController presentViewController:activity animated:YES completion:nil];
     ApolloLog(@"[ProfileMoreMenu] Sharing u/%@", username);
 }
@@ -153,7 +124,6 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
         if (vc) ApolloProfileMoreMenuOpenGallery(vc);
     }];
 
-    // Keep Gallery View in its own section, matching other profile menus.
     UIMenu *gallerySection = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                            options:UIMenuOptionsDisplayInline
                                           children:@[gallery]];
@@ -166,14 +136,6 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
         if (vc) ApolloProfileEditorOpenFromViewController(vc);
     }];
 
-    UIAction *recentlyRead = [UIAction actionWithTitle:@"Recently Read"
-                                                 image:[UIImage systemImageNamed:@"clock.arrow.circlepath"]
-                                            identifier:nil
-                                               handler:^(__unused __kindof UIAction *action) {
-        UIViewController *vc = weakVC;
-        if (vc) ApolloRecentlyReadPresentFromViewController(vc);
-    }];
-
     UIAction *share = [UIAction actionWithTitle:@"Share Profile"
                                           image:[UIImage systemImageNamed:@"square.and.arrow.up"]
                                      identifier:nil
@@ -183,33 +145,30 @@ static UIMenu *ApolloProfileMoreMenuBuild(UIViewController *viewController) {
     }];
     UIMenu *actionsSection = [UIMenu menuWithTitle:@"" image:nil identifier:nil
                                            options:UIMenuOptionsDisplayInline
-                                          children:@[edit, recentlyRead, share]];
+                                          children:@[edit, share]];
 
     return [UIMenu menuWithTitle:@"" children:@[gallerySection, actionsSection]];
 }
 
 #pragma mark - Nav-item normalization
 
-// The single owner of a profile screen's rightBarButtonItems layout. Takes
-// whatever is currently installed (Apollo's own "..." included) and enforces
-// our own-profile "..." at index 0 (the trailing slot) — only on the
-// signed-in tab, where Apollo shows no menu of its own.
-//
-// Runs from the lifecycle hooks below AND from the UINavigationItem setter
-// hooks: Apollo rewrites a pushed profile's items outright when the user's
-// data arrives (that write installs its own "..."), and anything the tweak
-// placed with a one-shot append would be silently shed — normalizing after
-// every write is what makes our button stick.
+// Apollo replaces these items when profile data arrives, so normalize after
+// both lifecycle events and navigation-item setter calls.
 static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
     if (!viewController) return;
     UINavigationItem *navigationItem = viewController.navigationItem;
-    if (ApolloProfileMoreMenuIsNormalizing(navigationItem)) return;
+    if ([objc_getAssociatedObject(navigationItem, &kApolloProfileMoreMenuNormalizingKey) boolValue]) return;
 
     UIBarButtonItem *apolloItem = ApolloProfileMoreMenuApolloItem(viewController);
     NSArray<UIBarButtonItem *> *currentItems = navigationItem.rightBarButtonItems ?: @[];
     NSMutableArray<UIBarButtonItem *> *desired = [currentItems mutableCopy];
 
     UIBarButtonItem *ours = objc_getAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey);
+    UIBarButtonItem *recent = objc_getAssociatedObject(viewController, &kApolloProfileRecentlyReadItemKey);
+    UIBarButtonItem *toolbar = objc_getAssociatedObject(viewController, &kApolloProfileActionsItemKey);
+    if (ours) [desired removeObjectIdenticalTo:ours];
+    if (recent) [desired removeObjectIdenticalTo:recent];
+    if (toolbar) [desired removeObjectIdenticalTo:toolbar];
 
     NSString *active = ApolloActiveAccountUsername();
     NSString *resolved = ApolloUsernameFromProfileViewController(viewController);
@@ -217,55 +176,54 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
     BOOL resolvedAsOwn = bothKnown && [resolved caseInsensitiveCompare:active] == NSOrderedSame;
     BOOL clearlySomeoneElse = bothKnown && !resolvedAsOwn;
     BOOL apolloMenuInstalled = apolloItem && [currentItems containsObject:apolloItem];
-    // On a PUSHED profile the username hasn't necessarily resolved by the
-    // first normalize pass, and before it does `clearlySomeoneElse` can't
-    // fire — installing on "not clearly someone else" alone would flash our
-    // button until Apollo's own "..." (or the resolved name) evicted it. A
-    // pushed screen therefore has to positively resolve to the signed-in
-    // account before ours goes in; the tab root is always the signed-in
-    // user's own profile, so it keeps the immediate install.
+    // Pushed profiles must resolve to our account before showing personal actions.
     BOOL pushedProfile = viewController.navigationController != nil &&
         viewController.navigationController.viewControllers.firstObject != viewController;
-    // The signed-in user's profile: an account is active, the screen isn't
-    // (and, if pushed, provably can't be) showing someone else, and Apollo
-    // hasn't put up its own "...".
     BOOL wantOurs = active.length > 0 && !clearlySomeoneElse && !apolloMenuInstalled &&
         (!pushedProfile || resolvedAsOwn);
 
     if (wantOurs) {
         if (!ours) {
-            // Borrow Apollo's own glyph so the button is pixel-identical to
-            // the "..." on other profiles, on both the glass and legacy
-            // chromes.
             UIImage *image = apolloItem.image ?: [UIImage systemImageNamed:@"ellipsis"];
             ours = [[UIBarButtonItem alloc] initWithImage:image menu:nil];
             ours.accessibilityLabel = @"More Options";
-            // Built once for the button's lifetime: every handler re-resolves
-            // its username (and view controller) at tap time, so there is
-            // nothing account- or state-dependent baked in that a later pass
-            // would need to refresh — and never reassigning .menu means a
-            // normalize can't collapse or re-render the pull-down while the
-            // user has it open.
+            // Keep the menu and its source stable while open. Handlers resolve the account at tap time.
             ours.menu = ApolloProfileMoreMenuBuild(viewController);
             objc_setAssociatedObject(viewController, &kApolloProfileMoreMenuItemKey, ours,
                                      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[ProfileMoreMenu] Built own-profile '...' for u/%@ (glyph=%@)",
                       active, apolloItem.image ? @"Apollo's" : @"SF ellipsis");
         }
-        if (![desired containsObject:ours]) {
-            // Index 0 = the trailing (rightmost) slot, exactly where Apollo
-            // puts its "..." on other profiles.
-            [desired insertObject:ours atIndex:0];
+        if (!recent) {
+            __weak UIViewController *weakVC = viewController;
+            UIAction *action = [UIAction actionWithTitle:@"Recently Read"
+                image:ApolloActionMenuSymbolIcon(@"clock.arrow.circlepath") identifier:nil
+                handler:^(__unused UIAction *sender) {
+                    UIViewController *vc = weakVC;
+                    if (vc) ApolloRecentlyReadPresentFromViewController(vc);
+                }];
+            recent = [[UIBarButtonItem alloc] initWithPrimaryAction:action];
+            recent.title = nil;
+            recent.accessibilityLabel = @"Recently Read";
+            objc_setAssociatedObject(viewController, &kApolloProfileRecentlyReadItemKey, recent,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
-    } else if (ours && [desired containsObject:ours]) {
-        [desired removeObject:ours];
+        if (IsLiquidGlass()) {
+            if (!toolbar) {
+                toolbar = [[UIBarButtonItem alloc] initWithCustomView:
+                    [[ApolloProfileRecentActionsView alloc] initWithRecentlyRead:recent more:ours]];
+                objc_setAssociatedObject(viewController, &kApolloProfileActionsItemKey, toolbar,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            [desired insertObject:toolbar atIndex:0];
+        } else {
+            // Bar-item arrays run trailing to leading.
+            [desired insertObjects:@[ours, recent]
+                         atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)]];
+        }
     }
 
-    // Load-bearing, not just an optimization: our write below re-enters the
-    // setter hooks (suppressed by the per-item flag), but if Apollo REACTS to
-    // that write by rewriting the items itself, that rewrite re-enters
-    // normalize un-suppressed — this early-out is what makes the second pass
-    // converge instead of ping-ponging setter → normalize → setter forever.
+    // Apollo can rewrite items in response to our setter; stop once the order matches.
     if ([desired isEqualToArray:currentItems]) return;
 
     objc_setAssociatedObject(navigationItem, &kApolloProfileMoreMenuNormalizingKey, @YES,
@@ -278,17 +236,9 @@ static void ApolloProfileMoreMenuNormalize(UIViewController *viewController) {
               wantOurs ? @"YES" : @"NO", apolloMenuInstalled ? @"YES" : @"NO");
 }
 
-// The profile view controller a navigation item belongs to, recorded at
-// viewDidLoad so the setter hooks can re-normalize after any rewrite. Held
-// weakly: the navigation item is owned by the view controller, so a strong
-// back-reference would cycle.
-static UIViewController *ApolloProfileMoreMenuOwnerForNavigationItem(UINavigationItem *navigationItem) {
-    NSHashTable *holder = objc_getAssociatedObject(navigationItem, &kApolloProfileMoreMenuNavOwnerKey);
-    return holder.anyObject;
-}
-
 static void ApolloProfileMoreMenuAdoptNavigationItem(UIViewController *viewController) {
     UINavigationItem *navigationItem = viewController.navigationItem;
+    // Avoid a cycle: the controller owns its navigation item.
     NSHashTable *holder = [NSHashTable weakObjectsHashTable];
     [holder addObject:viewController];
     objc_setAssociatedObject(navigationItem, &kApolloProfileMoreMenuNavOwnerKey, holder,
@@ -296,7 +246,8 @@ static void ApolloProfileMoreMenuAdoptNavigationItem(UIViewController *viewContr
 }
 
 static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigationItem) {
-    UIViewController *owner = ApolloProfileMoreMenuOwnerForNavigationItem(navigationItem);
+    NSHashTable *holder = objc_getAssociatedObject(navigationItem, &kApolloProfileMoreMenuNavOwnerKey);
+    UIViewController *owner = holder.anyObject;
     if (owner) ApolloProfileMoreMenuNormalize(owner);
 }
 
@@ -311,15 +262,12 @@ static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigat
     ApolloProfileMoreMenuNormalize(viewController);
 }
 
-// Re-assert once the screen settles: userInfo may only resolve after the first
-// layout, and Apollo installs its own "..." for pushed profiles around
-// presentation time.
+// Profile data and native menu items can arrive after viewDidLoad.
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloProfileMoreMenuNormalize((UIViewController *)self);
 }
 
-// Account switches repoint the tab at a different user (or none): rebuild.
 - (void)redditAccountChangedWithNotification:(id)notification {
     %orig;
     UIViewController *viewController = (UIViewController *)self;
@@ -330,13 +278,6 @@ static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigat
 
 %end
 
-// Apollo replaces a pushed profile's rightBarButtonItems outright once the
-// user's data arrives (that write is what installs its own "..."), which used
-// to wipe any button the tweak had appended at viewDidLoad — the Hidden &
-// Deleted eye simply vanished on other people's profiles. Catching the setters
-// re-normalizes after every rewrite, whoever makes it and whenever it lands.
-// Non-profile navigation items carry no owner association and fall straight
-// through to %orig.
 %hook UINavigationItem
 
 - (void)setRightBarButtonItems:(NSArray *)items {
@@ -349,8 +290,7 @@ static void ApolloProfileMoreMenuNavigationItemChanged(UINavigationItem *navigat
     ApolloProfileMoreMenuNavigationItemChanged(self);
 }
 
-// The singular form doesn't necessarily funnel through the plural public
-// setter, so it gets its own hook.
+// The singular setter does not always call the plural setters.
 - (void)setRightBarButtonItem:(UIBarButtonItem *)item {
     %orig;
     ApolloProfileMoreMenuNavigationItemChanged(self);

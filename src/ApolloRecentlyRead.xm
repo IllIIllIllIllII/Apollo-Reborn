@@ -1484,9 +1484,6 @@ static void RecentlyReadClearThumbTask(UIImageView *thumbnailView, NSURLSessionD
 
 @end
 
-// Recently Read used to be its own clock button in the profile's navigation
-// bar; it now lives inside the profile tab's "..." menu instead
-// (ApolloProfileMoreMenu.xm), which calls this to push the screen.
 void ApolloRecentlyReadPresentFromViewController(UIViewController *fromViewController) {
     UINavigationController *navigationController = fromViewController.navigationController;
     if (!navigationController) {
