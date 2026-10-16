@@ -177,6 +177,62 @@ static void ApolloNavRestoreSearchFieldMaterial(UITextField *field, const char *
               when, (int)ApolloNavSearchFieldHasMaterialLayer(field));
 }
 
+// An interactive return from a hidesBottomBarWhenPushed page (Edit Profile,
+// for example) can leave the tab platter's glass undrawn even though its
+// background, alpha and suppression state are intact. The selected lens and
+// icons still draw. Invalidating/layout alone does not repair this: remove
+// and reapply the SAME material after UIKit's transition cleanup. Unlike the
+// search field above, the platter's layer hierarchy does not expose the loss.
+@interface UIView (ApolloNavTabBarMaterial)
+- (id)_background;
+- (void)_setBackground:(id)background;
+- (void)_updateBackground;
+- (BOOL)_isBackgroundSuppressed;
+@end
+
+static void ApolloNavRestoreTabBarMaterial(UINavigationController *navigationController,
+                                           UIViewController *visibleController) {
+    // A completion can synchronously start another transition. Never repair
+    // an old destination's bar while a newer screen or another tab owns it.
+    if (!navigationController || ApolloNavTransitionInFlight() ||
+        navigationController.transitionCoordinator ||
+        navigationController.topViewController != visibleController ||
+        navigationController.visibleViewController != visibleController ||
+        visibleController.hidesBottomBarWhenPushed) return;
+    UITabBarController *tabs = navigationController.tabBarController;
+    UITabBar *bar = tabs.tabBar;
+    if (tabs.selectedViewController != navigationController ||
+        tabs.isTabBarHidden || !bar.window || bar.hidden || bar.alpha <= 0.0) return;
+
+    // UIKit 27 moved the provider's platterView into lendable storage. Find
+    // its attached view instead; _UITabBarItemPlatterView is a subclass of
+    // the same platter class used directly on 26.
+    UIView *platter = nil;
+    for (UIView *subview in bar.subviews) {
+        if ([subview isKindOfClass:ApolloClassUITabBarPlatterView]) {
+            platter = subview;
+            break;
+        }
+    }
+    if (!platter.window || platter.hidden || platter.alpha <= 0.0 ||
+        ![platter respondsToSelector:@selector(_background)] ||
+        ![platter respondsToSelector:@selector(_setBackground:)] ||
+        ![platter respondsToSelector:@selector(_isBackgroundSuppressed)] ||
+        [platter _isBackgroundSuppressed]) return;
+    id background = [platter _background];
+    if (!background) return;
+    // iOS 26 applies the setter directly; iOS 27 defers its work until this
+    // update. Flush each half there so the nil -> material change takes effect.
+    BOOL needsBackgroundUpdate = [platter respondsToSelector:@selector(_updateBackground)];
+    [UIView performWithoutAnimation:^{
+        [platter _setBackground:nil];
+        if (needsBackgroundUpdate) [platter _updateBackground];
+        [platter _setBackground:background];
+        if (needsBackgroundUpdate) [platter _updateBackground];
+    }];
+    ApolloLog(@"[InterruptibleNav] re-applied tab bar glass after interactive bottom-bar reveal");
+}
+
 static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
                                                        id<UIViewControllerContextTransitioning> ctx) {
     BOOL interactive = ctx.isInteractive;
@@ -186,6 +242,7 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     UIView *container = ctx.containerView;
     UIViewController *fromVC = [ctx viewControllerForKey:UITransitionContextFromViewControllerKey];
     UIViewController *toVC = [ctx viewControllerForKey:UITransitionContextToViewControllerKey];
+    BOOL changesBottomBarVisibility = fromVC.hidesBottomBarWhenPushed != toVC.hidesBottomBarWhenPushed;
     UIView *fromView = [ctx viewForKey:UITransitionContextFromViewKey] ?: fromVC.view;
     UIView *toView = [ctx viewForKey:UITransitionContextToViewKey] ?: toVC.view;
     BOOL push = ApolloReadBoolIvar(animatorObject, "isPresenting", YES);
@@ -331,6 +388,17 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         // The bar has settled on whichever item won; give the title capsules that were held
         // back during the cross-fade their chance now (they fade in rather than pop).
         if (interactive && !cancelled) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
+        if (interactive && changesBottomBarVisibility) {
+            UIViewController *visibleController = cancelled ? fromVC : toVC;
+            if (!visibleController.hidesBottomBarWhenPushed) {
+                // UIKit finishes tearing down the interactive bar presentation
+                // after completeTransition:. Also covers a cancelled forward
+                // swipe into the editor, which reveals the original tab bar.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    ApolloNavRestoreTabBarMaterial(navigationController, visibleController);
+                });
+            }
+        }
     }];
     // The animator's blocks hold ctx, the views and the dim/shadow until it finishes;
     // UIViewPropertyAnimator drops them then, so nothing here outlives the transition.

@@ -126,6 +126,7 @@ extern Class ApolloClassUINavigationBarPlatterGlassView;
 extern Class ApolloClassUINavigationBarPlatterView;
 extern Class ApolloClassUINavigationBarTitleControl;
 extern Class ApolloClassUIScrollEdgeEffectStyle;
+extern Class ApolloClassUITabBarPlatterView;
 extern Class ApolloClassUserCommentsViewController;
 
 // TextInputUI is soft-linked by UIKit and loads the first time the keyboard
