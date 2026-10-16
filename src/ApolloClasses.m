@@ -115,8 +115,8 @@ Class ApolloClassUINavigationBarHostedViewContainer;
 Class ApolloClassUINavigationBarPlatterGlassView;
 Class ApolloClassUINavigationBarPlatterView;
 Class ApolloClassUINavigationBarTitleControl;
+Class ApolloClassUINavigationParallaxTransition;
 Class ApolloClassUIScrollEdgeEffectStyle;
-Class ApolloClassUITabBarPlatterView;
 Class ApolloClassUserCommentsViewController;
 
 // Bumped once per image ObjC finishes mapping (and once per image already
@@ -246,8 +246,8 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassUINavigationBarPlatterGlassView = objc_getClass("_UINavigationBarPlatterGlassView");
     ApolloClassUINavigationBarPlatterView = objc_getClass("_UINavigationBarPlatterView");
     ApolloClassUINavigationBarTitleControl = objc_getClass("_UINavigationBarTitleControl");
+    ApolloClassUINavigationParallaxTransition = objc_getClass("_UINavigationParallaxTransition");
     ApolloClassUIScrollEdgeEffectStyle = objc_getClass("UIScrollEdgeEffectStyle");
-    ApolloClassUITabBarPlatterView = objc_getClass("_TtC5UIKit20_UITabBarPlatterView");
     ApolloClassUserCommentsViewController = objc_getClass("_TtC6Apollo26UserCommentsViewController");
 }
 

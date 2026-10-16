@@ -40,6 +40,9 @@
 //   0.225s linear when interactive, 0.5s spring (damping 1.0, initial velocity 4.0) otherwise.
 // Apollo's search-mode special cases (hiding the bar while a search is presented) are not
 // reproduced: on Liquid Glass the native search bar module keeps the bar in place anyway.
+// Transitions that change hidesBottomBarWhenPushed instead use UIKit's complete navigation
+// animator for both buttons and gestures, so UIKit also coordinates the tab bar's separate
+// glass animation. Apollo still supplies the interactive driver for its swipe gestures.
 //
 // ONE ANIMATOR PER TRANSITION, FOUND BY ITS CONTEXT
 // ApolloNavigationController keeps a single ApolloNavigationAnimator and reuses it for every
@@ -92,6 +95,13 @@ static const void *kApolloNavAnimatorKey = &kApolloNavAnimatorKey;
 // UIViewPropertyAnimator -> ApolloNavContextRef naming the transition context it was built for.
 static const void *kApolloNavAnimatorContextKey = &kApolloNavAnimatorContextKey;
 static NSUInteger sApolloNavTransitionsInFlight;
+// UIKit's animator owns the transition, but Apollo still selects its gesture driver
+// using the animator it originally returned from the navigation delegate.
+static const void *kApolloNavOriginalAnimatorKey = &kApolloNavOriginalAnimatorKey;
+
+@protocol ApolloNavSystemAnimator <UIViewControllerAnimatedTransitioning>
+- (instancetype)initWithCurrentOperation:(UINavigationControllerOperation)operation;
+@end
 
 // Weak on purpose: the context must not outlive UIKit's own interest in it (a popped controller
 // deallocates with its transition, not at the next one), and a freed context reads as nil here
@@ -177,62 +187,6 @@ static void ApolloNavRestoreSearchFieldMaterial(UITextField *field, const char *
               when, (int)ApolloNavSearchFieldHasMaterialLayer(field));
 }
 
-// An interactive return from a hidesBottomBarWhenPushed page (Edit Profile,
-// for example) can leave the tab platter's glass undrawn even though its
-// background, alpha and suppression state are intact. The selected lens and
-// icons still draw. Invalidating/layout alone does not repair this: remove
-// and reapply the SAME material after UIKit's transition cleanup. Unlike the
-// search field above, the platter's layer hierarchy does not expose the loss.
-@interface UIView (ApolloNavTabBarMaterial)
-- (id)_background;
-- (void)_setBackground:(id)background;
-- (void)_updateBackground;
-- (BOOL)_isBackgroundSuppressed;
-@end
-
-static void ApolloNavRestoreTabBarMaterial(UINavigationController *navigationController,
-                                           UIViewController *visibleController) {
-    // A completion can synchronously start another transition. Never repair
-    // an old destination's bar while a newer screen or another tab owns it.
-    if (!navigationController || ApolloNavTransitionInFlight() ||
-        navigationController.transitionCoordinator ||
-        navigationController.topViewController != visibleController ||
-        navigationController.visibleViewController != visibleController ||
-        visibleController.hidesBottomBarWhenPushed) return;
-    UITabBarController *tabs = navigationController.tabBarController;
-    UITabBar *bar = tabs.tabBar;
-    if (tabs.selectedViewController != navigationController ||
-        tabs.isTabBarHidden || !bar.window || bar.hidden || bar.alpha <= 0.0) return;
-
-    // UIKit 27 moved the provider's platterView into lendable storage. Find
-    // its attached view instead; _UITabBarItemPlatterView is a subclass of
-    // the same platter class used directly on 26.
-    UIView *platter = nil;
-    for (UIView *subview in bar.subviews) {
-        if ([subview isKindOfClass:ApolloClassUITabBarPlatterView]) {
-            platter = subview;
-            break;
-        }
-    }
-    if (!platter.window || platter.hidden || platter.alpha <= 0.0 ||
-        ![platter respondsToSelector:@selector(_background)] ||
-        ![platter respondsToSelector:@selector(_setBackground:)] ||
-        ![platter respondsToSelector:@selector(_isBackgroundSuppressed)] ||
-        [platter _isBackgroundSuppressed]) return;
-    id background = [platter _background];
-    if (!background) return;
-    // iOS 26 applies the setter directly; iOS 27 defers its work until this
-    // update. Flush each half there so the nil -> material change takes effect.
-    BOOL needsBackgroundUpdate = [platter respondsToSelector:@selector(_updateBackground)];
-    [UIView performWithoutAnimation:^{
-        [platter _setBackground:nil];
-        if (needsBackgroundUpdate) [platter _updateBackground];
-        [platter _setBackground:background];
-        if (needsBackgroundUpdate) [platter _updateBackground];
-    }];
-    ApolloLog(@"[InterruptibleNav] re-applied tab bar glass after interactive bottom-bar reveal");
-}
-
 static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
                                                        id<UIViewControllerContextTransitioning> ctx) {
     BOOL interactive = ctx.isInteractive;
@@ -242,7 +196,6 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     UIView *container = ctx.containerView;
     UIViewController *fromVC = [ctx viewControllerForKey:UITransitionContextFromViewControllerKey];
     UIViewController *toVC = [ctx viewControllerForKey:UITransitionContextToViewControllerKey];
-    BOOL changesBottomBarVisibility = fromVC.hidesBottomBarWhenPushed != toVC.hidesBottomBarWhenPushed;
     UIView *fromView = [ctx viewForKey:UITransitionContextFromViewKey] ?: fromVC.view;
     UIView *toView = [ctx viewForKey:UITransitionContextToViewKey] ?: toVC.view;
     BOOL push = ApolloReadBoolIvar(animatorObject, "isPresenting", YES);
@@ -388,17 +341,6 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
         // The bar has settled on whichever item won; give the title capsules that were held
         // back during the cross-fade their chance now (they fade in rather than pop).
         if (interactive && !cancelled) ApolloNavigationTitleGlassRefreshNavigationBar(navigationBar);
-        if (interactive && changesBottomBarVisibility) {
-            UIViewController *visibleController = cancelled ? fromVC : toVC;
-            if (!visibleController.hidesBottomBarWhenPushed) {
-                // UIKit finishes tearing down the interactive bar presentation
-                // after completeTransition:. Also covers a cancelled forward
-                // swipe into the editor, which reveals the original tab bar.
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    ApolloNavRestoreTabBarMaterial(navigationController, visibleController);
-                });
-            }
-        }
     }];
     // The animator's blocks hold ctx, the views and the dim/shadow until it finishes;
     // UIViewPropertyAnimator drops them then, so nothing here outlives the transition.
@@ -409,13 +351,46 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
 
 %hook _TtC6Apollo26ApolloNavigationController
 
+// UIKit's tab-bar visibility transition animates the glass separately from the
+// icons. Apollo's replacement animator does not coordinate that material during
+// an interactive reveal; repairing it after completion visibly snaps the platter
+// back in. Use UIKit's complete navigation transition whenever the destination
+// changes hidesBottomBarWhenPushed, for both taps and swipes. This gives UIKit
+// ownership of the reveal, its progress, and cancellation without touching the
+// tab bar's private material or opacity. Ordinary feed navigation keeps Apollo's
+// existing slide animation below.
+- (id<UIViewControllerAnimatedTransitioning>)navigationController:(UINavigationController *)navigationController
+                                animationControllerForOperation:(UINavigationControllerOperation)operation
+                                             fromViewController:(UIViewController *)fromController
+                                               toViewController:(UIViewController *)toController {
+    id<UIViewControllerAnimatedTransitioning> originalAnimator = %orig;
+    Class systemAnimatorClass = ApolloClassUINavigationParallaxTransition;
+    if (!navigationController.tabBarController || !fromController || !toController ||
+        fromController.hidesBottomBarWhenPushed == toController.hidesBottomBarWhenPushed ||
+        (operation != UINavigationControllerOperationPush && operation != UINavigationControllerOperationPop) ||
+        ![(id)originalAnimator isKindOfClass:ApolloClassApolloNavigationAnimator] ||
+        ![systemAnimatorClass instancesRespondToSelector:@selector(initWithCurrentOperation:)]) {
+        return originalAnimator;
+    }
+    id<ApolloNavSystemAnimator> systemAnimator =
+        [(id<ApolloNavSystemAnimator>)[systemAnimatorClass alloc] initWithCurrentOperation:operation];
+    if (!systemAnimator) return originalAnimator;
+    objc_setAssociatedObject(systemAnimator, kApolloNavOriginalAnimatorKey, originalAnimator,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloLog(@"[InterruptibleNav] using UIKit's navigation transition for a tab-bar visibility change");
+    return systemAnimator;
+}
+
 - (id<UIViewControllerInteractiveTransitioning>)navigationController:(UINavigationController *)navigationController
                        interactionControllerForAnimationController:(id<UIViewControllerAnimatedTransitioning>)animationController {
-    id<UIViewControllerInteractiveTransitioning> interactionController = %orig;
+    id<UIViewControllerAnimatedTransitioning> originalAnimator =
+        objc_getAssociatedObject(animationController, kApolloNavOriginalAnimatorKey) ?: animationController;
+    id<UIViewControllerInteractiveTransitioning> interactionController =
+        %orig(navigationController, originalAnimator);
     // Scope the bridge to the Apollo animator replaced below. Preserve a timing provider
     // supplied by the app, and leave non-percent-driven interaction controllers alone.
     Class animatorClass = ApolloClassApolloNavigationAnimator;
-    if ([(id)animationController isKindOfClass:animatorClass] &&
+    if ([(id)originalAnimator isKindOfClass:animatorClass] &&
         [(id)interactionController isKindOfClass:UIPercentDrivenInteractiveTransition.class]) {
         UIPercentDrivenInteractiveTransition *driver = (id)interactionController;
         if (!driver.timingCurve) {
