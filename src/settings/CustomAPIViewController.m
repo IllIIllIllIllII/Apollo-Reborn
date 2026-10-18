@@ -275,7 +275,8 @@ static ApolloFeedShortcutsPreviewState *ApolloFeedShortcutsCurrentPreviewState(
     state.usesCompactFourUp = supportsCompactFourUp &&
         state.visibleIndexes.count == 4 &&
         availableWidth <= 336.0;
-    state.hideDescriptions = sHideSubredditListDescriptions;
+    state.hideDescriptions = sHideSubredditListDescriptions ||
+        (sCompactSubredditListEnabled && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone);
     if (state.layout == ApolloSubredditFeedLayoutRows) {
         NSUInteger count = state.visibleIndexes.count;
         CGFloat rowsHeight = (CGFloat)count * ApolloFeedShortcutPreviewRowItemHeight(traitCollection);
@@ -2861,6 +2862,42 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
             return ApolloSettingsRouteInstantiate(@"feed-shortcuts");
         }];
 
+    ApolloSettingsRow *panelStyle =
+        [ApolloSettingsRow valueRowWithID:@"sub.panelStyle"
+                                   title:@"Subreddit Panel Style"
+                                  detail:^NSString * {
+            return sSubredditPanelGlassEnabled ? @"Liquid Glass" : @"Standard";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"sub.panelStyle"],
+                @"Subreddit Panel Style", @[ @"Standard", @"Liquid Glass" ],
+                sSubredditPanelGlassEnabled ? 1 : 0, ^(NSInteger picked) {
+                    BOOL glassEnabled = picked == 1;
+                    if (sSubredditPanelGlassEnabled == glassEnabled) return;
+                    sSubredditPanelGlassEnabled = glassEnabled;
+                    [NSUserDefaults.standardUserDefaults setBool:glassEnabled
+                        forKey:UDKeySubredditPanelGlassEnabled];
+                    [weakSelf reloadRowWithID:@"sub.panelStyle"];
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:@"ApolloSubredditPanelStyleDidChange" object:nil];
+                });
+        }];
+    panelStyle.visible = ^BOOL { return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone && sCompactSubredditListEnabled; };
+
+    ApolloSettingsRow *compactList =
+        [ApolloSettingsRow switchRowWithID:@"sub.compactList"
+                                    title:@"Compact List"
+                                     isOn:^BOOL { return sCompactSubredditListEnabled; }
+                                 onToggle:^(UISwitch *sender) {
+            sCompactSubredditListEnabled = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn
+                forKey:UDKeyCompactSubredditListEnabled];
+            [[NSNotificationCenter defaultCenter]
+                postNotificationName:@"ApolloCompactSubredditListDidChange" object:nil];
+            [weakSelf visibilityDidChange];
+        }];
+    compactList.visible = ^BOOL { return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone; };
+
     // Pushes the dedicated Subreddit Sections screen: the FOLLOWING section
     // for followed users, drag-to-reorder for the special sections, and a
     // live preview of the list layout (see ApolloSubredditSectionsViewController).
@@ -2899,7 +2936,7 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                   }];
     return [ApolloSettingsSection sectionWithTitle:@"Subreddit List"
                                             footer:nil
-                                              rows:@[ feedShortcuts, subredditSections,
+                                              rows:@[ feedShortcuts, subredditSections, compactList, panelStyle,
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
@@ -2984,8 +3021,16 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
     ApolloSettingsRow *hideFeedDescriptions =
         [ApolloSettingsRow switchRowWithID:@"sub.hideFeedDescriptions"
                                      title:@"Hide Feed Descriptions"
-                                      isOn:^BOOL { return sHideSubredditListDescriptions; }
+                                      isOn:^BOOL {
+            return sHideSubredditListDescriptions ||
+                (sCompactSubredditListEnabled && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone);
+        }
                                   onToggle:^(UISwitch *sender) { [weakSelf hideSubredditListDescriptionsSwitchToggled:sender]; }];
+    // Compact rows always omit descriptions. Preserve the user's full-list
+    // preference so turning Compact List off restores their previous choice.
+    hideFeedDescriptions.enabled = ^BOOL {
+        return !(sCompactSubredditListEnabled && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone);
+    };
     hideFeedDescriptions.visible = ^BOOL {
         return sSubredditFeedLayout == ApolloSubredditFeedLayoutRows;
     };

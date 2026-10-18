@@ -226,6 +226,10 @@ extern "C" {
 // Launch-only choice, read by ApolloCommon +load before any Logos constructor.
 // Settings write UDKeyLiquidGlassEnabled only; never change this live.
 extern BOOL sLiquidGlassEnabled;
+// Optional narrow subreddit panel with dense rows and no letter dividers.
+extern BOOL sCompactSubredditListEnabled;
+// Panel surface: Standard by default, or Liquid Glass.
+extern BOOL sSubredditPanelGlassEnabled;
 #ifdef __cplusplus
 }
 #endif

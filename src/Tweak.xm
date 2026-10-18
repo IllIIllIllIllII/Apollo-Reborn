@@ -3759,6 +3759,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyIPadTabBarBottom: @NO,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
+                                    UDKeyCompactSubredditListEnabled: @NO,
+                                    UDKeySubredditPanelGlassEnabled: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -3825,6 +3827,14 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyNotificationBackendRegistrationToken: @"",
                                     UDKeyRedditClientSecret: @""};
     NSUserDefaults *standardDefaults = [NSUserDefaults standardUserDefaults];
+    // Carry the prototype's Compact Rows choice into Compact List, only when
+    // the user has not saved a value for the new setting yet.
+    if (![standardDefaults objectForKey:UDKeyCompactSubredditListEnabled]) {
+        NSNumber *legacyCompact = [standardDefaults objectForKey:@"DuoSubredditPanelCompactEnabled"];
+        if ([legacyCompact isKindOfClass:NSNumber.class]) {
+            [standardDefaults setBool:legacyCompact.boolValue forKey:UDKeyCompactSubredditListEnabled];
+        }
+    }
     [standardDefaults registerDefaults:defaultValues];
     sAutomaticBackupsEnabled = [standardDefaults boolForKey:UDKeyAutomaticBackupsEnabled];
     sAutomaticBackupIntervalDays = [standardDefaults integerForKey:UDKeyAutomaticBackupIntervalDays];
@@ -4073,6 +4083,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     // sLiquidGlassEnabled was already latched in ApolloCommon +load. Do not
     // reload it here: UIKit and early hook constructors use that launch choice.
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
+    sCompactSubredditListEnabled = [standardDefaults boolForKey:UDKeyCompactSubredditListEnabled];
+    sSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeySubredditPanelGlassEnabled];
     sIconRowMagnifier = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIconRowMagnifier];
     sInfoRowTapUpvote = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapUpvote];
     sInfoRowTapComments = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyInfoRowTapComments];
