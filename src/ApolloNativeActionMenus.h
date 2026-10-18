@@ -31,7 +31,9 @@ BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
 
 // Run a selected menu row's navigation immediately, alongside UIKit's menu
 // dismissal. Prepare a stable window-backed preview first and retain all menu
-// resources until UIKit completes. Returns NO for an ordinary Apollo sheet.
+// resources until UIKit completes. A separate transparent dismissal preview
+// keeps the old source pill from lingering above the destination.
+// Returns NO for an ordinary Apollo sheet.
 BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
                                                 dispatch_block_t action);
 

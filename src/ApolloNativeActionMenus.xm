@@ -176,6 +176,12 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, strong) UIView *morphStandInView;
 @property (nonatomic, strong) UIView *morphHostView;
 @property (nonatomic, strong) UITargetedPreview *morphPreview;
+// Navigation leaves the source page before the menu's return spring settles.
+// Keep its original live preview owned, but dismiss toward a separate clear
+// view so UIKit does not draw the old navigation pill over the new page.
+@property (nonatomic, assign) BOOL navigationHandoffStarted;
+@property (nonatomic, strong) UIView *navigationDismissalSource;
+@property (nonatomic, strong) UITargetedPreview *navigationDismissalPreview;
 @property (nonatomic, assign) BOOL didBeginPresentation;
 @property (nonatomic, assign) BOOL didRequestConfiguration;
 @property (nonatomic, assign) BOOL dismissing;
@@ -196,6 +202,8 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 - (BOOL)hasFadedOutBeforePresentationFromSource:(UIView *)source;
 - (void)fadeLinkTick:(CADisplayLink *)link;
 - (UITargetedPreview *)previewForCurrentSource;
+- (UITargetedPreview *)navigationPreviewForDismissal;
+- (void)prepareForNavigationDismissal;
 - (void)captureNativePresentation;
 - (void)finishPresentation;
 @end
@@ -303,6 +311,7 @@ BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
     // its target must remain in the window even when the source button leaves.
     [presenter captureNativePresentation];
     [presenter previewForCurrentSource];
+    [presenter prepareForNavigationDismissal];
     presenter.afterDismissalAction = nil;
     presenter.pendingPresentationAction = nil;
     ApolloLog(@"[NativeActionMenu] Starting selected navigation alongside menu dismissal");
@@ -1209,8 +1218,10 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
     return [UIMenu menuWithTitle:title children:children];
 }
 
-// Use the owned glass surface for both morph directions; a blank stand-in
-// leaves two visible lenses and warped glyphs. Non-owned controls use only geometry.
+// Ordinary menu dismissals reuse the owned glass surface in both directions;
+// a blank stand-in leaves two lenses over the still-visible source page.
+// Navigation instead retires that source with a separate clear preview below.
+// Non-owned controls use only geometry.
 // All targets need a stable window-hosted view: iOS 27 AnimationKit requires a
 // superview, so UIWindow itself is invalid, even when the source page detaches.
 
@@ -1331,12 +1342,54 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     return self.morphPreview;
 }
 
+- (UITargetedPreview *)navigationPreviewForDismissal {
+    if (self.navigationDismissalPreview) return self.navigationDismissalPreview;
+    if (self.ended || !self.morphHostView.window) return nil;
+    UITargetedPreview *sourcePreview = [self previewForCurrentSource];
+    if (!sourcePreview) return nil;
+    CGSize size = sourcePreview.view.bounds.size;
+    size.width = MAX(1, size.width);
+    size.height = MAX(1, size.height);
+    UIView *placeholder = [[UIView alloc] initWithFrame:(CGRect){CGPointZero, size}];
+    placeholder.backgroundColor = UIColor.clearColor;
+    placeholder.opaque = NO;
+    placeholder.userInteractionEnabled = NO;
+    placeholder.accessibilityElementsHidden = YES;
+    CGPoint center = [self.presentationWindow convertPoint:self.presentationAnchorCenter toView:self.morphHostView];
+    placeholder.center = center;
+    [self.morphHostView addSubview:placeholder];
+    self.navigationDismissalSource = placeholder;
+    UIPreviewParameters *parameters = [UIPreviewParameters new];
+    parameters.backgroundColor = UIColor.clearColor;
+    parameters.shadowPath = [UIBezierPath bezierPath];
+    UIPreviewTarget *target = [[UIPreviewTarget alloc] initWithContainer:self.morphHostView center:center];
+    self.navigationDismissalPreview = [[UITargetedPreview alloc] initWithView:placeholder parameters:parameters target:target];
+    return self.navigationDismissalPreview;
+}
+
+- (void)prepareForNavigationDismissal {
+    self.navigationHandoffStarted = YES;
+    UITargetedPreview *preview = [self navigationPreviewForDismissal];
+    // A UIAction may run after willEnd and its first preview request. Retarget
+    // that existing transition too, while keeping both previews alive until
+    // normal completion. Otherwise the upcoming delegate request uses it.
+    BOOL retargeted = NO;
+    SEL retarget = @selector(retargetDismissingMenuToPreview:);
+    if (self.dismissing && preview &&
+        ApolloSendObject(self.nativePresentation, @selector(disappearanceTransition)) &&
+        [self.nativePresentation respondsToSelector:retarget]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(self.nativePresentation, retarget, preview);
+        retargeted = YES;
+    }
+    ApolloLog(@"[NativeActionMenu] Prepared transparent navigation dismissal preview (retargeted=%d)", retargeted);
+}
+
 - (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForHighlightingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
     return [self previewForCurrentSource];
 }
 
 - (UITargetedPreview *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction previewForDismissingMenuWithConfiguration:(__unused UIContextMenuConfiguration *)configuration {
-    return [self previewForCurrentSource];
+    return self.navigationHandoffStarted ? [self navigationPreviewForDismissal] : [self previewForCurrentSource];
 }
 
 - (void)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction willDisplayMenuForConfiguration:(__unused UIContextMenuConfiguration *)configuration animator:(__unused id<UIContextMenuInteractionAnimating>)animator {
@@ -1452,6 +1505,9 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     // UIKit owns source visibility: never reset hidden/alpha or remove the real surface.
     [self.morphStandInView removeFromSuperview];
     self.morphStandInView = nil;
+    [self.navigationDismissalSource removeFromSuperview];
+    self.navigationDismissalSource = nil;
+    self.navigationDismissalPreview = nil;
     [self.morphHostView removeFromSuperview];
     self.morphHostView = nil;
     self.morphPreview = nil;
@@ -1491,7 +1547,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
 
 - (id)nativeHandoffPresentationForSource:(UIView *)source {
     UIView *surface = ApolloNavigationActionsMenuSourceView(source);
-    if (!self.dismissing || !self.didBeginPresentation || !surface ||
+    if (self.navigationHandoffStarted || !self.dismissing || !self.didBeginPresentation || !surface ||
         surface != self.morphPreview.view || surface.window != self.presentationWindow ||
         !self.didRequestConfiguration || !ApolloNativeActionMenuMagicMorphEnabled()) return nil;
 

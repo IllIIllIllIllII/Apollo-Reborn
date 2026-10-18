@@ -1220,6 +1220,13 @@ static void ApolloSimDebugTapNotification(CFNotificationCenterRef center, void *
             ApolloSimDebugDumpHierarchy();
             return;
         }
+        // Re-test the first-use guide on the next gallery entry without
+        // deleting account credentials or other simulator preferences.
+        if ([contents hasPrefix:@"galleryintroreset"]) {
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"ApolloGalleryPinchIntroductionAcknowledged"];
+            ApolloLog(@"[SimDebugTap] gallery pinch introduction reset");
+            return;
+        }
         // "headerdump" command: log every visible scroll view's topEdgeEffect
         // state (pointer, hidden, style, tweak stamps) for header debugging.
         if ([contents hasPrefix:@"headerdump"]) {
