@@ -6,6 +6,7 @@
 #import "ApolloGallerySource.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
+#import "ApolloGalleryMediaActions.h"
 #import "ApolloCommon.h"
 #import "ApolloDeviceGeometry.h"
 #import "ApolloTagFilters.h"
@@ -17,6 +18,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 #import "ApolloClasses.h"
 
 // Target tile width. The column count is derived from it so the grid widens
@@ -40,6 +42,8 @@ static CGFloat const kApolloGalleryDefaultAspect = 1.25;
 static NSInteger const kApolloGalleryLoadAheadRows = 3;
 
 static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
+static char kApolloGalleryContextMenuActions;
+static char kApolloGalleryContextMenuSourceItem;
 
 // Grid autoplay ("Play Videos / GIFs in Gallery View"). Only tiles on screen
 // play, and only this many at once: every playing tile is a decoder session.
@@ -652,6 +656,14 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 @property (nonatomic, strong) UILabel *footerLabel;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, weak, nullable) ApolloGalleryImageViewer *activeViewer;
+@property (nonatomic) BOOL galleryContextMenuActive;
+@property (nonatomic, strong) NSMutableSet<UIContextMenuConfiguration *> *activeGalleryContextMenus;
+@property (nonatomic) BOOL galleryReloadPendingAfterMenu;
+@property (nonatomic) BOOL pinchEnabledBeforeContextMenu;
+@property (nonatomic, weak) UINavigationBar *contextMenuNavigationBar;
+@property (nonatomic) BOOL navigationBarEnabledBeforeContextMenu;
+@property (nonatomic, weak) UIGestureRecognizer *contextMenuPopGesture;
+@property (nonatomic) BOOL popGestureEnabledBeforeContextMenu;
 @property (nonatomic, strong, nullable) UIBarButtonItem *filterBarButtonItem;
 @property (nonatomic) NSInteger tileSizeIndex;
 @property (nonatomic, strong) UIPinchGestureRecognizer *tilePinch;
@@ -1068,6 +1080,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    if (self.galleryContextMenuActive) [self.collectionView.contextMenuInteraction dismissMenu];
     [self apollo_finishTilePinchAnimated:NO];
     if (@available(iOS 16.0, *)) {
         [self.navigationController setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -1090,7 +1103,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // The captured Reddit preference can arrive after Gallery's initial cells
     // were configured, or change when the active account switches; the Tag
     // Filters settings can be edited while a Gallery sits in the nav stack.
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     (void)notification;
 }
 
@@ -1280,7 +1293,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 // (not under the fullscreen viewer, not popped), and no memory warning during
 // this visit. Per-kind gating is ApolloGalleryTileAutoplayEnabledForKind.
 - (BOOL)apollo_tileAutoplayAllowed {
-    if (self.pinchingTiles || self.tileSizeSettlement) return NO;
+    if (self.pinchingTiles || self.tileSizeSettlement || self.galleryContextMenuActive) return NO;
     if (!sGalleryAutoplayVideos && !sGalleryAutoplayGIFs) return NO;
     if (self.tilePlaybackSuspendedForMemory) return NO;
     if ([NSProcessInfo processInfo].isLowPowerModeEnabled) return NO;
@@ -1386,6 +1399,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (void)apollo_applicationDidEnterBackground:(NSNotification *)notification {
     (void)notification;
+    if (self.galleryContextMenuActive) [self.collectionView.contextMenuInteraction dismissMenu];
     [self apollo_finishTilePinchAnimated:NO];
     [self apollo_stopAllTilePlayback];
 }
@@ -1417,7 +1431,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer == self.tilePinch) {
-        return self.feed.items.count > 0 && self.collectionView.bounds.size.width > 0.0;
+        return !self.galleryContextMenuActive && self.feed.items.count > 0 && self.collectionView.bounds.size.width > 0.0;
     }
     return YES;
 }
@@ -1691,7 +1705,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     self.filterBarButtonItem.image = [self apollo_filterButtonImage];
     self.filterBarButtonItem.menu = [self apollo_buildFilterMenu];
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self.collectionView setContentOffset:CGPointMake(0.0, -self.collectionView.adjustedContentInset.top) animated:NO];
     ApolloLog(@"[Gallery] filter -> photo:%d gif:%d video:%d (%lu of %lu shown)",
               (updated & ApolloGalleryMediaKindPhoto) != 0,
@@ -1790,7 +1804,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     if (self.feed.sort == sort && (!ApolloGallerySortUsesWindow(sort) || self.feed.topWindow == window)) return;
     [self.feed setSort:sort topWindow:window];
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self.collectionView setContentOffset:CGPointMake(0.0, -self.collectionView.adjustedContentInset.top) animated:NO];
     self.navigationItem.rightBarButtonItems.firstObject.menu = [self apollo_buildSortMenu];
     [self apollo_beginInitialLoad];
@@ -1811,7 +1825,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         strongSelf.initialLoadPending = NO;
         [strongSelf.initialSpinner stopAnimating];
         [strongSelf.refreshControl endRefreshing];
-        [strongSelf.collectionView reloadData];
+        [strongSelf apollo_reloadGridPreservingContextMenu];
         [strongSelf apollo_updateEmptyStateWithError:errorMessage];
         // Built before the first fetch, so its "N loaded" subtitles were all
         // zero until now.
@@ -1826,7 +1840,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     // calls back to clear its "Loading more…" pill; a sort change clears it
     // the same way.
     [self apollo_setFooterText:nil];
-    [self.collectionView reloadData];
+    [self apollo_reloadGridPreservingContextMenu];
     [self apollo_beginInitialLoad];
 }
 
@@ -1920,6 +1934,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 // The count can only have GROWN here — shrinks happen solely in
 // apollo_toggleKind, which reloads wholesale.
 - (void)apollo_syncAppendedItems {
+    if (self.galleryReloadPendingAfterMenu) return;
     NSInteger known = [self.collectionView numberOfItemsInSection:0];
     NSInteger total = (NSInteger)self.feed.items.count;
     if (total <= known) return;
@@ -1937,6 +1952,152 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 #pragma mark Collection view
+
+#pragma mark Grid context menus
+
+- (UIContextMenuConfiguration *)apollo_contextMenuForItemAtIndexPath:(NSIndexPath *)indexPath {
+    if (self.pinchingTiles || self.galleryContextMenuActive || indexPath.item >= self.feed.items.count) return nil;
+    ApolloGalleryTileCell *cell = (ApolloGalleryTileCell *)[self.collectionView cellForItemAtIndexPath:indexPath];
+    ApolloGalleryItem *item = self.feed.items[indexPath.item];
+    if (![cell isKindOfClass:ApolloGalleryTileCell.class] || cell.item != item || !cell.window) return nil;
+
+    // The action session owns the item, never an index into a mutable feed.
+    // Use the stable grid as the share-popover source: a dismissed menu may
+    // trigger a pending reload and recycle its original cell before sharing.
+    ApolloGalleryMediaActions *actions = [[ApolloGalleryMediaActions alloc] initWithItem:item
+        presenter:self sourceView:self.collectionView];
+    UIContextMenuConfiguration *configuration = [UIContextMenuConfiguration
+        configurationWithIdentifier:NSUUID.UUID.UUIDString previewProvider:nil
+        actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+            (void)suggestedActions;
+            return [actions menu];
+        }];
+    objc_setAssociatedObject(configuration, &kApolloGalleryContextMenuActions, actions, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // Actions intentionally snapshot the model. Retain the original identity
+    // separately only for locating the still-visible tile's native preview.
+    objc_setAssociatedObject(configuration, &kApolloGalleryContextMenuSourceItem, item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return configuration;
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point {
+    (void)collectionView;
+    (void)point;
+    return [self apollo_contextMenuForItemAtIndexPath:indexPath];
+}
+
+- (UIContextMenuConfiguration *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfigurationForItemsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths point:(CGPoint)point {
+    (void)collectionView;
+    (void)point;
+    return indexPaths.count == 1 ? [self apollo_contextMenuForItemAtIndexPath:indexPaths.firstObject] : nil;
+}
+
+- (UITargetedPreview *)apollo_previewForContextMenu:(UIContextMenuConfiguration *)configuration {
+    ApolloGalleryItem *sourceItem = objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuSourceItem);
+    if (!sourceItem) return nil;
+    for (ApolloGalleryTileCell *cell in self.collectionView.visibleCells) {
+        if (![cell isKindOfClass:ApolloGalleryTileCell.class] || cell.item != sourceItem || !cell.window) continue;
+        // Preview the real content hierarchy, including its NSFW/spoiler
+        // cover and badges. No full-size image provider can bypass the blur.
+        UIPreviewParameters *parameters = [UIPreviewParameters new];
+        parameters.backgroundColor = cell.contentView.backgroundColor ?: self.view.backgroundColor;
+        parameters.visiblePath = [UIBezierPath bezierPathWithRoundedRect:cell.contentView.bounds
+            cornerRadius:cell.contentView.layer.cornerRadius];
+        return [[UITargetedPreview alloc] initWithView:cell.contentView parameters:parameters];
+    }
+    return nil;
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    previewForHighlightingContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    (void)collectionView;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    previewForDismissingContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration {
+    (void)collectionView;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfiguration:(UIContextMenuConfiguration *)configuration highlightPreviewForItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionView;
+    (void)indexPath;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (UITargetedPreview *)collectionView:(UICollectionView *)collectionView
+    contextMenuConfiguration:(UIContextMenuConfiguration *)configuration dismissalPreviewForItemAtIndexPath:(NSIndexPath *)indexPath {
+    (void)collectionView;
+    (void)indexPath;
+    return [self apollo_previewForContextMenu:configuration];
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    willDisplayContextMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
+    animator:(id<UIContextMenuInteractionAnimating>)animator {
+    (void)collectionView;
+    (void)animator;
+    if (!objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuActions)) return;
+    if (!self.activeGalleryContextMenus) self.activeGalleryContextMenus = [NSMutableSet set];
+    [self.activeGalleryContextMenus addObject:configuration];
+    if (self.galleryContextMenuActive) return;
+    self.galleryContextMenuActive = YES;
+    [self apollo_finishTilePinchAnimated:NO];
+    [self apollo_stopAllTilePlayback];
+    self.pinchEnabledBeforeContextMenu = self.tilePinch.enabled;
+    self.tilePinch.enabled = NO;
+    self.contextMenuNavigationBar = self.navigationController.navigationBar;
+    self.navigationBarEnabledBeforeContextMenu = self.contextMenuNavigationBar.userInteractionEnabled;
+    self.contextMenuNavigationBar.userInteractionEnabled = NO;
+    self.contextMenuPopGesture = self.navigationController.interactivePopGestureRecognizer;
+    self.popGestureEnabledBeforeContextMenu = self.contextMenuPopGesture.enabled;
+    self.contextMenuPopGesture.enabled = NO;
+}
+
+- (void)collectionView:(UICollectionView *)collectionView
+    willEndContextMenuInteractionWithConfiguration:(UIContextMenuConfiguration *)configuration
+    animator:(id<UIContextMenuInteractionAnimating>)animator {
+    (void)collectionView;
+    // Keep every gate closed until UIKit has finished moving the preview
+    // back into place. An action may then route away or present a share sheet.
+    void (^finished)(void) = ^{
+        ApolloGalleryMediaActions *actions = objc_getAssociatedObject(configuration, &kApolloGalleryContextMenuActions);
+        [self.activeGalleryContextMenus removeObject:configuration];
+        if (self.galleryContextMenuActive && self.activeGalleryContextMenus.count == 0) {
+            self.galleryContextMenuActive = NO;
+            self.tilePinch.enabled = self.pinchEnabledBeforeContextMenu;
+            self.contextMenuNavigationBar.userInteractionEnabled = self.navigationBarEnabledBeforeContextMenu;
+            self.contextMenuPopGesture.enabled = self.popGestureEnabledBeforeContextMenu;
+            self.contextMenuNavigationBar = nil;
+            self.contextMenuPopGesture = nil;
+            if (self.galleryReloadPendingAfterMenu) {
+                self.galleryReloadPendingAfterMenu = NO;
+                [self.collectionView reloadData];
+            }
+            [self apollo_setNeedsTilePlaybackRefresh];
+        }
+        [actions menuDidEnd];
+    };
+    if (animator) [animator addCompletion:finished];
+    else dispatch_async(dispatch_get_main_queue(), finished);
+}
+
+- (void)apollo_reloadGridPreservingContextMenu {
+    if (self.galleryContextMenuActive) {
+        // Do not recycle a cell while UIKit is showing its live preview.
+        // The feed may change immediately; the menu's actions still refer to
+        // their captured item and the grid catches up after dismissal.
+        self.galleryReloadPendingAfterMenu = YES;
+        [self.collectionView.contextMenuInteraction dismissMenu];
+        return;
+    }
+    [self.collectionView reloadData];
+}
+
+#pragma mark Collection data source
 
 - (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
     return (NSInteger)self.feed.items.count;
@@ -1972,6 +2133,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
     [collectionView deselectItemAtIndexPath:indexPath animated:NO];
+    if (self.galleryContextMenuActive) return;
     if (indexPath.item >= (NSInteger)self.feed.items.count) return;
 
     ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed
@@ -2016,17 +2178,11 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer didAppendItemsInRange:(NSRange)addedRange {
     // The viewer paged past the end and pulled the batch itself; mirror it into
-    // the grid so the two stay in step.
-    NSInteger known = [self.collectionView numberOfItemsInSection:0];
-    NSInteger total = (NSInteger)self.feed.items.count;
-    if (total <= known) return;
-    NSMutableArray<NSIndexPath *> *indexPaths = [NSMutableArray array];
-    for (NSInteger i = known; i < total; i++) {
-        [indexPaths addObject:[NSIndexPath indexPathForItem:i inSection:0]];
-    }
-    [self.collectionView performBatchUpdates:^{
-        [self.collectionView insertItemsAtIndexPaths:indexPaths];
-    } completion:nil];
+    // the grid so the two stay in step. Its final callback can arrive after
+    // dismissal, while a new grid menu is deferring a wholesale reload.
+    [self apollo_syncAppendedItems];
+    (void)viewer;
+    (void)addedRange;
 }
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer willDismissAtIndex:(NSInteger)index {

@@ -15,11 +15,18 @@ id _Nullable ApolloNativeActionMenuCaptureController(UIView *source, dispatch_bl
 BOOL ApolloNativeActionMenuHasAction(id controller, uint16_t kind);
 void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind);
 UIMenu *_Nullable ApolloNativeActionMenuBuildCaptured(id controller);
+// Explicit captured menus work independently of the Liquid Glass preference.
+// Accepted requests call didEnd once, including cancellation before display;
+// callers handle immediate rejection (NO) themselves.
 BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id controller,
                                            dispatch_block_t _Nullable didEnd);
 // Gesture menus use a point in source coordinates instead of the source centre.
 BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
                                                   id controller, dispatch_block_t _Nullable didEnd);
+// Call once after a captured presentation succeeds. Uses UIKit's native hold
+// preview pattern and keeps its feedback alive until that menu ends. Ordinary
+// UIContextMenuInteraction gestures already supply their own feedback.
+void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point);
 void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *configuration, CGPoint point);
 
 // Runs `action` after the tweak-owned Liquid Glass context menu that was built

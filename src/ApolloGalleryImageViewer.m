@@ -6,6 +6,8 @@
 #import "ApolloCommon.h"
 #import "ApolloDeviceGeometry.h"
 #import "ApolloGalleryVideoExport.h"
+#import "ApolloGalleryMediaActions.h"
+#import "ApolloNativeActionMenus.h"
 
 #import <Photos/Photos.h>
 #import <AVFoundation/AVFoundation.h>
@@ -26,7 +28,7 @@ static CGFloat const kApolloGalleryViewerDismissVelocity = 850.0;
 // the end, so paging rarely stalls on the network.
 static NSInteger const kApolloGalleryViewerLoadAheadSlack = 4;
 // On a video page a hold first arms hold-and-drag scrubbing; left still this
-// much longer (seconds), it opens the actions sheet instead. Pictures, which
+// much longer (seconds), it opens the actions menu instead. Pictures, which
 // can't scrub, open it the moment the hold registers.
 static NSTimeInterval const kApolloGalleryViewerHoldActionsDelay = 0.3;
 
@@ -594,9 +596,12 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // Hold-and-drag scrubbing on the video itself (Apollo's MediaViewer has the
 // same gesture as scrubPanGestureRecognizer): the long-press arms on a video
 // page, and horizontal movement past a small slop turns it into a scrub. A
-// press that stays still opens the actions sheet instead — while the finger is
+// press that stays still opens the actions menu instead — while the finger is
 // still down, kApolloGalleryViewerHoldActionsDelay after arming, or on release
 // if it lifts sooner.
+// Keep the action target stable until UIKit finishes dismissing its menu.
+@property (nonatomic, strong) ApolloGalleryMediaActions *mediaMenuSession;
+@property (nonatomic) CGPoint mediaHoldPoint;
 @property (nonatomic) BOOL gestureScrubArmed;
 @property (nonatomic) BOOL gestureScrubActive;
 @property (nonatomic) CGFloat gestureScrubStartX;
@@ -1669,7 +1674,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 #pragma mark Gestures
 
 - (void)apollo_singleTapped:(UITapGestureRecognizer *)recognizer {
-    if (recognizer.state != UIGestureRecognizerStateRecognized) return;
+    if (recognizer.state != UIGestureRecognizerStateRecognized || self.mediaMenuSession) return;
     [self apollo_setChromeVisible:!self.chromeVisible animated:YES];
 }
 
@@ -1680,13 +1685,15 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 
     switch (recognizer.state) {
         case UIGestureRecognizerStateBegan: {
+            if (self.mediaMenuSession || self.presentedViewController || self.isDismissing) return;
+            self.mediaHoldPoint = [recognizer locationInView:self.view];
             if (!scrubbable) {
                 // Still pictures keep the original hold-for-actions.
-                [self apollo_presentActionsFromView:self.view];
+                [self apollo_presentActionsFromView:self.collectionView];
                 return;
             }
             // Arm, but don't commit: a hold that never moves is still the
-            // actions sheet, so the old gesture isn't lost.
+            // actions menu, so the old gesture isn't lost.
             self.gestureScrubArmed = YES;
             self.gestureScrubActive = NO;
             self.gestureScrubStartX = [recognizer locationInView:self.view].x;
@@ -1698,7 +1705,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
             // had started on this touch, so the horizontal scrub can't also
             // turn the page.
             self.collectionView.scrollEnabled = NO;
-            // The sheet opens while the finger is still down, like a
+            // The menu opens while the finger is still down, like a
             // picture's hold and Apollo's own viewer, once the hold has
             // stayed still a moment past arming; that moment is the window
             // for starting a scrub. It used to wait for the lift (#1176).
@@ -1741,9 +1748,9 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
             if (!wasArmed) return;
             self.collectionView.scrollEnabled = YES;
             if (!wasActive) {
-                // Lifted without dragging before the sheet opened on its own.
+                // Lifted without dragging before the menu opened on its own.
                 if (recognizer.state == UIGestureRecognizerStateEnded) {
-                    [self apollo_presentActionsFromView:self.view];
+                    [self apollo_presentActionsFromView:self.collectionView];
                 }
                 return;
             }
@@ -1774,17 +1781,17 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 }
 
 // The delayed half of a video-page hold: still armed and never dragged, so it
-// was a hold for the actions sheet after all.
+// was a hold for the actions menu after all.
 - (void)apollo_holdStayedStillForGeneration:(NSUInteger)generation {
     // A newer hold, or this one already lifted, was cancelled, or became a scrub.
     if (generation != self.gestureScrubHoldGeneration) return;
     if (!self.gestureScrubArmed || self.gestureScrubActive || self.presentedViewController) return;
-    // Disarm before presenting: the rest of this touch belongs to the sheet,
+    // Disarm before presenting: the rest of this touch belongs to the menu,
     // so a drag now can't start scrubbing and the lift can't open a second one.
     self.gestureScrubArmed = NO;
     self.collectionView.scrollEnabled = YES;
-    ApolloLog(@"[Gallery] viewer hold stayed still; opening the actions sheet");
-    [self apollo_presentActionsFromView:self.view];
+    ApolloLog(@"[Gallery] viewer hold stayed still; opening the actions menu");
+    [self apollo_presentActionsFromView:self.collectionView];
 }
 
 - (ApolloGalleryViewerCell *)apollo_currentCell {
@@ -1871,7 +1878,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 }
 
 - (void)apollo_donePressed {
-    if (self.isDismissing) return;
+    if (self.isDismissing || self.mediaMenuSession) return;
     self.isDismissing = YES;
     [self apollo_notifyWillDismiss];
     [self dismissViewControllerAnimated:YES completion:nil];
@@ -1880,6 +1887,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 #pragma mark UIGestureRecognizerDelegate
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (self.mediaMenuSession) return NO;
     // The card's swipe is horizontal-only, so it and the viewer's vertical
     // swipe-to-close can never both claim the same drag.
     if (gestureRecognizer == self.infoPan) {
@@ -1887,10 +1895,8 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
         return fabs(velocity.x) > fabs(velocity.y);
     }
     if (gestureRecognizer != self.dismissPan) return YES;
-    // A hold that opened the actions sheet keeps its touch, and that drag must
-    // not start closing the viewer under the sheet: the flick's dismiss would
-    // take down the sheet (our presented child) instead of the viewer, leaving
-    // it black with isDismissing stuck and Done dead.
+    // A share sheet also owns presentation: swiping underneath it must not
+    // dismiss the child instead of the viewer and leave Done in a stuck state.
     if (self.presentedViewController) return NO;
     // A zoomed-in page pans its own content instead.
     if ([self apollo_currentCell].isZoomed) return NO;
@@ -1908,6 +1914,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (self.mediaMenuSession) return NO;
     // The card's own tap (open post) must not fire when the touch is on its
     // × — that button dismisses the card instead.
     if (gestureRecognizer == self.infoTap || gestureRecognizer == self.infoPan) return YES;
@@ -2043,9 +2050,9 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     }];
 }
 
-// The share button's actions as a UIMenu. Same set as the long-press sheet;
-// as a menu it gets the iOS 26 morph out of the button for free, and on older
-// releases it's still a native menu rather than a modal sheet.
+// The share button keeps its media actions and viewer-specific info toggle.
+// UIKit animates this menu from the button; media holds are anchored separately
+// at the finger so they also leave room for hold-and-drag video scrubbing.
 - (UIMenu *)apollo_buildActionsMenu {
     ApolloGalleryItem *item = [self apollo_currentItem];
     if (!item) return [UIMenu menuWithTitle:@"" children:@[]];
@@ -2106,56 +2113,42 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)apollo_presentActionsFromView:(UIView *)sourceView {
-    // Never over a swipe-to-close already under way, for the same reason the
-    // dismiss pan won't start under a presented sheet.
     UIGestureRecognizerState dismissState = self.dismissPan.state;
-    if (self.isDismissing || dismissState == UIGestureRecognizerStateBegan ||
-        dismissState == UIGestureRecognizerStateChanged) return;
+    if (self.isDismissing || self.mediaMenuSession || self.presentedViewController ||
+        dismissState == UIGestureRecognizerStateBegan || dismissState == UIGestureRecognizerStateChanged) return;
     ApolloGalleryItem *item = [self apollo_currentItem];
     if (!item) return;
 
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:item.postTitle
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    ApolloGalleryMediaActions *session = [[ApolloGalleryMediaActions alloc] initWithItem:item
+                                                                              presenter:self
+                                                                             sourceView:sourceView];
+    NSURL *postURL = session.item.postURL;
     __weak typeof(self) weakSelf = self;
-    if (item.playsAsVideo) {
-        if (item.videoDownloadURL) {
-            [sheet addAction:[UIAlertAction actionWithTitle:@"Save Video" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                [weakSelf apollo_saveCurrentVideo];
-            }]];
+    session.openPostHandler = ^{ [weakSelf apollo_openPostURL:postURL]; };
+    self.mediaMenuSession = session;
+    // Native context menus do not present a child view controller. Explicitly
+    // hold the pager and dismiss gestures until UIKit's dismissal completes.
+    self.collectionView.scrollEnabled = NO;
+    // The source must be inside this controller's root view. A proxy beside
+    // the root lands in UIKit's modal transition container, whose responder
+    // chain cannot resolve the viewer as the menu's presentation owner.
+    CGPoint point = [self.view convertPoint:self.mediaHoldPoint toView:sourceView];
+    BOOL presented = ApolloNativeActionMenuPresentCapturedAtPoint([session menu], sourceView, point, session, ^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf.mediaMenuSession == session) {
+            strongSelf.mediaMenuSession = nil;
+            strongSelf.collectionView.scrollEnabled = YES;
         }
-        NSURL *shareURL = item.videoURL ?: item.hostedVideoPageURL;
-        if (shareURL) {
-            [sheet addAction:[UIAlertAction actionWithTitle:@"Share Video Link" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-                [weakSelf apollo_presentActivityWithItems:@[shareURL] fromView:sourceView];
-            }]];
-        }
+        [session menuDidEnd];
+    });
+    if (presented) {
+        ApolloNativeActionMenuPreviewFeedback(sourceView, point);
+        ApolloLog(@"[Gallery] opened native media menu (page %ld)", (long)self.currentIndex);
     } else {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Save Image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf apollo_saveCurrentImage];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share Image" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf apollo_shareCurrentImageFromView:sourceView];
-        }]];
+        self.mediaMenuSession = nil;
+        self.collectionView.scrollEnabled = YES;
+        ApolloLog(@"[Gallery] native media menu could not open");
     }
-    if (item.postURL) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Share Post Link" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf apollo_sharePostLinkFromView:sourceView];
-        }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Open Post" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf apollo_openCurrentPost];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover) {
-        popover.sourceView = sourceView ?: self.view;
-        popover.sourceRect = (sourceView && sourceView != self.view)
-            ? sourceView.bounds
-            : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1.0, 1.0);
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 // Original bytes when we still have them (a GIF stays animated), otherwise a
@@ -2277,8 +2270,11 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 // first: routing a URL while a fullscreen modal is up would push the post
 // behind it.
 - (void)apollo_openCurrentPost {
-    NSURL *postURL = [self apollo_currentItem].postURL;
-    if (!postURL) return;
+    [self apollo_openPostURL:[self apollo_currentItem].postURL];
+}
+
+- (void)apollo_openPostURL:(NSURL *)postURL {
+    if (!postURL || self.isDismissing || self.mediaMenuSession) return;
     if (!self.isDismissing) {
         self.isDismissing = YES;
         [self apollo_notifyWillDismiss];

@@ -147,6 +147,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloGalleryFeed.m \
     $(SRC_DIR)/ApolloGallerySource.xm \
     $(SRC_DIR)/ApolloGalleryImageLoader.m \
+    $(SRC_DIR)/ApolloGalleryMediaActions.m \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
     $(SRC_DIR)/ApolloGalleryPinchIntroduction.m \

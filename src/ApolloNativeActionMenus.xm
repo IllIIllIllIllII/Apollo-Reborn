@@ -13,6 +13,10 @@
 #include <dlfcn.h>
 #import "ApolloClasses.h"
 
+// Shared with Apollo's full-screen media hold; the returned block owns the
+// generator and ends its native interaction when the captured menu finishes.
+extern "C" dispatch_block_t ApolloMediaMenuBeginPreviewFeedback(UIView *source, CGPoint point);
+
 static char kApolloNativeActionMenuControllerKey;
 static char kApolloNativeActionMenuInvokingActionKey;
 static char kApolloNativeActionMenuWrappedModeratorActionKey;
@@ -24,6 +28,7 @@ static char kApolloNativeActionMenuSourcePointKey;
 static char kApolloNativeActionMenuWrappedSourceActionKey;
 static char kApolloNativeActionMenuWindowPresenterKey;
 static char kApolloNativeActionMenuWindowRequestKey;
+static char kApolloNativeActionMenuCapturedSourcePresenterKey;
 static char kApolloNativeActionMenuSurfaceStateKey;
 static char kApolloMediaMenuPressLocationKey;
 
@@ -166,6 +171,8 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 @property (nonatomic, weak) id actionController;
 @property (nonatomic, copy) dispatch_block_t afterDismissalAction;
 @property (nonatomic, copy) dispatch_block_t didEnd;
+@property (nonatomic, copy) dispatch_block_t previewFeedbackEnd;
+@property (nonatomic, assign) BOOL notifiesCapturedCancellation;
 @property (nonatomic, strong) ApolloNativeActionMenuSurfaceLease *surfaceLease;
 // Keep the presentation window and anchor point for the menu's short lifetime.
 // A selected action may push another controller before UIKit asks for its
@@ -1227,6 +1234,22 @@ static UIMenu *ApolloNativeActionMenuBuildMenu(id actionController, BOOL moderat
 
 @implementation ApolloNativeActionMenuPresenter
 
+// A queued captured menu can be superseded before it owns an anchor. Its
+// pending block then releases the presenter without any UIKit end callback.
+// Notify only accepted captured requests; immediate NO remains the caller's
+// responsibility. Normal finish clears both blocks, so this cannot double-end.
+- (void)dealloc {
+    dispatch_block_t feedbackEnd = _previewFeedbackEnd;
+    dispatch_block_t didEnd = nil;
+    if (_notifiesCapturedCancellation) didEnd = _didEnd;
+    if (feedbackEnd || didEnd) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (feedbackEnd) feedbackEnd();
+            if (didEnd) didEnd();
+        });
+    }
+}
+
 // End ownership explicitly, including aborts: the anchor retains its presenter.
 
 - (UIContextMenuConfiguration *)contextMenuInteraction:(__unused UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(__unused CGPoint)location {
@@ -1494,6 +1517,9 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     if (ApolloNativeActionMenuPresenterForController(self.actionController) == self) {
         ApolloNativeActionMenuSetPresenterForController(self.actionController, nil);
     }
+    dispatch_block_t feedbackEnd = self.previewFeedbackEnd;
+    self.previewFeedbackEnd = nil;
+    if (feedbackEnd) feedbackEnd();
     dispatch_block_t didEnd = self.didEnd;
     self.didEnd = nil;
     if (didEnd) didEnd();
@@ -1592,6 +1618,7 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
         active.pendingPresentationAction = ^{
             UIView *liveSource = weakSource;
             if (liveSource.window == window) [self presentFromView:liveSource completion:completion];
+            else [self finishPresentation];
         };
         if (!active.dismissing) [active.interaction dismissMenu];
         return YES;
@@ -1921,7 +1948,14 @@ BOOL ApolloNativeActionMenuPresentCaptured(UIMenu *menu, UIView *source, id cont
     presenter.menu = menu;
     presenter.actionController = controller;
     presenter.didEnd = didEnd;
-    return [presenter presentFromView:source completion:nil];
+    BOOL accepted = [presenter presentFromView:source completion:nil];
+    presenter.notifiesCapturedCancellation = accepted;
+    if (accepted) {
+        NSHashTable *holder = [NSHashTable weakObjectsHashTable];
+        [holder addObject:presenter];
+        objc_setAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return accepted;
 }
 
 BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, CGPoint point,
@@ -1933,7 +1967,21 @@ BOOL ApolloNativeActionMenuPresentCapturedAtPoint(UIMenu *menu, UIView *source, 
     presenter.didEnd = didEnd;
     presenter.sourcePoint = [NSValue valueWithCGPoint:point];
     ApolloLog(@"[NativeActionMenus] captured media menu at press (%.0f, %.0f)", point.x, point.y);
-    return [presenter presentFromView:source completion:nil];
+    BOOL accepted = [presenter presentFromView:source completion:nil];
+    presenter.notifiesCapturedCancellation = accepted;
+    if (accepted) {
+        NSHashTable *holder = [NSHashTable weakObjectsHashTable];
+        [holder addObject:presenter];
+        objc_setAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey, holder, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return accepted;
+}
+
+void ApolloNativeActionMenuPreviewFeedback(UIView *source, CGPoint point) {
+    NSHashTable *holder = objc_getAssociatedObject(source, &kApolloNativeActionMenuCapturedSourcePresenterKey);
+    ApolloNativeActionMenuPresenter *presenter = holder.anyObject;
+    if (!presenter || presenter.ended || presenter.previewFeedbackEnd || !source.window) return;
+    presenter.previewFeedbackEnd = ApolloMediaMenuBeginPreviewFeedback(source, point);
 }
 
 static BOOL ApolloNativeActionMenuPresent(id presenter, id actionController, void (^completion)(void)) {
