@@ -75,7 +75,6 @@ static NSString *ApolloGalleryShareExtension(NSData *data, NSURL *imageURL) {
 @property (nonatomic, copy) NSURL *videoDownloadURL;
 @property (nonatomic, copy) NSURL *videoShareURL;
 @property (nonatomic, copy) NSURL *postURL;
-@property (nonatomic, copy) NSString *title;
 @property (nonatomic) BOOL video;
 @property (nonatomic) BOOL menuEnded;
 @property (nonatomic) BOOL selectionTaken;
@@ -95,7 +94,6 @@ static NSString *ApolloGalleryShareExtension(NSData *data, NSURL *imageURL) {
         _videoDownloadURL = [item.videoDownloadURL copy];
         _videoShareURL = [(item.videoURL ?: item.hostedVideoPageURL) copy];
         _postURL = [item.postURL copy];
-        _title = [item.postTitle copy];
         _video = item.playsAsVideo;
     }
     return self;
@@ -180,7 +178,7 @@ static NSString *ApolloGalleryShareExtension(NSData *data, NSURL *imageURL) {
             }
         }]];
     }
-    return [UIMenu menuWithTitle:self.title ?: @"" children:children];
+    return [UIMenu menuWithTitle:@"" children:children];
 }
 
 - (void)saveOriginalMedia {

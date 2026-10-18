@@ -200,7 +200,7 @@ int main(void) {
         Check(menu.children.count == 4 && saveCount == 0 && imageShareCount == 0, @"building menu has no media side effects");
         item.imageURL = [NSURL URLWithString:@"https://example.test/later.jpg"];
         item.postTitle = @"Later post"; item.permalink = @"/r/test/comments/later";
-        Check(session.item != item && [session.item.imageURL isEqual:original] && [menu.title isEqualToString:@"Original post"], @"menu snapshots item URL and title");
+        Check(session.item != item && [session.item.imageURL isEqual:original] && [session.item.postTitle isEqualToString:@"Original post"] && menu.title.length == 0, @"menu snapshots the item without displaying its title");
         Select(menu, @"Save Image");
         DrainMainQueue();
         Check(saveCount == 0, @"selection waits for dismissal completion");
