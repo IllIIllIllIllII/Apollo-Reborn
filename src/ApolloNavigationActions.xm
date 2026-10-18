@@ -6,6 +6,7 @@
 #import "ApolloCommon.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDuoRail.h"
+#import "ApolloCompactSubredditPanel.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloSearchNativeBar.h"
@@ -2204,7 +2205,10 @@ static void ApolloActionsUpdateBackGlass(UIView *button, UIBarButtonItem *item) 
     return %orig(animated);
 }
 - (void)setViewControllers:(NSArray *)controllers animated:(BOOL)animated {
-    ApolloActionsResetBeforeNavigation(self.topViewController);
+    // Borrowing the list root must not collapse the feed's visible actions.
+    BOOL compactContainment = self.topViewController == controllers.lastObject
+        && ApolloCompactSubredditPanelIsUpdatingNavigation(self);
+    if (!compactContainment) ApolloActionsResetBeforeNavigation(self.topViewController);
     for (UIViewController *controller in controllers) ApolloActionsPrepare(controller.navigationItem, controller.navigationItem.rightBarButtonItems);
     %orig(controllers, animated);
 }

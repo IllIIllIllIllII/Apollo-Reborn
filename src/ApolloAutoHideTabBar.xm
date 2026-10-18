@@ -5,6 +5,7 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import "ApolloCommon.h"
+#import "ApolloCompactSubredditPanel.h"
 #import "ApolloTopBarScrollPresentation.h"
 #import "ApolloCompactTabBarView.h"
 #import "ApolloListLayoutSupport.h"
@@ -2144,6 +2145,9 @@ static BOOL ApolloBarSwipeGestureActive(UINavigationController *nav) {
     UIViewController *controller = (UIViewController *)self;
     UINavigationController *nav = controller.navigationController;
     if (nav.topViewController != controller) return;
+    // The compact panel already exposes Done in its own bar. Revealing the
+    // borrowed list's child bar adds a second title and shifts every row.
+    if (ApolloCompactSubredditPanelOwnsNavigation(nav)) return;
     ApolloTopBarApplyNativeScrollPolicy(controller, nav);
 
     // Reordering and the alphabet index can return to the top without the
@@ -2161,7 +2165,8 @@ static BOOL ApolloBarSwipeGestureActive(UINavigationController *nav) {
 %hook UINavigationController
 
 - (void)setNavigationBarHidden:(BOOL)hidden {
-    if (ApolloSubredditListIsEditing(self)) hidden = NO;
+    if (ApolloCompactSubredditPanelOwnsNavigation(self)) hidden = YES;
+    else if (ApolloSubredditListIsEditing(self)) hidden = NO;
     if (hidden) ApolloTopBarRestoreNavigationController(self);
     %orig(hidden);
     if (ApolloSupportsNativeTabBarScrollBehavior()) return;
@@ -2170,7 +2175,8 @@ static BOOL ApolloBarSwipeGestureActive(UINavigationController *nav) {
 }
 
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
-    if (ApolloSubredditListIsEditing(self)) hidden = NO;
+    if (ApolloCompactSubredditPanelOwnsNavigation(self)) hidden = YES;
+    else if (ApolloSubredditListIsEditing(self)) hidden = NO;
     if (hidden) ApolloTopBarRestoreNavigationController(self);
     %orig(hidden, animated);
     if (ApolloSupportsNativeTabBarScrollBehavior()) return;
@@ -2317,13 +2323,21 @@ static void ApolloRestoreBarsForNavigationTransition(UINavigationController *nav
 }
 
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers animated:(BOOL)animated {
-    ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
+    // Borrowing/restoring the list root keeps the same visible feed. Preserve
+    // its scroll-driven chrome during this containment-only stack update.
+    BOOL compactContainment = self.topViewController == viewControllers.lastObject
+        && ApolloCompactSubredditPanelIsUpdatingNavigation(self);
+    if (!compactContainment) ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
     for (UIViewController *controller in viewControllers) ApolloTopBarApplyNativeScrollPolicy(controller, self);
     %orig(viewControllers, animated);
 }
 
 - (void)setViewControllers:(NSArray<UIViewController *> *)viewControllers {
-    ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
+    // Borrowing/restoring the list root keeps the same visible feed. Preserve
+    // its scroll-driven chrome during this containment-only stack update.
+    BOOL compactContainment = self.topViewController == viewControllers.lastObject
+        && ApolloCompactSubredditPanelIsUpdatingNavigation(self);
+    if (!compactContainment) ApolloRestoreBarsForNavigationTransition(self, @"navigation stack replacement");
     for (UIViewController *controller in viewControllers) ApolloTopBarApplyNativeScrollPolicy(controller, self);
     %orig(viewControllers);
 }
@@ -2339,6 +2353,12 @@ static void ApolloRestoreBarsForNavigationTransition(UINavigationController *nav
 }
 
 - (void)setHidesBarsOnSwipe:(BOOL)value {
+    // A borrowed list has no visible child bar to hide or reveal. Keep it
+    // outside the feed's scroll-driven bar state while the panel owns it.
+    if (ApolloCompactSubredditPanelOwnsNavigation(self)) {
+        %orig(NO);
+        return;
+    }
     if (ApolloSupportsNativeTabBarScrollBehavior()) {
         // Apollo usually applies its app-wide preference to each navigation
         // controller, but controller-local lifecycle restoration can also call

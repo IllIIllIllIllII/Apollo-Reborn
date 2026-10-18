@@ -644,6 +644,21 @@ void ApolloNavigationTitlePresentationRefresh(UINavigationBar *bar) {
     [owner scheduleRefresh];
 }
 
+void ApolloNavigationTitlePresentationSynchronize(UINavigationBar *bar) {
+    if (!bar || !bar.window || !ApolloTitlePresentationAvailable()) return;
+    ApolloNavigationTitlePresentationRefresh(bar);
+    ApolloTitlePresentationOwner *owner = objc_getAssociatedObject(bar, &kApolloTitlePresentationOwnerKey);
+    UINavigationItem *previousItem = owner.item;
+    [owner refresh];
+    if (owner.ready && owner.item == bar.topItem) {
+        // UIKit can detach the hosted plane even when only a controller below
+        // the visible page changes. Its glass teardown clears the fitted width
+        // and centering correction. Restore both before committing that frame,
+        // using the same native title control and original custom title view.
+        ApolloNavigationTitleGlassRefreshContent(owner.control, owner.item == previousItem);
+    }
+}
+
 BOOL ApolloNavigationTitlePresentationOwnsControl(UIView *control) {
     return [objc_getAssociatedObject(control, &kApolloTitlePresentationOwnedKey) boolValue];
 }
