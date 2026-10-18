@@ -1059,8 +1059,8 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }
     [self apollo_showPinchIntroductionIfNeeded];
-    // Also the return from the fullscreen viewer (presented full screen, so
-    // the grid gets this callback) and from a cancelled swipe-back.
+    // Returning from another navigation screen or a cancelled swipe-back.
+    // The over-fullscreen viewer explicitly resumes us after its dismissal.
     [self apollo_refreshTilePlayback];
 }
 
@@ -1298,7 +1298,9 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     if (self.tilePlaybackSuspendedForMemory) return NO;
     if ([NSProcessInfo processInfo].isLowPowerModeEnabled) return NO;
     if (UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return NO;
-    if (self.presentedViewController) return NO;
+    // OverFullScreen can be presented by an ancestor, and leaves our view
+    // mounted. Keep playback paused until the viewer's dismissal completes.
+    if (self.activeViewer || self.presentedViewController) return NO;
     return self.viewIfLoaded.window != nil;
 }
 
@@ -1601,11 +1603,14 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     if (!self.pinchingTiles) return;
     if (gesture.state == UIGestureRecognizerStateBegan || gesture.state == UIGestureRecognizerStateChanged ||
         gesture.state == UIGestureRecognizerStateEnded) {
-        // Scale the actual visible tile width with finger separation. Equal
-        // log steps made the 2→1-column jump grow a tile by 2× after only a
-        // 1.45× spread. Width-based interpolation stays proportional across
-        // every column count, reversal, and a re-grab during settlement.
-        CGFloat tileWidth = self.pinchStartTileWidth * MAX(gesture.scale, 0.01);
+        // Deliberately damp finger travel: 60% sensitivity in log-scale space
+        // keeps reciprocal spread/pinch distances symmetric. A 20% spread
+        // grows a tile by about 12%, giving finer control over column changes
+        // than direct 1:1 scaling. This adjusts live tracking, not its settle
+        // duration, and still starts from the visible width on a re-grab.
+        static CGFloat const sensitivity = 0.6;
+        CGFloat effectiveScale = pow(MAX(gesture.scale, 0.01), sensitivity);
+        CGFloat tileWidth = self.pinchStartTileWidth * effectiveScale;
         self.pinchPosition = [self apollo_pinchPositionForTileWidth:tileWidth];
         if (gesture.numberOfTouches >= 2) {
             self.pinchViewportY = [gesture locationInView:self.collectionView].y - self.collectionView.contentOffset.y;
@@ -2140,6 +2145,9 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
                                                                         initialIndex:indexPath.item];
     viewer.galleryDelegate = self;
     self.activeViewer = viewer;
+    // OverFullScreen retains this view, so viewWillDisappear does not pause
+    // the grid for us. Only the fullscreen page should keep playing.
+    [self apollo_stopAllTilePlayback];
     [self presentViewController:viewer animated:YES completion:nil];
 }
 
@@ -2183,6 +2191,17 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     [self apollo_syncAppendedItems];
     (void)viewer;
     (void)addedRange;
+}
+
+- (void)galleryViewerDidDismiss:(ApolloGalleryImageViewer *)viewer {
+    if (self.activeViewer != viewer) return;
+    self.activeViewer = nil;
+    // A menu's Open Post may already have navigated away in the completion.
+    if (self.navigationController.topViewController != self) return;
+    if (@available(iOS 16.0, *)) {
+        [self setNeedsUpdateOfSupportedInterfaceOrientations];
+    }
+    [self apollo_refreshTilePlayback];
 }
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer willDismissAtIndex:(NSInteger)index {

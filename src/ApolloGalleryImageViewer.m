@@ -652,7 +652,9 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
         _chromeVisible = YES;
         _prefetchRadius = kApolloGalleryViewerPrefetchRadius;
         _viewerPrefetches = [NSMutableDictionary dictionary];
-        self.modalPresentationStyle = UIModalPresentationFullScreen;
+        // Keep the grid mounted beneath the viewer. Removing it (FullScreen)
+        // left a black window behind a dragged/fading image until dismissal.
+        self.modalPresentationStyle = UIModalPresentationOverFullScreen;
         self.modalPresentationCapturesStatusBarAppearance = YES;
     }
     return self;
@@ -675,6 +677,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
+    self.view.accessibilityViewIsModal = YES;
     // The viewer is a black fullscreen surface with white text and icons, but
     // the APP is usually in light mode — so the iOS 26 glass pills first
     // resolved their LIGHT variant (white frost, unreadable white-on-white
@@ -1807,7 +1810,10 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
             // Toggling scrollEnabled cancels any paging drag UIKit had started
             // on the same touch, so a diagonal flick can't page AND dismiss.
             self.collectionView.scrollEnabled = NO;
-                    [UIView animateWithDuration:0.15 animations:^{
+            // Reveal the current page's tile, even if the user paged away
+            // from the image that originally opened the viewer.
+            [self apollo_notifyWillDismiss];
+            [UIView animateWithDuration:0.15 animations:^{
                 self.doneHost.alpha = 0.0;
                 self.shareHost.alpha = 0.0;
                 self.muteHost.alpha = 0.0;
@@ -1831,9 +1837,10 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
                           (fabs(translation.y) > kApolloGalleryViewerDismissDistance ||
                            fabs(velocity) > kApolloGalleryViewerDismissVelocity);
             if (commit) {
-                // Keep flying in the direction the finger was already going.
+                // Keep the original slide-away motion, revealing the retained
+                // grid with only a brief backdrop fade near the end.
                 CGFloat direction = (translation.y != 0.0 ? translation.y : velocity) < 0.0 ? -1.0 : 1.0;
-                [self apollo_dismissWithFlickDirection:direction];
+                [self apollo_dismissToGalleryWithFlickDirection:direction completion:nil];
             } else {
                 self.collectionView.scrollEnabled = YES;
                 [UIView animateWithDuration:0.28
@@ -1854,20 +1861,38 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     }
 }
 
-- (void)apollo_dismissWithFlickDirection:(CGFloat)direction {
-    if (self.isDismissing) return;
+// Keep the destination mounted throughout the original fly-away animation.
+// The backdrop clears only near the end, so it reveals the grid rather than
+// leaving a black window while UIKit restores a removed presenting view.
+- (void)apollo_dismissToGalleryWithFlickDirection:(CGFloat)direction completion:(dispatch_block_t)completion {
+    if (self.isDismissing || self.mediaMenuSession) return;
     self.isDismissing = YES;
+    self.view.userInteractionEnabled = NO;
     [self apollo_notifyWillDismiss];
-    CGFloat offscreen = direction * (self.view.bounds.size.height + 80.0);
-    [UIView animateWithDuration:0.22
-                          delay:0.0
-                        options:UIViewAnimationOptionCurveEaseOut
-                     animations:^{
-        self.collectionView.transform = CGAffineTransformMakeTranslation(0.0, offscreen);
-        self.view.backgroundColor = UIColor.clearColor;
-    } completion:^(BOOL finished) {
-        [self dismissViewControllerAnimated:NO completion:nil];
-    }];
+    void (^finish)(BOOL) = ^(BOOL finished) {
+        [self dismissViewControllerAnimated:NO completion:^{
+            // Route Open Post first so playback cannot restart behind it.
+            if (completion) completion();
+            id<ApolloGalleryImageViewerDelegate> delegate = self.galleryDelegate;
+            if ([delegate respondsToSelector:@selector(galleryViewerDidDismiss:)]) {
+                [delegate galleryViewerDidDismiss:self];
+            }
+        }];
+    };
+    if (direction != 0.0 && !UIAccessibilityIsReduceMotionEnabled()) {
+        CGFloat offscreen = direction * (self.view.bounds.size.height + 80.0);
+        [UIView animateKeyframesWithDuration:0.22 delay:0.0 options:0 animations:^{
+            [UIView addKeyframeWithRelativeStartTime:0.0 relativeDuration:1.0 animations:^{
+                self.collectionView.transform = CGAffineTransformMakeTranslation(0.0, offscreen);
+            }];
+            [UIView addKeyframeWithRelativeStartTime:0.45 relativeDuration:0.55 animations:^{
+                self.view.backgroundColor = UIColor.clearColor;
+            }];
+        } completion:finish];
+    } else {
+        // Done has no drag direction; a short fade also honors Reduce Motion.
+        [UIView animateWithDuration:0.16 animations:^{ self.view.alpha = 0.0; } completion:finish];
+    }
 }
 
 - (void)apollo_notifyWillDismiss {
@@ -1878,10 +1903,7 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
 }
 
 - (void)apollo_donePressed {
-    if (self.isDismissing || self.mediaMenuSession) return;
-    self.isDismissing = YES;
-    [self apollo_notifyWillDismiss];
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [self apollo_dismissToGalleryWithFlickDirection:0.0 completion:nil];
 }
 
 #pragma mark UIGestureRecognizerDelegate
@@ -2275,11 +2297,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 
 - (void)apollo_openPostURL:(NSURL *)postURL {
     if (!postURL || self.isDismissing || self.mediaMenuSession) return;
-    if (!self.isDismissing) {
-        self.isDismissing = YES;
-        [self apollo_notifyWillDismiss];
-    }
-    [self dismissViewControllerAnimated:YES completion:^{
+    [self apollo_dismissToGalleryWithFlickDirection:0.0 completion:^{
         // Apollo's URL handler only acts on apollo:// URLs — handing it the raw
         // https reddit.com link is silently ignored. The scheme conversion is
         // what every other in-app route in the tweak goes through.
