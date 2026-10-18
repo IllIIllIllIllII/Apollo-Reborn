@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import "ApolloGalleryFeed.h"
 #import "ApolloHostedVideo.h"
+#import "ApolloGalleryGridGeometry.h"
 
 static NSUInteger checks;
 static void Check(BOOL condition, NSString *message) {
@@ -30,11 +31,20 @@ void ApolloHostedVideoResolve(NSURL *url, void (^completion)(NSURL *, NSURL *, C
 
 #include "GalleryFeedProduction.inc"
 
+@interface UIView : NSObject
+@property (nonatomic) CGRect bounds;
+@end
+@implementation UIView @end
+
 @interface UIViewController : NSObject
+@property (nonatomic, strong) UIView *view;
+@property (nonatomic, readonly) UIView *viewIfLoaded;
 @property (nonatomic, strong) NSArray *retainedLinks;
 @property (nonatomic, strong) id retainedPagination;
 @end
-@implementation UIViewController @end
+@implementation UIViewController
+- (UIView *)viewIfLoaded { return self.view; }
+@end
 
 @interface GalleryTestLink : NSObject
 @property (nonatomic, getter=isNSFW) BOOL NSFW;
@@ -55,6 +65,7 @@ void ApolloHostedVideoResolve(NSURL *url, void (^completion)(NSURL *, NSURL *, C
 - (void)cancel {}
 @end
 static NSUInteger warmedImages;
+static BOOL warmedImagesAlreadyCached;
 @interface ApolloGalleryImageLoader : NSObject
 + (instancetype)sharedLoader;
 - (ApolloGalleryImageRequest *)prefetchThumbnailAtURL:(NSURL *)url;
@@ -63,7 +74,7 @@ static NSUInteger warmedImages;
 + (instancetype)sharedLoader { static id loader; if (!loader) loader = [self new]; return loader; }
 - (ApolloGalleryImageRequest *)prefetchThumbnailAtURL:(NSURL *)url {
     warmedImages++;
-    return [ApolloGalleryImageRequest new];
+    return warmedImagesAlreadyCached ? nil : [ApolloGalleryImageRequest new];
 }
 @end
 
@@ -83,6 +94,8 @@ static void WriteEnum(id object, const char *name, int64_t value, BOOL absent) {
 }
 static UIViewController *Owner(NSArray *links, NSString *after) {
     UIViewController *owner = [ApolloClassPostsViewController new];
+    owner.view = [UIView new];
+    owner.view.bounds = CGRectMake(0, 0, 402, 700);
     owner.retainedLinks = [links mutableCopy]; // heap-backed NSArray, like native Swift storage
     WriteWord(owner, "links", (uintptr_t)(__bridge void *)owner.retainedLinks);
     if (after) {
@@ -229,10 +242,65 @@ static void TestSourceCoverageAndFlags(void) {
     NSMutableArray *many = [NSMutableArray array];
     for (NSUInteger i = 0; i < 40; i++) [many addObject:Captured(Photo([NSString stringWithFormat:@"warm%lu", (unsigned long)i]))];
     warmedImages = 0;
+    id previousSize = [NSUserDefaults.standardUserDefaults objectForKey:kApolloGalleryTileSizeKey];
+    [NSUserDefaults.standardUserDefaults setInteger:2 forKey:kApolloGalleryTileSizeKey];
     owner = Owner(many, @"t3_last");
     ApolloGalleryPrepareSource(owner);
     ApolloGalleryPrepareSource(owner);
-    Check(warmedImages == 24, @"menu warming is bounded and coalesced across repeat preparation");
+    Check(warmedImages == 8, @"two-column warming covers viewport plus one row without a fixed batch");
+    [NSUserDefaults.standardUserDefaults setInteger:0 forKey:kApolloGalleryTileSizeKey];
+    ApolloGalleryPrepareSource(owner);
+    Check(warmedImages == 28, @"denser saved size extends the already-warmed prefix");
+    owner.view.bounds = CGRectMake(0, 0, 402, 1500);
+    ApolloGalleryPrepareSource(owner);
+    Check(warmedImages == 40, @"larger viewport warms the rest of a short source listing");
+
+    [many removeAllObjects];
+    for (NSUInteger i = 0; i < 120; i++) {
+        NSMutableDictionary *photo = [Photo([NSString stringWithFormat:@"wide%lu", (unsigned long)i]) mutableCopy];
+        photo[@"preview"] = @{@"images": @[@{@"source": @{@"width": @1000, @"height": @500,
+            @"url": photo[@"url"]}}]};
+        [many addObject:Captured(photo)];
+    }
+    owner = Owner(many, @"t3_last");
+    warmedImages = 0;
+    warmedImagesAlreadyCached = YES;
+    ApolloGalleryPrepareSource(owner);
+    ApolloGalleryPrepareSource(owner);
+    Check(warmedImages == 64, @"four-column landscape viewport warms beyond 24, even with cached nil handles");
+    owner.view.bounds = CGRectMake(0, 0, 402, 2000);
+    ApolloGalleryPrepareSource(owner);
+    ApolloGalleryPrepareSource(owner);
+    Check(warmedImages == 96, @"larger repeat preparation remains capped and never restarts cached prefix");
+    warmedImagesAlreadyCached = NO;
+    if (previousSize) [NSUserDefaults.standardUserDefaults setObject:previousSize forKey:kApolloGalleryTileSizeKey];
+    else [NSUserDefaults.standardUserDefaults removeObjectForKey:kApolloGalleryTileSizeKey];
+}
+
+static void TestPreparationState(void) {
+    GalleryTestLink *link = Captured(Photo(@"prepared"));
+    UIViewController *owner = Owner(@[link], @"t3_cursor");
+    NSDictionary *state = ApolloGallerySourcePreparationState(owner);
+    Check(state && [state isEqual:ApolloGallerySourcePreparationState(owner)],
+          @"unchanged live source has an equal preparation key");
+    link.NSFW = YES;
+    Check(![state isEqual:ApolloGallerySourcePreparationState(owner)],
+          @"live NSFW changes invalidate a prepared gallery");
+    link.NSFW = NO;
+    link.spoiler = YES;
+    Check(![state isEqual:ApolloGallerySourcePreparationState(owner)],
+          @"live spoiler changes invalidate a prepared gallery");
+    link.spoiler = NO;
+    [(GalleryTestPagination *)owner.retainedPagination setAfter:@"t3_next"];
+    Check(![state isEqual:ApolloGallerySourcePreparationState(owner)],
+          @"source pagination invalidates a prepared continuation");
+    [(GalleryTestPagination *)owner.retainedPagination setAfter:@"t3_cursor"];
+    WriteEnum(owner, "currentSort", 2, NO);
+    Check(![state isEqual:ApolloGallerySourcePreparationState(owner)],
+          @"source sort changes invalidate preparation");
+    owner = Owner(@[link, [GalleryTestLink new]], @"t3_cursor");
+    Check(ApolloGallerySourcePreparationState(owner) == nil,
+          @"incomplete captured source cannot validate a prepared gallery");
 }
 
 static void TestFeedPaging(void) {
@@ -263,6 +331,63 @@ static void TestFeedPaging(void) {
     Check(feed.requestedCursors.count == 2 && range.length == 1, @"cold load walks empty page then returns first usable page");
     [feed reset];
     Check([feed seedFromListing:Listing(@[Photo(@"found")], nil)] && feed.isExhausted, @"reset clears dedup keys and nil seed cursor is exhausted");
+
+    // A small source listing can underfill a four-column viewport. The next
+    // useful page must be visible without waiting for yet another request.
+    NSMutableArray *seedPhotos = [NSMutableArray array];
+    NSMutableArray *nextPhotos = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 12; index++) {
+        [seedPhotos addObject:Photo([NSString stringWithFormat:@"seed%lu", (unsigned long)index])];
+    }
+    for (NSUInteger index = 0; index < 6; index++) {
+        [nextPhotos addObject:Photo([NSString stringWithFormat:@"next%lu", (unsigned long)index])];
+    }
+    feed = [[GalleryTestFeed alloc] initWithHomeFeed];
+    Check([feed seedFromListing:Listing(seedPhotos, @"t3_seed12")], @"short source listing seeds successfully");
+    feed.pages = @[Listing(nextPhotos, @"t3_next6"), Listing(@[Photo(@"not_requested_yet")], nil)];
+    range = Load(feed);
+    Check(feed.requestedCursors.count == 1 && range.location == 12 && range.length == 6 && feed.items.count == 18,
+          @"seeded continuation publishes six new tiles before requesting another page");
+    Check(!feed.isLoading && !feed.isExhausted, @"useful page completion leaves continuation available");
+
+    feed = [[GalleryTestFeed alloc] initWithHomeFeed];
+    Check([feed seedFromListing:Listing(seedPhotos, @"t3_seed12")], @"sparse continuation starts from a seed");
+    feed.pages = @[Listing(@[@{@"name": @"t3_text"}], @"t3_text"),
+                   Listing(@[seedPhotos.firstObject], @"t3_duplicate"),
+                   Listing(nextPhotos, @"t3_next6"), Listing(@[Photo(@"unused")], nil)];
+    range = Load(feed);
+    Check(feed.requestedCursors.count == 3 && range.location == 12 && range.length == 6 && !feed.isExhausted,
+          @"seeded continuation skips empty and duplicate-only pages then publishes first useful page");
+
+    feed = [[GalleryTestFeed alloc] initWithHomeFeed];
+    Check([feed seedFromListing:Listing(seedPhotos, @"t3_seed12")], @"empty-page limit starts from seed");
+    feed.pages = @[Listing(@[], @"t3_empty1"), Listing(@[], @"t3_empty2"),
+                   Listing(@[], @"t3_empty3"), Listing(nextPhotos, nil)];
+    range = Load(feed);
+    Check(feed.requestedCursors.count == 3 && range.length == 0 && feed.isExhausted && !feed.isLoading,
+          @"three consecutive empty pages still stop continuation without a fourth request");
+
+    // The mocked network callback enqueues production processing on main.
+    // Change the filter before that queued page is admitted, then verify its
+    // stale completion cannot append or advance the inherited cursor.
+    feed = [[GalleryTestFeed alloc] initWithHomeFeed];
+    Check([feed seedFromListing:Listing(seedPhotos, @"t3_seed12")], @"filter race starts from seed");
+    feed.pages = @[Listing(@[Photo(@"stale")], @"t3_stale"), Listing(nextPhotos, @"t3_next6")];
+    __block BOOL staleCompletion = NO;
+    [feed loadNextBatchWithCompletion:^(__unused NSRange added, __unused NSString *error) { staleCompletion = YES; }];
+    feed.allowedKinds = ApolloGalleryMediaKindVideo;
+    __block BOOL drained = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ drained = YES; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    while (!drained && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    Check(drained && !staleCompletion && feed.items.count == 0 && feed.allItems.count == 12 && !feed.isLoading,
+          @"filter change cancels a queued useful page without appending or completing it");
+    feed.allowedKinds = ApolloGalleryMediaKindAll;
+    range = Load(feed);
+    Check([feed.requestedCursors.lastObject isEqualToString:@"t3_seed12"] && range.location == 12 && range.length == 6,
+          @"load after filter cancellation refetches the unchanged source cursor");
 }
 
 int main(void) {
@@ -276,6 +401,7 @@ int main(void) {
         objc_registerClassPair(ApolloClassPostsViewController);
         TestCaptureAndGuards();
         TestSourceCoverageAndFlags();
+        TestPreparationState();
         TestFeedPaging();
         printf("gallery_startup_tests: %lu checks passed\n", (unsigned long)checks);
     }

@@ -3,7 +3,9 @@
 #import "ApolloGalleryViewController.h"
 #import "ApolloGalleryPinchIntroduction.h"
 #import "ApolloGalleryFeed.h"
+#import "ApolloGalleryGridGeometry.h"
 #import "ApolloGallerySource.h"
+#import "ApolloAccountCredentials.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
 #import "ApolloGalleryMediaActions.h"
@@ -21,29 +23,13 @@
 #import <objc/runtime.h>
 #import "ApolloClasses.h"
 
-// Target tile width. The column count is derived from it so the grid widens
-// sensibly on iPad and in landscape instead of stretching two huge columns.
-static CGFloat const kApolloGalleryTileWidths[] = {90.0, 128.0, 185.0, 260.0, 360.0};
-// The new smallest size precedes the old choices. A new key lets us migrate
-// their indices once without changing the size an existing user selected.
-static NSString *const kApolloGalleryTileSizeKey = @"ApolloGalleryTileSizeV2";
-static NSString *const kApolloGalleryLegacyTileSizeKey = @"ApolloGalleryTileSize";
-static NSInteger const kApolloGalleryMinColumns = 1;
-// An enum, not a `static const NSInteger`: the waterfall layout sizes a
-// fixed-length C array with it, which needs a compile-time constant.
-enum { kApolloGalleryMaxColumns = 12, kApolloGalleryTileSizeCount = 5 };
-static CGFloat const kApolloGalleryTileSpacing = 3.0;
-// Aspect clamp: a 1:8 panorama would otherwise produce a tile taller than the
-// screen, and a very wide one collapses to a sliver.
-static CGFloat const kApolloGalleryMinAspect = 0.5;   // height/width
-static CGFloat const kApolloGalleryMaxAspect = 2.2;
-static CGFloat const kApolloGalleryDefaultAspect = 1.25;
 // Rows from the bottom at which the next batch starts loading.
 static NSInteger const kApolloGalleryLoadAheadRows = 3;
 
 static NSString *const kApolloGalleryCellID = @"ApolloGalleryTile";
 static char kApolloGalleryContextMenuActions;
 static char kApolloGalleryContextMenuSourceItem;
+static char kApolloGalleryPreparedController;
 
 // Grid autoplay ("Play Videos / GIFs in Gallery View"). Only tiles on screen
 // play, and only this many at once: every playing tile is a decoder session.
@@ -687,6 +673,19 @@ static void *kApolloGalleryTileItemStatusContext = &kApolloGalleryTileItemStatus
 // empty state, so whatever drops the batch first (a filter change — the feed
 // never calls a dropped batch back) must start another one.
 @property (nonatomic) BOOL initialLoadPending;
+// Coalesce viewport checks outside collection-view layout/update callbacks.
+@property (nonatomic) BOOL viewportFillQueued;
+@property (nonatomic, strong) NSArray<ApolloGalleryItem *> *coverageItems;
+@property (nonatomic) CGFloat coverageWidth;
+@property (nonatomic) NSInteger coverageColumns;
+@property (nonatomic) CGFloat shortestColumnBottom;
+// Menu-time preparation owns the same feed and callback before and after the
+// push. A tap never waits for this work, and never starts a competing batch.
+@property (nonatomic, copy) NSArray *preparationKey;
+@property (nonatomic) CGSize preparationViewport;
+@property (nonatomic) NSUInteger preparationBatchesRemaining;
+@property (nonatomic) NSUInteger preparationWarmedCount;
+@property (nonatomic, strong) NSMutableArray<ApolloGalleryImageRequest *> *preparationWarmRequests;
 // Outstanding look-ahead loads keyed by index path, so UIKit's cancel callback
 // can actually stop them (see collectionView:cancelPrefetchingForItemsAtIndexPaths:).
 @property (nonatomic, strong) NSMutableDictionary<NSIndexPath *, ApolloGalleryImageRequest *> *prefetchRequests;
@@ -797,6 +796,131 @@ static void ApolloGalleryApplyInheritedSort(ApolloGalleryViewController *gallery
     ApolloLog(@"[Gallery] inherited sort from source feed -> %@", gallery.feed.sortDisplayName);
 }
 
+// The menu and the eventual push must construct exactly the same endpoint.
+// In particular, Home's parser is not a substitute for a subreddit feed when
+// preparation needs to follow its continuation cursor.
+static ApolloGalleryViewController *ApolloGalleryControllerForIdentifier(NSString *identifier,
+                                                                        NSNumber *sort, NSNumber *window) {
+    ApolloGalleryViewController *gallery = nil;
+    NSString *multi = ApolloGalleryNormalizedMultiredditPath(identifier);
+    NSString *slug = [identifier stringByTrimmingCharactersInSet:
+                     [NSCharacterSet characterSetWithCharactersInString:@" \t/"]];
+    if (multi.length > 0) {
+        gallery = [[ApolloGalleryViewController alloc] initWithMultiredditPath:multi];
+    } else if ([identifier isEqualToString:@"~home"]) {
+        gallery = [[ApolloGalleryViewController alloc] initWithHomeFeed];
+    } else if ([slug.lowercaseString hasPrefix:@"u/"] || [slug.lowercaseString hasPrefix:@"user/"]) {
+        NSString *username = ApolloGalleryNormalizedUsername(slug);
+        return username.length > 0 ? [[ApolloGalleryViewController alloc] initWithUsername:username] : nil;
+    } else {
+        if ([slug.lowercaseString hasPrefix:@"r/"]) slug = [slug substringFromIndex:2];
+        if (slug.length == 0) return nil;
+        gallery = [[ApolloGalleryViewController alloc] initWithSubreddit:slug];
+    }
+    ApolloGalleryApplyInheritedSort(gallery, sort, window);
+    return gallery;
+}
+
+static NSArray *ApolloGalleryPreparationKey(NSString *identifier, UIViewController *owner,
+                                            NSNumber *sort, NSNumber *window) {
+    NSDictionary *source = ApolloGallerySourcePreparationState(owner);
+    if (!source || identifier.length == 0) return nil;
+    // The source state includes live NSFW/spoiler flags, not only link identity.
+    // Account identity is checked separately: an account switch must never
+    // adopt a feed whose continuation was fetched for the previous account.
+    return @[identifier, sort ?: NSNull.null, window ?: NSNull.null, source,
+             ApolloActiveAccountUsername() ?: @"", ApolloActiveAccountClient() ?: NSNull.null,
+             @(ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults))];
+}
+
++ (void)prepareGalleryForSubreddit:(NSString *)subreddit
+               fromViewController:(UIViewController *)sourceViewController
+               inheritedSortValue:(NSNumber *)sortValue
+          inheritedTopWindowValue:(NSNumber *)topWindowValue {
+    if (!NSThread.isMainThread || !sourceViewController.navigationController) return;
+    ApolloGalleryPrepareSource(sourceViewController);
+    NSArray *key = ApolloGalleryPreparationKey(subreddit, sourceViewController, sortValue, topWindowValue);
+    if (!key) return;
+    ApolloGalleryViewController *gallery = objc_getAssociatedObject(sourceViewController, &kApolloGalleryPreparedController);
+    if (![gallery.preparationKey isEqual:key]) {
+        gallery = ApolloGalleryControllerForIdentifier(subreddit, sortValue, topWindowValue);
+        if (!gallery || !ApolloGallerySeedFeedFromSource(gallery.feed, sourceViewController)) return;
+        gallery.preparationKey = key;
+        // Two useful pages is a ceiling, not a target. Normally one fills the
+        // dense viewport; no speculative walk through an entire subreddit.
+        gallery.preparationBatchesRemaining = 2;
+        gallery.preparationWarmRequests = [NSMutableArray array];
+        objc_setAssociatedObject(sourceViewController, &kApolloGalleryPreparedController, gallery, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        __weak UIViewController *weakOwner = sourceViewController;
+        __weak ApolloGalleryViewController *weakGallery = gallery;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIViewController *owner = weakOwner;
+            ApolloGalleryViewController *prepared = weakGallery;
+            if (owner && prepared && objc_getAssociatedObject(owner, &kApolloGalleryPreparedController) == prepared) {
+                objc_setAssociatedObject(owner, &kApolloGalleryPreparedController, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        });
+    }
+    gallery.preparationViewport = sourceViewController.viewIfLoaded.bounds.size;
+    [gallery apollo_prepareViewport];
+}
+
+- (void)apollo_warmPreparedViewport {
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    CGSize viewport = self.preparationViewport;
+    NSInteger size = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
+    NSUInteger count = ApolloGalleryGridWarmPrefixCount(items.count, viewport.width, viewport.height,
+        size, 96, ^CGSize(NSUInteger index) { return items[index].pixelSize; });
+    for (NSUInteger index = self.preparationWarmedCount; index < count; index++) {
+        ApolloGalleryItem *item = items[index];
+        ApolloGalleryImageRequest *request = [[ApolloGalleryImageLoader sharedLoader]
+            prefetchThumbnailAtURL:(item.thumbnailURL ?: item.imageURL)];
+        if (request) [self.preparationWarmRequests addObject:request];
+    }
+    self.preparationWarmedCount = MAX(self.preparationWarmedCount, count);
+}
+
+- (void)apollo_prepareViewport {
+    [self apollo_warmPreparedViewport];
+    if (self.isViewLoaded) {
+        [self apollo_scheduleViewportFill];
+        return;
+    }
+    if (self.preparationBatchesRemaining == 0 || self.feed.isLoading || self.feed.isExhausted ||
+        self.feed.lastErrorMessage.length > 0 ||
+        UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
+    CGSize viewport = self.preparationViewport;
+    if (viewport.width <= 0.0 || viewport.height <= 0.0) return;
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    NSInteger columns = ApolloGalleryGridColumnCount(viewport.width,
+        ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults));
+    CGFloat target = viewport.height + ApolloGalleryGridTileWidth(viewport.width, columns);
+    ApolloGalleryGridMeasurement coverage = ApolloGalleryGridMeasure(items.count, viewport.width, columns,
+        ^CGSize(NSUInteger index) { return items[index].pixelSize; }, target);
+    if (coverage.shortestColumnBottom + 0.5 >= target) return;
+    self.preparationBatchesRemaining--;
+    ApolloLog(@"[Gallery] preparing continuation before selection (%lu media)", (unsigned long)items.count);
+    __weak typeof(self) weakSelf = self;
+    [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf apollo_warmPreparedViewport];
+        if (strongSelf.isViewLoaded) {
+            // The user selected Gallery before the request finished. Publish
+            // into that very controller, without a second request or a wait.
+            if (addedRange.length > 0) [strongSelf apollo_syncAppendedItems];
+            [strongSelf apollo_updateEmptyStateWithError:errorMessage];
+            if (errorMessage.length > 0) {
+                [strongSelf apollo_setFooterText:@"Couldn't load more"];
+                [strongSelf apollo_clearFooterAfterDelay];
+            }
+            [strongSelf apollo_scheduleViewportFill];
+        } else if (addedRange.length > 0) {
+            [strongSelf apollo_prepareViewport];
+        }
+    }];
+}
+
 static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                               UIViewController *sourceViewController) {
     if (!gallery || !sourceViewController) return NO;
@@ -825,45 +949,18 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                 fromViewController:(UIViewController *)sourceViewController
                 inheritedSortValue:(NSNumber *)sortValue
            inheritedTopWindowValue:(NSNumber *)topWindowValue {
-    // GalleryMenu deliberately keeps its established call site so open PRs
-    // that defer this presentation until a Liquid Glass menu has dismissed
-    // continue to cover every feed type. A canonical multireddit path and an
-    // explicitly "u/"-prefixed username are the only non-subreddit values
-    // accepted here (a bare name with no prefix is always a subreddit slug).
-    NSString *multiredditPath = ApolloGalleryNormalizedMultiredditPath(subreddit);
-    if (multiredditPath.length > 0) {
-        return [self apollo_presentGalleryForMultiredditPath:multiredditPath
-                                          fromViewController:sourceViewController
-                                          inheritedSortValue:sortValue
-                                     inheritedTopWindowValue:topWindowValue];
-    }
-    if ([subreddit isEqualToString:@"~home"]) {
-        ApolloGalleryViewController *gallery = [[ApolloGalleryViewController alloc] initWithHomeFeed];
-        ApolloGalleryApplyInheritedSort(gallery, sortValue, topWindowValue);
-        if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
-        ApolloLog(@"[Gallery] opened for Home");
-        return YES;
-    }
-    NSString *prefixCheck = [subreddit stringByTrimmingCharactersInSet:
-                             [NSCharacterSet characterSetWithCharactersInString:@" \t/"]].lowercaseString;
-    if ([prefixCheck hasPrefix:@"u/"] || [prefixCheck hasPrefix:@"user/"]) {
-        // Profile feeds have no source sort to inherit — Apollo's profile
-        // screen doesn't expose one — so the seed deliberately stops here.
-        return [self presentGalleryForUsername:subreddit
-                            fromViewController:sourceViewController];
-    }
-
-    NSString *slug = [subreddit stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" \t/"]];
-    if ([slug.lowercaseString hasPrefix:@"r/"]) slug = [slug substringFromIndex:2];
-    if (slug.length == 0 || !sourceViewController) {
-        ApolloLog(@"[Gallery] refusing to open: subreddit=%@ source=%@", subreddit, sourceViewController);
-        return NO;
-    }
-
-    ApolloGalleryViewController *gallery = [[ApolloGalleryViewController alloc] initWithSubreddit:slug];
-    ApolloGalleryApplyInheritedSort(gallery, sortValue, topWindowValue);
+    if (subreddit.length == 0 || !sourceViewController) return NO;
+    NSArray *key = ApolloGalleryPreparationKey(subreddit, sourceViewController, sortValue, topWindowValue);
+    ApolloGalleryViewController *prepared = objc_getAssociatedObject(sourceViewController, &kApolloGalleryPreparedController);
+    ApolloGalleryViewController *gallery = key && [prepared.preparationKey isEqual:key] &&
+        prepared.feed.lastErrorMessage.length == 0 ? prepared : nil;
+    // One visit owns the preparation. A later menu opening makes a fresh feed
+    // with the then-current source, account, sort and blur flags.
+    objc_setAssociatedObject(sourceViewController, &kApolloGalleryPreparedController, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gallery) gallery = ApolloGalleryControllerForIdentifier(subreddit, sortValue, topWindowValue);
     if (!ApolloGalleryPush(gallery, sourceViewController)) return NO;
-    ApolloLog(@"[Gallery] opened for r/%@", slug);
+    ApolloLog(@"[Gallery] opened for %@ (%@)", gallery.sourceDescription,
+              gallery == prepared ? @"prepared viewport" : @"source snapshot");
     return YES;
 }
 
@@ -928,12 +1025,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // 27 alike, in both orientations. Do not compensate the top inset again.
     self.title = @"Gallery";
     self.view.backgroundColor = self.gridBackgroundColor ?: UIColor.systemBackgroundColor;
-    NSNumber *savedTileSize = [NSUserDefaults.standardUserDefaults objectForKey:kApolloGalleryTileSizeKey];
-    if (!savedTileSize) {
-        NSNumber *legacy = [NSUserDefaults.standardUserDefaults objectForKey:kApolloGalleryLegacyTileSizeKey];
-        if (legacy) savedTileSize = @(legacy.integerValue + 1);
-    }
-    self.tileSizeIndex = savedTileSize ? MAX(0, MIN(kApolloGalleryTileSizeCount - 1, savedTileSize.integerValue)) : 2;
+    self.tileSizeIndex = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
 
     self.waterfallLayout = [[ApolloGalleryWaterfallLayout alloc] init];
     self.waterfallLayout.spacing = kApolloGalleryTileSpacing;
@@ -1012,13 +1104,16 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
                    name:UIApplicationWillEnterForegroundNotification object:nil];
     [center addObserver:self selector:@selector(apollo_tilePlaybackInputsChanged:)
                    name:NSProcessInfoPowerStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(apollo_applicationDidBecomeActive:)
+                   name:UIApplicationDidBecomeActiveNotification object:nil];
     [center addObserver:self selector:@selector(apollo_applicationDidEnterBackground:)
                    name:UIApplicationDidEnterBackgroundNotification object:nil];
     if (self.feed.items.count > 0) {
         // Source posts and their geometry are ready before the push starts.
-        // Cell display drives normal look-ahead without a second first-page
-        // request or a full-screen spinner over the populated grid.
+        // A dense grid may need more than this source page; start filling as
+        // soon as the push installs the view, without delaying navigation.
         [self apollo_updateEmptyStateWithError:nil];
+        [self apollo_scheduleViewportFill];
     } else {
         [self apollo_beginInitialLoad];
     }
@@ -1044,6 +1139,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    for (ApolloGalleryImageRequest *request in _preparationWarmRequests) [request cancel];
 }
 
 // The grid is the one screen on Apollo's otherwise portrait-locked phone
@@ -1062,6 +1158,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // Returning from another navigation screen or a cancelled swipe-back.
     // The over-fullscreen viewer explicitly resumes us after its dismissal.
     [self apollo_refreshTilePlayback];
+    [self apollo_scheduleViewportFill];
 }
 
 // Only the guide's explicit acknowledgement makes this a one-time tip.
@@ -1137,9 +1234,11 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
     // the collection view has already entered the window. Register that late
     // effect after layout so Minimize can keep it hidden behind the compact pill.
     ApolloApplyScrollEdgeEffectStyle(self.collectionView);
+    [self apollo_scheduleViewportFill];
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView == self.collectionView) [self apollo_scheduleViewportFill];
     if (scrollView != self.collectionView ||
         sTabBarHideStyle != ApolloTabBarHideStyleMinimize ||
         ![[NSUserDefaults standardUserDefaults] boolForKey:UDKeyNativeHideBarsOnScroll]) return;
@@ -1163,15 +1262,7 @@ static BOOL ApolloGalleryPush(ApolloGalleryViewController *gallery,
 }
 
 - (NSInteger)apollo_columnCountForWidth:(CGFloat)width tileSizeIndex:(NSInteger)index {
-    if (width <= 0.0) return kApolloGalleryMinColumns;
-    NSInteger columns = (NSInteger)floor((width + kApolloGalleryTileSpacing) /
-        (kApolloGalleryTileWidths[index] + kApolloGalleryTileSpacing));
-    // Preserve the familiar two-column default on narrow phones. The larger
-    // sizes may intentionally become one column; small windows never force
-    // two tiles below the 128pt lower bound.
-    NSInteger minimum = index > 0 && index < 3 && width >= 2 * kApolloGalleryTileWidths[1] + kApolloGalleryTileSpacing
-        ? 2 : kApolloGalleryMinColumns;
-    return MAX(minimum, MIN(kApolloGalleryMaxColumns, columns));
+    return ApolloGalleryGridColumnCount(width, index);
 }
 
 // Rotation reshuffles the whole waterfall — a different column count and
@@ -1399,6 +1490,12 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf apollo_refreshTilePlayback]; });
 }
 
+- (void)apollo_applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [self apollo_scheduleViewportFill];
+    [self apollo_refreshTilePlayback];
+}
+
 - (void)apollo_applicationDidEnterBackground:(NSNotification *)notification {
     (void)notification;
     if (self.galleryContextMenuActive) [self.collectionView.contextMenuInteraction dismissMenu];
@@ -1533,6 +1630,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         self.pinchPosition = position;
         [UIView performWithoutAnimation:^{ [self apollo_applyPinchPosition]; }];
         [self apollo_refreshTilePlayback];
+        [self apollo_scheduleViewportFill];
     }
 }
 
@@ -1548,6 +1646,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         [displayLink invalidate];
         self.tileSizeSettlement = nil;
         [self apollo_refreshTilePlayback];
+        [self apollo_scheduleViewportFill];
     }
 }
 
@@ -1817,6 +1916,56 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 
 #pragma mark Loading
 
+- (BOOL)apollo_gridCoversContentY:(CGFloat)targetY {
+    NSArray<ApolloGalleryItem *> *items = self.feed.items;
+    CGFloat width = self.collectionView.bounds.size.width;
+    NSInteger columns = self.waterfallLayout.columnCount;
+    // The feed replaces its immutable projection on append/filter/reset.
+    // Measure once per data or size change, never walk the listing on every
+    // scroll event (which becomes noticeable after thousands of posts).
+    if (items != self.coverageItems || width != self.coverageWidth || columns != self.coverageColumns) {
+        self.coverageItems = items;
+        self.coverageWidth = width;
+        self.coverageColumns = columns;
+        self.shortestColumnBottom = ApolloGalleryGridCoverage(items.count, width, columns,
+            ^CGSize(NSUInteger index) { return items[index].pixelSize; });
+    }
+    return self.shortestColumnBottom + 0.5 >= targetY;
+}
+
+- (void)apollo_scheduleViewportFill {
+    if (self.viewportFillQueued) return;
+    self.viewportFillQueued = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.viewportFillQueued = NO;
+        [strongSelf apollo_fillViewportIfNeeded];
+    });
+}
+
+- (void)apollo_fillViewportIfNeeded {
+    if (!self.collectionView.window || self.navigationController.topViewController != self ||
+        self.activeViewer || self.galleryContextMenuActive || self.galleryReloadPendingAfterMenu ||
+        self.pinchingTiles || self.tileSizeSettlement || self.initialLoadPending ||
+        self.feed.isLoading || self.feed.isExhausted || self.feed.lastErrorMessage.length > 0 ||
+        UIApplication.sharedApplication.applicationState == UIApplicationStateBackground) return;
+    NSInteger total = (NSInteger)self.feed.items.count;
+    if (total == 0 || self.collectionView.bounds.size.width <= 0.0) return;
+
+    // The last visible index is not a screen-coverage measurement in a
+    // waterfall. Fill every column through the bottom, plus one row ahead.
+    CGFloat width = self.collectionView.bounds.size.width;
+    NSInteger columns = self.waterfallLayout.columnCount;
+    CGFloat rowAhead = ApolloGalleryGridTileWidth(width, columns);
+    CGFloat visibleBottom = MAX(0.0, CGRectGetMaxY(self.collectionView.bounds) -
+                                    self.collectionView.adjustedContentInset.bottom);
+    if (![self apollo_gridCoversContentY:visibleBottom + rowAhead]) {
+        [self apollo_loadMoreIfNeededForIndex:total - 1];
+    }
+}
+
 - (void)apollo_beginInitialLoad {
     self.initialLoadPending = YES;
     self.messageLabel.hidden = YES;
@@ -1835,6 +1984,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         // Built before the first fetch, so its "N loaded" subtitles were all
         // zero until now.
         strongSelf.filterBarButtonItem.menu = [strongSelf apollo_buildFilterMenu];
+        [strongSelf apollo_scheduleViewportFill];
         (void)addedRange;
     }];
 }
@@ -1902,12 +2052,16 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 }
 
 - (void)apollo_loadMoreIfNeededForIndex:(NSInteger)index {
-    if (self.feed.isLoading || self.feed.isExhausted) return;
+    if (self.feed.isLoading || self.feed.isExhausted || self.activeViewer || self.galleryContextMenuActive) return;
     NSInteger total = (NSInteger)self.feed.items.count;
     NSInteger slack = self.waterfallLayout.columnCount * kApolloGalleryLoadAheadRows;
     if (index < total - slack) return;
 
-    [self apollo_setFooterText:@"Loading more…"];
+    // Ordinary look-ahead is silent when the screen is already filled. Show
+    // the loading state only when the user has reached uncached listing data.
+    CGFloat visibleBottom = MAX(0.0, CGRectGetMaxY(self.collectionView.bounds) -
+                                    self.collectionView.adjustedContentInset.bottom);
+    if (![self apollo_gridCoversContentY:visibleBottom]) [self apollo_setFooterText:@"Loading more…"];
     __weak typeof(self) weakSelf = self;
     [self.feed loadNextBatchWithCompletion:^(NSRange addedRange, NSString *errorMessage) {
         typeof(self) strongSelf = weakSelf;
@@ -1929,6 +2083,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         } else {
             [strongSelf apollo_setFooterText:nil];
         }
+        if (addedRange.length > 0) [strongSelf apollo_scheduleViewportFill];
     }];
 }
 
@@ -1949,9 +2104,15 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
     }
     // The waterfall layout rebuilds every frame in -prepareLayout, so it always
     // agrees with the data source after an append.
-    [self.collectionView performBatchUpdates:^{
-        [self.collectionView insertItemsAtIndexPaths:indexPaths];
-    } completion:nil];
+    // Publish a useful page immediately, including tiles below a short seed.
+    // A staged insertion fade would add another delay after the network.
+    [UIView performWithoutAnimation:^{
+        [self.collectionView performBatchUpdates:^{
+            [self.collectionView insertItemsAtIndexPaths:indexPaths];
+        } completion:^(BOOL finished) {
+            [self apollo_scheduleViewportFill];
+        }];
+    }];
     // The open viewer reads the same feed; let it pick the new pages up.
     [self.activeViewer feedDidAppendItems];
 }
@@ -2083,6 +2244,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
                 [self.collectionView reloadData];
             }
             [self apollo_setNeedsTilePlaybackRefresh];
+            [self apollo_scheduleViewportFill];
         }
         [actions menuDidEnd];
     };
@@ -2177,9 +2339,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
 - (CGFloat)galleryLayout:(UICollectionViewLayout *)layout aspectRatioForItemAtIndex:(NSInteger)index {
     NSArray<ApolloGalleryItem *> *items = self.feed.items;
     if (index < 0 || index >= (NSInteger)items.count) return kApolloGalleryDefaultAspect;
-    CGSize size = items[index].pixelSize;
-    if (size.width <= 0.0 || size.height <= 0.0) return kApolloGalleryDefaultAspect;
-    return size.height / size.width;
+    return ApolloGalleryGridAspectForPixelSize(items[index].pixelSize);
 }
 
 #pragma mark ApolloGalleryImageViewerDelegate
@@ -2202,6 +2362,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
     }
     [self apollo_refreshTilePlayback];
+    [self apollo_scheduleViewportFill];
 }
 
 - (void)galleryViewer:(ApolloGalleryImageViewer *)viewer willDismissAtIndex:(NSInteger)index {

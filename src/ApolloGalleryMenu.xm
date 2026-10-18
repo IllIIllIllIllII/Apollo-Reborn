@@ -272,10 +272,17 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
 - (void)moreOptionsBarButtonItemTappedWithSender:(id)sender {
     // Only arm for feeds a gallery makes sense for; that keeps every other
     // sheet (and every other feed type) completely untouched.
-    if (ApolloGalleryMenuIdentifierForOwner((UIViewController *)self).length > 0) {
+    NSString *identifier = ApolloGalleryMenuIdentifierForOwner((UIViewController *)self);
+    if (identifier.length > 0) {
         sApolloGalleryArmedVC = (UIViewController *)self;
         sApolloGalleryArmedAt = CACurrentMediaTime();
-        ApolloGalleryPrepareSource((UIViewController *)self);
+        NSNumber *sort = nil;
+        NSNumber *window = nil;
+        ApolloGalleryMenuResolveInheritedSort((UIViewController *)self, &sort, &window);
+        [ApolloGalleryViewController prepareGalleryForSubreddit:identifier
+                                            fromViewController:(UIViewController *)self
+                                            inheritedSortValue:sort
+                                       inheritedTopWindowValue:window];
     } else {
         sApolloGalleryArmedVC = nil;
     }

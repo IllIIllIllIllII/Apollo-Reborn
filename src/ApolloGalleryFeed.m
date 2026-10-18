@@ -10,10 +10,6 @@
 #import "ApolloWebSessionStore.h"
 #import <objc/message.h>
 
-// How many pictures one "batch" should try to gather before the UI is told to
-// stop. Reddit listings mix text/link/video posts in, so a batch usually spans
-// more than one listing page.
-static NSInteger const kApolloGalleryBatchSize = 24;
 // Listing page size asked of Reddit (its hard cap is 100).
 static NSInteger const kApolloGalleryListingLimit = 100;
 // Safety valve: never walk more than this many listing pages for one batch, so
@@ -789,12 +785,10 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             NSUInteger gainedThisBatch = strongSelf.filteredItems.count - startIndex;
             BOOL noMorePages = (nextCursor.length == 0);
             BOOL tooManyEmptyPages = (strongSelf.consecutiveEmptyPages >= kApolloGalleryEmptyPageLimit);
-            // Show the first usable page immediately. Waiting for 24 media can
-            // otherwise leave the initial screen blank across four requests.
-            // Once content is visible, normal look-ahead batches still collect
-            // 24 items to keep scrolling ahead of the network.
-            BOOL batchSatisfied = (gainedThisBatch >= (NSUInteger)kApolloGalleryBatchSize) ||
-                (startIndex == 0 && gainedThisBatch > 0);
+            // Publish every useful page immediately, including continuations
+            // of a seeded gallery. Small tiles can expose the end of the seed
+            // before another multi-page batch would have finished collecting.
+            BOOL batchSatisfied = gainedThisBatch > 0;
             BOOL outOfPageBudget = (pagesLeft <= 1);
 
             if (noMorePages || tooManyEmptyPages) {
@@ -821,7 +815,8 @@ static NSString *ApolloGalleryBearerForClient(id client) {
                 return;
             }
 
-            // Not enough pictures yet and pages left in the budget — keep going.
+            // No media admitted by the current filter yet; keep walking only
+            // within the existing empty-page and request-count bounds.
             [strongSelf continueBatchFromIndex:startIndex
                                     generation:generation
                                      pagesLeft:pagesLeft - 1

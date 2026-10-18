@@ -208,13 +208,13 @@ static inline BOOL ApolloGallerySortUsesWindow(ApolloGallerySort sort) {
 // Human-readable label for the current sort, e.g. "Top: This Week".
 @property (nonatomic, readonly) NSString *sortDisplayName;
 
-// Loads the next batch, walking as many listing pages as it takes to gather a
-// batch worth of media the CURRENT FILTER admits (a video-only filter on a
-// mostly-photo subreddit would otherwise return a page of nothing). The
-// completion runs on the main thread with the index range appended to `items`;
-// `addedCount` is 0 when the batch found nothing new. A call made while a load
+// Loads through the next page with new media the CURRENT FILTER admits and
+// publishes it immediately, for both fresh and already-populated feeds. Pages
+// with no matching media are skipped within bounded request/empty-page limits.
+// The completion runs on the main thread with the range appended to `items`;
+// its length is 0 when no new matching media was found. A call made while a load
 // is already in flight, or after the feed is exhausted, completes immediately
-// with addedCount 0 and does not start a second request.
+// with an empty range and does not start a second request.
 - (void)loadNextBatchWithCompletion:(nullable void (^)(NSRange addedRange, NSString *_Nullable errorMessage))completion;
 
 // Populate a fresh feed synchronously from the source screen's complete loaded

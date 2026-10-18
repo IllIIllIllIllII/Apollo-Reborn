@@ -1,6 +1,7 @@
 #import "ApolloGallerySource.h"
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
+#import "ApolloGalleryGridGeometry.h"
 #import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
@@ -15,7 +16,7 @@
 // changes, and never carries a token or cookie.
 static char kApolloGallerySourcePostKey;
 static char kApolloGallerySourcePreparedKey;
-static const NSUInteger kApolloGallerySourceWarmThumbnailCount = 24;
+static const NSUInteger kApolloGallerySourceMaximumWarmThumbnails = 96;
 static const NSUInteger kApolloGallerySourceMaximumPosts = 10000;
 static const NSTimeInterval kApolloGallerySourcePreparationLifetime = 20.0;
 
@@ -172,6 +173,7 @@ static BOOL ApolloGallerySourceSort(UIViewController *owner, ApolloGallerySort *
 @property (nonatomic) ApolloGallerySort sort;
 @property (nonatomic) ApolloGalleryTopWindow topWindow;
 @property (nonatomic, strong) NSMutableArray<ApolloGalleryImageRequest *> *warmRequests;
+@property (nonatomic) NSUInteger warmedItemCount;
 @end
 
 @implementation ApolloGallerySourceSnapshot
@@ -243,21 +245,39 @@ static ApolloGallerySourceSnapshot *ApolloGallerySourceSnapshotForOwner(UIViewCo
     return snapshot;
 }
 
+NSDictionary *ApolloGallerySourcePreparationState(UIViewController *sourceViewController) {
+    ApolloGallerySourceSnapshot *snapshot = ApolloGallerySourceSnapshotForOwner(sourceViewController);
+    if (!snapshot) return nil;
+    return @{@"listing": snapshot.listing, @"sort": @(snapshot.sort), @"window": @(snapshot.topWindow)};
+}
+
 void ApolloGalleryPrepareSource(UIViewController *sourceViewController) {
     ApolloGallerySourceSnapshot *snapshot = ApolloGallerySourceSnapshotForOwner(sourceViewController);
-    if (!snapshot || snapshot.warmRequests.count > 0) return;
+    if (!snapshot) return;
     // This temporary feed only runs the shared media parser. It never loads a
     // listing or resolves a video host. The image loader coalesces these warm
     // requests with the visible cells when the gallery is pushed.
     ApolloGalleryFeed *preview = [[ApolloGalleryFeed alloc] initWithHomeFeed];
     if (![preview seedFromListing:snapshot.listing]) return;
-    NSUInteger count = MIN(preview.items.count, kApolloGallerySourceWarmThumbnailCount);
-    for (NSUInteger index = 0; index < count; index++) {
-        ApolloGalleryItem *item = preview.items[index];
+    NSArray<ApolloGalleryItem *> *items = preview.items;
+    CGSize viewport = sourceViewController.viewIfLoaded.bounds.size;
+    NSInteger sizeIndex = ApolloGalleryGridSavedTileSizeIndex(NSUserDefaults.standardUserDefaults);
+    NSUInteger count = ApolloGalleryGridWarmPrefixCount(items.count, viewport.width, viewport.height,
+        sizeIndex, kApolloGallerySourceMaximumWarmThumbnails, ^CGSize(NSUInteger index) {
+            return items[index].pixelSize;
+        });
+    if (count <= snapshot.warmedItemCount) return;
+    // Four columns of landscape images can need over fifty thumbnails just
+    // to cover a phone. Warm the measured viewport plus a row, not a fixed
+    // 24-image batch. A later denser size/larger viewport can extend this
+    // prefix without restarting cached loads (which return no handle).
+    for (NSUInteger index = snapshot.warmedItemCount; index < count; index++) {
+        ApolloGalleryItem *item = items[index];
         ApolloGalleryImageRequest *request = [[ApolloGalleryImageLoader sharedLoader]
             prefetchThumbnailAtURL:(item.thumbnailURL ?: item.imageURL)];
         if (request) [snapshot.warmRequests addObject:request];
     }
+    snapshot.warmedItemCount = count;
     ApolloLog(@"[GallerySource] prepared %lu posts; warming up to %lu thumbnails",
               (unsigned long)snapshot.links.count, (unsigned long)count);
 }
