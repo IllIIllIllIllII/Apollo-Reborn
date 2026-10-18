@@ -217,6 +217,13 @@ static inline BOOL ApolloGallerySortUsesWindow(ApolloGallerySort sort) {
 // with addedCount 0 and does not start a second request.
 - (void)loadNextBatchWithCompletion:(nullable void (^)(NSRange addedRange, NSString *_Nullable errorMessage))completion;
 
+// Populate a fresh feed synchronously from the source screen's complete loaded
+// listing (the data dictionary: children + after). Uses the same media parser,
+// deduplication and filtering as network pages. The caller must match the source
+// account, listing and sort before handing over its continuation cursor.
+// Returns NO without consuming the cursor when the snapshot has no media.
+- (BOOL)seedFromListing:(NSDictionary *)listing;
+
 // Drops every item and the cursor so the next load starts from the top.
 - (void)reset;
 

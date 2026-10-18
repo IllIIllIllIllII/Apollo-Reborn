@@ -789,7 +789,12 @@ static NSString *ApolloGalleryBearerForClient(id client) {
             NSUInteger gainedThisBatch = strongSelf.filteredItems.count - startIndex;
             BOOL noMorePages = (nextCursor.length == 0);
             BOOL tooManyEmptyPages = (strongSelf.consecutiveEmptyPages >= kApolloGalleryEmptyPageLimit);
-            BOOL batchSatisfied = (gainedThisBatch >= (NSUInteger)kApolloGalleryBatchSize);
+            // Show the first usable page immediately. Waiting for 24 media can
+            // otherwise leave the initial screen blank across four requests.
+            // Once content is visible, normal look-ahead batches still collect
+            // 24 items to keep scrolling ahead of the network.
+            BOOL batchSatisfied = (gainedThisBatch >= (NSUInteger)kApolloGalleryBatchSize) ||
+                (startIndex == 0 && gainedThisBatch > 0);
             BOOL outOfPageBudget = (pagesLeft <= 1);
 
             if (noMorePages || tooManyEmptyPages) {
@@ -826,6 +831,23 @@ static NSString *ApolloGalleryBearerForClient(id client) {
 }
 
 #pragma mark Listing -> items
+
+- (BOOL)seedFromListing:(NSDictionary *)listing {
+    NSAssert(NSThread.isMainThread, @"Gallery snapshots must be applied on the main thread");
+    if (self.loading || self.mutableItems.count > 0 || self.afterCursor || self.exhausted) return NO;
+    if (!ApolloGalleryArray(listing[@"children"])) return NO;
+    [self appendItemsFromListing:listing];
+    [self rebuildFilteredItems];
+    if (self.filteredItems.count == 0) {
+        [self.mutableItems removeAllObjects];
+        [self.seenImageKeys removeAllObjects];
+        return NO;
+    }
+    self.afterCursor = ApolloGalleryString(listing[@"after"]);
+    self.exhausted = self.afterCursor.length == 0;
+    self.lastErrorMessage = nil;
+    return YES;
+}
 
 - (void)appendItemsFromListing:(NSDictionary *)listing {
     for (id child in ApolloGalleryArray(listing[@"children"]) ?: @[]) {

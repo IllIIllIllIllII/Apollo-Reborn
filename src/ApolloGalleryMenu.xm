@@ -34,6 +34,7 @@
 #import "ApolloActionMenu.h"
 #import "ApolloCommon.h"
 #import "ApolloGalleryFeed.h"
+#import "ApolloGallerySource.h"
 #import "ApolloGalleryViewController.h"
 #import "ApolloNativeActionMenus.h"
 #import "ApolloSwiftRuntime.h"
@@ -275,6 +276,7 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
     if (ApolloGalleryMenuIdentifierForOwner((UIViewController *)self).length > 0) {
         sApolloGalleryArmedVC = (UIViewController *)self;
         sApolloGalleryArmedAt = CACurrentMediaTime();
+        ApolloGalleryPrepareSource((UIViewController *)self);
     } else {
         sApolloGalleryArmedVC = nil;
     }

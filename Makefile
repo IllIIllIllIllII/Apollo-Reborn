@@ -145,6 +145,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloSubredditHeaders.xm \
     $(SRC_DIR)/ApolloSubredditHighlights.xm \
     $(SRC_DIR)/ApolloGalleryFeed.m \
+    $(SRC_DIR)/ApolloGallerySource.xm \
     $(SRC_DIR)/ApolloGalleryImageLoader.m \
     $(SRC_DIR)/ApolloGalleryImageViewer.m \
     $(SRC_DIR)/ApolloGalleryViewController.m \
