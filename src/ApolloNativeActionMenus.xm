@@ -195,6 +195,7 @@ BOOL ApolloNativeActionMenuDeferNavigationUpdate(UIView *surface, NSString *key,
 - (id)nativeHandoffPresentationForSource:(UIView *)source;
 - (BOOL)hasFadedOutBeforePresentationFromSource:(UIView *)source;
 - (void)fadeLinkTick:(CADisplayLink *)link;
+- (UITargetedPreview *)previewForCurrentSource;
 - (void)captureNativePresentation;
 - (void)finishPresentation;
 @end
@@ -287,6 +288,28 @@ BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
     // this property at dismissal END, so even a late handler stored after
     // dismissal begins still cannot fall through the teardown window.
     presenter.afterDismissalAction = action;
+    return YES;
+}
+
+BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
+                                                dispatch_block_t action) {
+    if (!actionController || !action) return NO;
+    ApolloNativeActionMenuPresenter *presenter =
+        ApolloNativeActionMenuPresenterForController(actionController);
+    if (!presenter.interaction || presenter.ended) return NO;
+
+    // Capture while the source page is still attached. UIKit may only ask for
+    // the reverse preview AFTER the selected action pushes a new controller;
+    // its target must remain in the window even when the source button leaves.
+    [presenter captureNativePresentation];
+    [presenter previewForCurrentSource];
+    presenter.afterDismissalAction = nil;
+    presenter.pendingPresentationAction = nil;
+    ApolloLog(@"[NativeActionMenu] Starting selected navigation alongside menu dismissal");
+    // The selected UIAction drives UIKit's normal dismissal. Do not finish or
+    // release anything here: the interaction, preview, anchor and surface lease
+    // remain owned until the real animator completion, independent of the push.
+    action();
     return YES;
 }
 
@@ -1383,10 +1406,15 @@ static id ApolloNativeActionMenuCompactMenuStyle(void) {
     dispatch_block_t next = self.pendingPresentationAction;
     // A chosen action keeps priority over a queued menu, as in -finishPresentation.
     if (!next || self.afterDismissalAction) return;
-    self.pendingPresentationAction = nil;
     ApolloLog(@"[NativeActionMenu] Menu faded out %.0f ms into its dismissal; opening the next one",
               (CACurrentMediaTime() - self.dismissalStartTime) * 1000.0);
-    dispatch_async(dispatch_get_main_queue(), next);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // A late selected action can arrive between the fade and this turn.
+        // It cancels this queued menu even if it already started navigation.
+        if (self.ended || self.afterDismissalAction || self.pendingPresentationAction != next) return;
+        self.pendingPresentationAction = nil;
+        next();
+    });
 }
 
 // A dismissing menu that has faded out no longer draws a lens of its own, so a

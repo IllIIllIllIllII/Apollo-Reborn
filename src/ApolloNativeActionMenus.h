@@ -29,6 +29,12 @@ void ApolloNativeActionMenuAnchorMediaConfiguration(UIContextMenuConfiguration *
 BOOL ApolloNativeActionMenuPerformAfterDismissal(id actionController,
                                                   dispatch_block_t action);
 
+// Run a selected menu row's navigation immediately, alongside UIKit's menu
+// dismissal. Prepare a stable window-backed preview first and retain all menu
+// resources until UIKit completes. Returns NO for an ordinary Apollo sheet.
+BOOL ApolloNativeActionMenuPerformWithDismissal(id actionController,
+                                                dispatch_block_t action);
+
 // Ask Apollo's PostsViewController to build its normal overflow actions, then
 // invoke the requested native Action kind directly from a custom source view.
 // This preserves Apollo's own availability checks and destination controllers.

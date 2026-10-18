@@ -236,9 +236,8 @@ static void ApolloGalleryMenuResolveInheritedSort(UIViewController *owner,
 
 static void ApolloGalleryMenuOpenForController(id actionController) {
     UIViewController *owner = ApolloGalleryMenuOwnerForController(actionController);
-    // Keep the established presentation call below: PR #767 wraps that exact
-    // call in the Liquid Glass dismissal completion, so every identifier kind
-    // automatically receives the same crash fix.
+    // Show the prepared listing on the tap, alongside the menu dismissal.
+    // Its presenter retains UIKit's dismissal resources through the push.
     NSString *subreddit = ApolloGalleryMenuIdentifierForOwner(owner);
     if (subreddit.length == 0 || !owner) {
         ApolloLog(@"[GalleryMenu] Gallery View tapped but the listing could not be resolved");
@@ -258,8 +257,8 @@ static void ApolloGalleryMenuOpenForController(id actionController) {
                                              inheritedSortValue:inheritedSort
                                         inheritedTopWindowValue:inheritedWindow];
     };
-    if (ApolloNativeActionMenuPerformAfterDismissal(actionController, openGallery)) {
-        ApolloLog(@"[GalleryMenu] Waiting for the glass menu to dismiss before opening %@",
+    if (ApolloNativeActionMenuPerformWithDismissal(actionController, openGallery)) {
+        ApolloLog(@"[GalleryMenu] Opening alongside the glass menu dismissal for %@",
                   ApolloGalleryMenuSourceDescription(subreddit));
         return;
     }
