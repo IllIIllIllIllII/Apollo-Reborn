@@ -1,7 +1,7 @@
 #import "ApolloHiddenContentData.h"
 #import "ApolloCommon.h"
-#import "ApolloImageUploadHost.h"
 #import "ApolloState.h"
+#import "ApolloWebJSON.h"
 
 // Soft cap on total items pulled per source so a prolific account can't turn
 // one tap into thousands of requests; truncation is logged, not silent.
@@ -63,10 +63,20 @@ static NSString *ApolloHiddenContentUserAgent(void) {
     return sUserAgent.length > 0 ? sUserAgent : @"ApolloReborn/1.0";
 }
 
-static NSMutableURLRequest *ApolloHiddenContentAuthedRequest(NSURL *url, NSString *bearerToken) {
+// With a bearer, requests go to oauth.reddit.com. Without one (an API-Key-Free
+// account, see ApolloActiveAccountRedditBearerToken) they go bearer-less to
+// www.reddit.com, where the request chokepoint (Tweak.xm) signs them with the
+// active account's web session cookie.
+static NSString *ApolloHiddenContentRedditHost(NSString * _Nullable bearerToken) {
+    return bearerToken.length > 0 ? @"oauth.reddit.com" : @"www.reddit.com";
+}
+
+static NSMutableURLRequest *ApolloHiddenContentAuthedRequest(NSURL *url, NSString * _Nullable bearerToken) {
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.timeoutInterval = kApolloHiddenContentRequestTimeout;
-    [request setValue:[@"Bearer " stringByAppendingString:bearerToken] forHTTPHeaderField:@"Authorization"];
+    if (bearerToken.length > 0) {
+        [request setValue:[@"Bearer " stringByAppendingString:bearerToken] forHTTPHeaderField:@"Authorization"];
+    }
     [request setValue:ApolloHiddenContentUserAgent() forHTTPHeaderField:@"User-Agent"];
     return request;
 }
@@ -109,7 +119,7 @@ static void ApolloHiddenContentFetchLiveListingPage(NSString *username, NSString
     BOOL isFirstPage = (after.length == 0);
 
     NSURLComponents *components = [NSURLComponents componentsWithString:
-        [NSString stringWithFormat:@"https://oauth.reddit.com/user/%@/%@.json", username, listingKind]];
+        [NSString stringWithFormat:@"https://%@/user/%@/%@.json", ApolloHiddenContentRedditHost(bearerToken), username, listingKind]];
     NSMutableArray<NSURLQueryItem *> *queryItems = [@[
         [NSURLQueryItem queryItemWithName:@"limit" value:[NSString stringWithFormat:@"%lu", (unsigned long)kApolloHiddenContentPageSize]],
         [NSURLQueryItem queryItemWithName:@"raw_json" value:@"1"],
@@ -282,7 +292,8 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
     __block NSUInteger completedChunks = 0;
     for (NSArray<NSString *> *chunk in chunks) {
         dispatch_group_enter(group);
-        NSURLComponents *components = [NSURLComponents componentsWithString:@"https://oauth.reddit.com/api/info.json"];
+        NSURLComponents *components = [NSURLComponents componentsWithString:
+            [NSString stringWithFormat:@"https://%@/api/info.json", ApolloHiddenContentRedditHost(bearerToken)]];
         components.queryItems = @[
             [NSURLQueryItem queryItemWithName:@"id" value:[chunk componentsJoinedByString:@","]],
             [NSURLQueryItem queryItemWithName:@"raw_json" value:@"1"],
@@ -493,8 +504,12 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
         }
     }
 
-    NSString *bearerToken = ApolloLatestRedditBearerToken();
-    if (bearerToken.length == 0) {
+    // The active account's own bearer, or nil for an API-Key-Free account,
+    // whose requests then ride its web session on www.reddit.com instead. The
+    // raw captured bearer can belong to a different (API-key) account on a
+    // mixed install, so it isn't used here.
+    NSString *bearerToken = ApolloActiveAccountRedditBearerToken();
+    if (bearerToken.length == 0 && !ApolloWebJSONHasUsableSession()) {
         completion(nil, @"No active Reddit session detected yet. Browse a screen that talks to Reddit (e.g. your feed) and try again.");
         return;
     }
