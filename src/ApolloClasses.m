@@ -87,6 +87,7 @@ Class ApolloClassRDKMessage;
 Class ApolloClassRDKMultireddit;
 Class ApolloClassRDKMultiredditDescription;
 Class ApolloClassRDKObjectBuilder;
+Class ApolloClassRDKPagination;
 Class ApolloClassRDKSubreddit;
 Class ApolloClassRecreatedTableSectionHeaderView;
 Class ApolloClassRedditListTableViewCell;
@@ -217,6 +218,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassRDKMultireddit = objc_getClass("RDKMultireddit");
     ApolloClassRDKMultiredditDescription = objc_getClass("RDKMultiredditDescription");
     ApolloClassRDKObjectBuilder = objc_getClass("RDKObjectBuilder");
+    ApolloClassRDKPagination = objc_getClass("RDKPagination");
     ApolloClassRDKSubreddit = objc_getClass("RDKSubreddit");
     ApolloClassRecreatedTableSectionHeaderView = objc_getClass("_TtC6Apollo31RecreatedTableSectionHeaderView");
     ApolloClassRedditListTableViewCell = objc_getClass("_TtC6Apollo23RedditListTableViewCell");

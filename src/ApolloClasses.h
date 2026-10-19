@@ -97,6 +97,7 @@ extern Class ApolloClassRDKMessage;
 extern Class ApolloClassRDKMultireddit;
 extern Class ApolloClassRDKMultiredditDescription;
 extern Class ApolloClassRDKObjectBuilder;
+extern Class ApolloClassRDKPagination;
 extern Class ApolloClassRDKSubreddit;
 extern Class ApolloClassRecreatedTableSectionHeaderView;
 extern Class ApolloClassRedditListTableViewCell;
