@@ -238,8 +238,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloProfileMoreMenu.xm \
     $(SRC_DIR)/ApolloHiddenContentData.m \
     $(SRC_DIR)/ApolloHiddenContentViewController.m \
-    $(SRC_DIR)/ApolloHiddenContentMedia.m \
     $(SRC_DIR)/ApolloHiddenContentMediaBridge.swift \
+    $(SRC_DIR)/ApolloHiddenContentNative.xm \
     $(SRC_DIR)/ApolloHiddenContentMenu.xm \
     $(SRC_DIR)/ApolloHideLinksBatchFix.xm \
     $(SRC_DIR)/ApolloSavedItemsDeduplicator.m \

@@ -196,7 +196,7 @@ static NSString *ApolloHiddenContentArcticSearchPath(ApolloHiddenContentKind kin
 // seconds of the oldest item seen so far) as the pagination cursor, newest-first.
 // Mirrors the live listing's fatal/incomplete split: a page-1 error is fatal,
 // a later-page error just marks the pass incomplete.
-static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenContentKind kind, NSNumber * _Nullable before,
+static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenContentKind kind, NSNumber * _Nullable before, BOOL isRetry,
                                                 NSMutableArray<NSDictionary *> *items, ApolloHiddenContentProgress progress, void (^completion)(BOOL fatalError, BOOL incomplete)) {
     if (items.count >= kApolloHiddenContentArcticCap) {
         ApolloLog(@"[HiddenContent] Arctic %@ search capped at %lu items for u/%@", ApolloHiddenContentArcticSearchPath(kind), (unsigned long)kApolloHiddenContentArcticCap, username);
@@ -225,9 +225,16 @@ static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenC
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
         if (error || !data.length || (http && (http.statusCode < 200 || http.statusCode >= 300))) {
-            ApolloLog(@"[HiddenContent] Arctic %@ search stopped early on page %@ (status=%ld error=%@)",
-                      ApolloHiddenContentArcticSearchPath(kind), isFirstPage ? @"1" : @"N", (long)http.statusCode, error.localizedDescription ?: @"none");
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(isFirstPage, YES); });
+            NSString *body = data.length ? [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, MIN(data.length, (NSUInteger)200))] encoding:NSUTF8StringEncoding] : nil;
+            ApolloLog(@"[HiddenContent] Arctic %@ page %@ failed (status=%ld error=%@ body=%@)%@",
+                      ApolloHiddenContentArcticSearchPath(kind), isFirstPage ? @"1" : @"N", (long)http.statusCode,
+                      error.localizedDescription ?: @"none", body ?: @"none", isRetry ? @"" : @"; retrying once");
+            // The shared archive service fails a request now and then and
+            // answers the same one moments later.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(isRetry ? 0 : 0.75 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (isRetry) completion(isFirstPage, YES);
+                else ApolloHiddenContentFetchArcticPage(username, kind, before, YES, items, progress, completion);
+            });
             return;
         }
 
@@ -247,7 +254,7 @@ static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenC
         dispatch_async(dispatch_get_main_queue(), ^{
             if (progress) progress(0.35 + 0.40 * MIN(1.0, (double)items.count / kApolloHiddenContentArcticCap), @"Searching the archive");
             if (page.count >= kApolloHiddenContentPageSize && oldestSeen) {
-                ApolloHiddenContentFetchArcticPage(username, kind, oldestSeen, items, progress, completion);
+                ApolloHiddenContentFetchArcticPage(username, kind, oldestSeen, NO, items, progress, completion);
             } else {
                 completion(NO, NO);
             }
@@ -259,7 +266,7 @@ static void ApolloHiddenContentFetchArcticPage(NSString *username, ApolloHiddenC
 static void ApolloHiddenContentFetchArcticItems(NSString *username, ApolloHiddenContentKind kind, ApolloHiddenContentProgress progress,
                                                  void (^completion)(NSArray<NSDictionary *> *items, BOOL fatalError, BOOL incomplete)) {
     NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-    ApolloHiddenContentFetchArcticPage(username, kind, nil, items, progress, ^(BOOL fatalError, BOOL incomplete) {
+    ApolloHiddenContentFetchArcticPage(username, kind, nil, NO, items, progress, ^(BOOL fatalError, BOOL incomplete) {
         completion(items, fatalError, incomplete);
     });
 }
@@ -483,6 +490,25 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
     return item;
 }
 
+// The archived copy is the content: Reddit rewrites a live title or body once
+// the item is removed, even when it still shows as Hidden here. Live counts
+// are layered on when the item still resolves. The fields Apollo's cells read
+// for context (name, parent title) are filled in when the archive lacks them.
+static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, ApolloHiddenContentItem *item, NSDictionary * _Nullable liveData) {
+    NSMutableDictionary *data = [archiveRaw mutableCopy];
+    for (NSString *key in @[@"score", @"ups", @"num_comments", @"upvote_ratio"]) {
+        if ([liveData[key] isKindOfClass:NSNumber.class]) data[key] = liveData[key];
+    }
+    data[@"name"] = item.fullName;
+    if (item.fullName.length > 3 && ![data[@"id"] isKindOfClass:NSString.class]) {
+        data[@"id"] = [item.fullName substringFromIndex:3];
+    }
+    if (item.kind == ApolloHiddenContentKindComment && ![data[@"link_title"] isKindOfClass:NSString.class] && item.parentPostTitle.length) {
+        data[@"link_title"] = item.parentPostTitle;
+    }
+    return data;
+}
+
 #pragma mark - Public entry point
 
 void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenContentKind kind, BOOL forceRefresh, ApolloHiddenContentProgress progress, ApolloHiddenContentFetchCompletion completion) {
@@ -606,6 +632,7 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
                         if (!item.parentPostTitle.length && [parent[@"title"] isKindOfClass:NSString.class]) {
                             item.parentPostTitle = parent[@"title"];
                         }
+                        item.redditData = ApolloHiddenContentRedditData(raw, item, liveChildrenByFullName[name]);
                         [results addObject:item];
                     }
                 }
