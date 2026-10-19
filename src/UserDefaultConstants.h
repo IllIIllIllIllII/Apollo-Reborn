@@ -365,6 +365,11 @@ static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
+// Narrow subreddit panel with compact rows and no letter dividers. Default OFF.
+static NSString *const UDKeyCompactSubredditListEnabled = @"CompactSubredditListEnabled";
+// Standard (NO, default) or Liquid Glass (YES). Preserve the prototype's stored
+// key so an existing panel appearance choice survives this standalone feature.
+static NSString *const UDKeySubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

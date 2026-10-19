@@ -288,6 +288,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloRedgifsFailureReason.m \
     $(SRC_DIR)/ApolloRedgifsErrorCards.xm \
     $(SRC_DIR)/ApolloFeedShortcutsAppearance.m \
+    $(SRC_DIR)/ApolloCompactSubredditPanel.xm \
     $(SRC_DIR)/ApolloSubredditIndexPolish.xm \
     $(SRC_DIR)/ApolloSubredditListEditing.xm \
     $(SRC_DIR)/ApolloSubredditListLaunchSettle.xm \

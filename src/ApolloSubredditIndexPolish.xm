@@ -8,15 +8,24 @@
 #import "ApolloFollowingSection.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoSplitView.h"
+#import "ApolloCompactSubredditPanel.h"
 #import "ApolloMetaFeedRowRecovery.h"
 #import "ApolloFeedShortcutsAppearance.h"
 #import "ApolloState.h"
+#import "ApolloSwiftRuntime.h"
 #import "ApolloThemeRuntime.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
 
 static BOOL ApolloSubredditEnhancementsEnabled(void) {
     return sSubredditListEnhancements || ApolloDuoRequiresSubredditEnhancements();
+}
+
+// The preference can arrive in an iPad backup; keep its native list behavior
+// consistent with the phone-only Compact List setting and panel presentation.
+static BOOL ApolloCompactListEnabledForDevice(void) {
+    return sCompactSubredditListEnabled
+        && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
 }
 
 static char kApolloSubredditIndexTableKey;
@@ -52,10 +61,20 @@ static char kApolloSubredditHeaderPinnedStateKey;
 // enhancement mutation, and replayed by the restore pass.
 static char kApolloSubredditTableNativeStateKey;   // NSDictionary: insets/style/index colors
 static char kApolloSubredditCellNativeStateKey;    // NSDictionary: margins/spacing/backgrounds
+static char kApolloSubredditCompactRowStateKey;   // Native/compact vertical constraints
+static char kApolloSubredditCompactStarStateKey;  // Native favorite visibility and stack position
+static char kApolloSubredditCompactRowLoggedKey;
+static char kApolloSubredditCompactHeaderHiddenStateKey;
+static char kApolloSubredditCompactHeaderTitleStateKey;
+static char kApolloSubredditDensityAppliedKey;
+static char kApolloSubredditDensityRefreshPendingKey;
 static char kApolloSubredditHeaderNativeStateKey;  // NSDictionary: header/label chrome
 static char kApolloSubredditHeaderStyledKey;       // we styled this header; restore needed
 static char kApolloMetaFeedShortcutsViewKey;
+static char kApolloMetaFeedSizingInsetKey;
+static char kApolloMetaFeedMeasuredWrappingPlanKey;
 static char kApolloMetaFeedShortcutsNativeStateKey;
+static char kApolloMetaFeedCompactIconStateKey;
 static char kApolloMetaFeedValidationSignatureKey;
 static char kApolloMetaFeedValidationSeenMaskKey;
 static char kApolloMetaFeedValidationValidKey;
@@ -69,7 +88,10 @@ static char kApolloMetaFeedModeratorAvailabilityMismatchKey;
 static NSHashTable<UITableView *> *sApolloSubredditKnownTables = nil;
 
 static void ApolloSubredditIndexRestoreCellNativeState(UITableViewCell *cell);
+static void ApolloSubredditIndexRestoreCompactStar(UITableViewCell *cell);
+static void ApolloSubredditIndexApplyCompactStar(UITableView *tableView, UITableViewCell *cell);
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView);
+static void ApolloSubredditIndexApplyCompactHeaderTitle(UIView *header, UITableView *tableView);
 // Apollo returns plain RecreatedTableSectionHeaderView instances, not
 // UITableViewHeaderFooterView. UIKit's headerViewForSection: returns nil for
 // those views, even while they are onscreen. Track the actual headers so an
@@ -98,6 +120,10 @@ static NSString * const ApolloSubredditIndexFavoriteSubredditsKey = @"FavoriteSu
 
 static void (*orig_ApolloRedditListWillDisplayHeader)(id self, SEL _cmd, UITableView *tableView, UIView *view, NSInteger section) = NULL;
 static void (*orig_ApolloRedditListWillDisplayCell)(id self, SEL _cmd, UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) = NULL;
+static CGFloat (*orig_ApolloRedditListHeightForHeader)(id self, SEL _cmd, UITableView *tableView, NSInteger section) = NULL;
+static UIView *(*orig_ApolloRedditListViewForHeader)(id self, SEL _cmd, UITableView *tableView, NSInteger section) = NULL;
+static NSArray *(*orig_ApolloRedditListIndexTitles)(id self, SEL _cmd, UITableView *tableView) = NULL;
+static NSInteger (*orig_ApolloRedditListSectionForIndexTitle)(id self, SEL _cmd, UITableView *tableView, NSString *title, NSInteger index) = NULL;
 static CGFloat (*orig_ApolloRedditListHeightForRow)(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) = NULL;
 static void (*orig_ApolloSubredditHeaderLayoutSubviews)(id self, SEL _cmd) = NULL;
 static void (*orig_ApolloSubredditHeaderSetFrame)(id self, SEL _cmd, CGRect frame) = NULL;
@@ -114,6 +140,13 @@ static const CGFloat ApolloSubredditStarHitTrailingInset = 8.0;
 static const CGFloat ApolloSubredditRowBalancedLeadingMargin = 18.0;
 static const CGFloat ApolloSubredditRowIconTextGap = 12.0;
 static const CGFloat ApolloSubredditRowStandardIconTextTrim = 2.0;
+static const CGFloat ApolloCompactListRowMinimumHeight = 36.0;
+static const CGFloat ApolloCompactListVerticalPadding = 4.0;
+static const CGFloat ApolloCompactListIconMaximumSize = 28.0;
+
+static CGFloat ApolloCompactListHeightForContent(CGFloat contentHeight) {
+    return MAX(ApolloCompactListRowMinimumHeight, ceil(contentHeight) + 2.0 * ApolloCompactListVerticalPadding);
+}
 static ApolloSubredditFeedLayout ApolloMetaFeedEffectiveLayout(UITableView *tableView,
                                                                NSArray<NSNumber *> *visibleIndexes) {
     return ApolloFeedShortcutEffectiveLayout((ApolloSubredditFeedLayout)sSubredditFeedLayout,
@@ -130,8 +163,8 @@ static BOOL ApolloMetaFeedLayoutUsesShortcuts(ApolloSubredditFeedLayout layout) 
 static BOOL ApolloMetaFeedUsesCompactFourUp(ApolloSubredditFeedLayout layout,
                                              NSUInteger itemCount,
                                              CGFloat availableWidth) {
-    BOOL supportsCompactFourUp = layout == ApolloSubredditFeedLayoutGrid ||
-        layout == ApolloSubredditFeedLayoutSideBySide;
+    BOOL supportsCompactFourUp = layout == ApolloSubredditFeedLayoutGrid
+        || (layout == ApolloSubredditFeedLayoutSideBySide && !ApolloCompactListEnabledForDevice());
     return supportsCompactFourUp && itemCount == 4 && availableWidth <= 376.0;
 }
 
@@ -141,7 +174,7 @@ static BOOL ApolloMetaFeedUsesCompactFourUp(ApolloSubredditFeedLayout layout,
 // alphabet strip; a standalone list must stop before the native side rail.
 static CGFloat ApolloMetaFeedTrailingEdge(UITableView *tableView) {
     CGFloat edge = CGRectGetMaxX(tableView.bounds);
-    if (ApolloDuoSplitIsSubredditOverlayView(tableView)) return edge;
+    if (ApolloDuoSplitIsSubredditOverlayView(tableView) || ApolloCompactSubredditPanelContainsView(tableView)) return edge;
     edge -= tableView.safeAreaInsets.right;
     UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
     UITabBar *bar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
@@ -159,10 +192,28 @@ static CGFloat ApolloMetaFeedWidthForCell(UITableView *tableView, UITableViewCel
     CGFloat edge = ApolloMetaFeedTrailingEdge(tableView);
     if (!cell) return MAX(0.0, edge - CGRectGetMinX(tableView.bounds));
     CGFloat edgeInCell = [cell convertPoint:CGPointMake(edge, 0) fromView:tableView].x;
-    if (!ApolloDuoSplitIsSubredditOverlayView(tableView)) {
+    if (!ApolloDuoSplitIsSubredditOverlayView(tableView) && !ApolloCompactSubredditPanelContainsView(tableView)) {
         edgeInCell = MIN(edgeInCell, CGRectGetMaxX(cell.contentView.frame));
     }
     return MAX(0.0, edgeInCell - CGRectGetMinX(cell.contentView.frame));
+}
+
+
+static void ApolloMetaFeedCaptureSizingInset(UITableView *tableView, UITableViewCell *cell) {
+    if (!cell || CGRectGetWidth(cell.bounds) <= 0.0) return;
+    CGFloat excluded = MAX(0.0, ApolloMetaFeedWidthForCell(tableView, nil) - ApolloMetaFeedWidthForCell(tableView, cell));
+    objc_setAssociatedObject(tableView, &kApolloMetaFeedSizingInsetKey,
+        @[@(excluded), @(ApolloCompactSubredditPanelContainsView(tableView) || ApolloDuoSplitIsSubredditOverlayView(tableView)), @(tableView.editing)], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static CGFloat ApolloMetaFeedSizingWidth(UITableView *tableView) {
+    // The height delegate must not ask UITableView to look up/prepare a cell.
+    // Capture the native content/index allowance in configuration instead,
+    // and apply it to the current viewport as the panel folds or resizes.
+    NSArray<NSNumber *> *state = objc_getAssociatedObject(tableView, &kApolloMetaFeedSizingInsetKey);
+    CGFloat excluded = state && state[1].boolValue == (ApolloCompactSubredditPanelContainsView(tableView) || ApolloDuoSplitIsSubredditOverlayView(tableView))
+        && state[2].boolValue == tableView.editing ? state[0].doubleValue : 0.0;
+    return MAX(0.0, ApolloMetaFeedWidthForCell(tableView, nil) - excluded);
 }
 
 static UIFont *ApolloMetaFeedCompactFourUpTitleFont(ApolloSubredditFeedLayout layout,
@@ -172,6 +223,93 @@ static UIFont *ApolloMetaFeedCompactFourUpTitleFont(ApolloSubredditFeedLayout la
     return [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
         scaledFontForFont:baseFont
         compatibleWithTraitCollection:traitCollection];
+}
+
+// Pack whole shortcuts in their original order. Widths include each control's
+// padding; a single oversized title gets its own row and may wrap at full size.
+static NSArray<NSValue *> *ApolloMetaFeedWrappedRanges(NSArray<NSNumber *> *itemWidths, CGFloat availableWidth) {
+    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
+    CGFloat width = MAX(availableWidth, 1.0);
+    CGFloat used = 0.0;
+    NSUInteger start = 0;
+    for (NSUInteger index = 0; index < itemWidths.count; index++) {
+        CGFloat itemWidth = MAX(itemWidths[index].doubleValue, 44.0);
+        if (index > start && used + itemWidth > width) {
+            [ranges addObject:[NSValue valueWithRange:NSMakeRange(start, index - start)]];
+            start = index;
+            used = 0.0;
+        }
+        used += itemWidth;
+    }
+    if (start < itemWidths.count) {
+        [ranges addObject:[NSValue valueWithRange:NSMakeRange(start, itemWidths.count - start)]];
+    }
+    return ranges;
+}
+
+@interface ApolloMetaFeedWrappingPlan : NSObject
+@property (nonatomic, strong) UIFont *font;
+@property (nonatomic, copy) NSArray<NSNumber *> *itemWidths;
+@property (nonatomic, copy) NSArray<NSValue *> *rowRanges;
+@property (nonatomic, copy) NSArray<NSNumber *> *rowHeights;
+@property (nonatomic) CGFloat height;
+@end
+@implementation ApolloMetaFeedWrappingPlan
+@end
+
+static ApolloMetaFeedWrappingPlan *ApolloMetaFeedSideBySidePlan(NSArray<NSNumber *> *indexes, CGFloat availableWidth, UITraitCollection *traits) {
+    ApolloMetaFeedWrappingPlan *plan = [ApolloMetaFeedWrappingPlan new];
+    plan.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody compatibleWithTraitCollection:traits];
+    CGFloat icon = ApolloFeedShortcutDisplayIconSize((ApolloSubredditFeedIconStyle)sSubredditFeedIconStyle,
+                                                     ApolloSubredditFeedLayoutSideBySide, indexes.count);
+    CGFloat gap = ApolloFeedShortcutContentSpacing(ApolloSubredditFeedLayoutSideBySide, indexes.count);
+    CGFloat innerWidth = MAX(availableWidth - 28.0, 1.0);
+    NSMutableArray<NSNumber *> *widths = [NSMutableArray arrayWithCapacity:indexes.count];
+    for (NSNumber *index in indexes) {
+        NSString *title = ApolloFeedShortcutShortTitle(index.integerValue);
+        CGFloat textWidth = ceil([title sizeWithAttributes:@{NSFontAttributeName: plan.font}].width);
+        [widths addObject:@(MAX(44.0, icon + gap + textWidth + 12.0))];
+    }
+    plan.itemWidths = widths;
+    plan.rowRanges = ApolloMetaFeedWrappedRanges(widths, innerWidth);
+    NSMutableArray<NSNumber *> *heights = [NSMutableArray arrayWithCapacity:plan.rowRanges.count];
+    plan.height = 16.0 + MAX((NSInteger)plan.rowRanges.count - 1, 0) * 4.0;
+    for (NSValue *value in plan.rowRanges) {
+        NSRange range = value.rangeValue;
+        CGFloat sum = 0.0;
+        for (NSUInteger item = range.location; item < NSMaxRange(range); item++) sum += widths[item].doubleValue;
+        CGFloat rowHeight = 52.0;
+        for (NSUInteger item = range.location; item < NSMaxRange(range); item++) {
+            CGFloat itemWidth = innerWidth * widths[item].doubleValue / sum;
+            CGFloat labelWidth = MAX(itemWidth - icon - gap - 12.0, 1.0);
+            NSString *title = ApolloFeedShortcutShortTitle(indexes[item].integerValue);
+            CGFloat titleHeight = ceil([title boundingRectWithSize:CGSizeMake(labelWidth, CGFLOAT_MAX)
+                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                attributes:@{NSFontAttributeName: plan.font} context:nil].size.height);
+            rowHeight = MAX(rowHeight, MAX(icon, titleHeight) + 16.0);
+        }
+        [heights addObject:@(rowHeight)];
+        plan.height += rowHeight;
+    }
+    plan.rowHeights = heights;
+    return plan;
+}
+
+static BOOL ApolloMetaFeedWrappingPlansMatch(ApolloMetaFeedWrappingPlan *first, ApolloMetaFeedWrappingPlan *second) {
+    return first && second && [first.font isEqual:second.font]
+        && [first.itemWidths isEqual:second.itemWidths]
+        && [first.rowRanges isEqual:second.rowRanges]
+        && [first.rowHeights isEqual:second.rowHeights];
+}
+
+static CGFloat ApolloMetaFeedCompactNativeRowHeight(UITraitCollection *traits, NSUInteger itemCount) {
+    UIFont *title = [UIFont preferredFontForTextStyle:UIFontTextStyleBody compatibleWithTraitCollection:traits];
+    CGFloat textHeight = ceil(title.lineHeight);
+    // Compact mode always hides feed descriptions, independent of the full
+    // list preference, so its rows reserve only the title and compact icon.
+    CGFloat icon = ApolloFeedShortcutDisplayIconSize((ApolloSubredditFeedIconStyle)sSubredditFeedIconStyle,
+                                                     ApolloSubredditFeedLayoutRows, itemCount);
+    return ApolloCompactListHeightForContent(MAX(MIN(icon, ApolloCompactListIconMaximumSize), textHeight));
 }
 
 static __unsafe_unretained UITableView *sApolloFavoriteMutationTable = nil;
@@ -208,6 +346,7 @@ static NSInteger sApolloFavoriteMutationOriginalLastRow = NSNotFound;
 @property (nonatomic, strong) NSArray<UIView *> *separators;
 @property (nonatomic) ApolloSubredditFeedLayout layout;
 @property (nonatomic) BOOL usesCompactFourUp;
+@property (nonatomic, strong) ApolloMetaFeedWrappingPlan *wrappingPlan;
 @property (nonatomic) BOOL themeRefreshScheduled;
 @property (nonatomic, strong) NSLayoutConstraint *trailingConstraint;
 - (instancetype)initWithTableView:(UITableView *)tableView
@@ -264,6 +403,8 @@ static BOOL ApolloSubredditIndexRecordMetaFeedCell(UITableView *tableView,
 static void ApolloSubredditIndexRestoreMetaFeedCell(UITableViewCell *cell);
 static void ApolloSubredditIndexApplyMetaFeedShortcuts(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath);
 static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView);
+static void ApolloSubredditIndexScheduleDensityRefresh(UITableView *tableView);
+static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, BOOL settleEditingLayout);
 
 static UIViewController *ApolloSubredditIndexOwningViewController(UIView *view) {
     UIResponder *responder = view;
@@ -307,6 +448,7 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
 
     NSString *title = ApolloFeedShortcutShortTitle(feedIndex);
     BOOL sideBySide = layout == ApolloSubredditFeedLayoutSideBySide;
+    BOOL wrappedSideBySide = sideBySide && ApolloCompactListEnabledForDevice();
     BOOL compactSideBySide = usesCompactFourUp && sideBySide;
     BOOL compactGrid = usesCompactFourUp && layout == ApolloSubredditFeedLayoutGrid;
     BOOL iconDock = layout == ApolloSubredditFeedLayoutIconDock;
@@ -355,10 +497,10 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
                           compatibleWithTraitCollection:traitCollection];
         _titleLabel.adjustsFontForContentSizeCategory = YES;
         _titleLabel.textAlignment = NSTextAlignmentCenter;
-        _titleLabel.numberOfLines = 1;
-        _titleLabel.adjustsFontSizeToFitWidth = YES;
-        _titleLabel.minimumScaleFactor = 0.5;
-        _titleLabel.lineBreakMode = NSLineBreakByClipping;
+        _titleLabel.numberOfLines = wrappedSideBySide ? 0 : 1;
+        _titleLabel.adjustsFontSizeToFitWidth = !wrappedSideBySide;
+        _titleLabel.minimumScaleFactor = wrappedSideBySide ? 1.0 : 0.5;
+        _titleLabel.lineBreakMode = wrappedSideBySide ? NSLineBreakByWordWrapping : NSLineBreakByClipping;
         [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
                                                      forAxis:UILayoutConstraintAxisHorizontal];
     }
@@ -374,12 +516,13 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     _contentStack = contentStack;
 
     _contentCenterXConstraint = [contentStack.centerXAnchor constraintEqualToAnchor:self.centerXAnchor];
-    _contentCenterXConstraint.constant = geometry.centerXOffset + (compactGrid && feedIndex == 3 ? 2.0 : 0.0);
+    _contentCenterXConstraint.constant = wrappedSideBySide ? 0.0
+        : geometry.centerXOffset + (compactGrid && feedIndex == 3 ? 2.0 : 0.0);
     [NSLayoutConstraint activateConstraints:@[
         _contentCenterXConstraint,
         [contentStack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor]
     ]];
-    if (!geometry.usesFlexibleSideBySideLayout) {
+    if (wrappedSideBySide || !geometry.usesFlexibleSideBySideLayout) {
         CGFloat horizontalMargin = compactGrid ? 0.0 : geometry.horizontalMargin;
         [NSLayoutConstraint activateConstraints:@[
             [contentStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.leadingAnchor constant:horizontalMargin],
@@ -533,13 +676,67 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
         [contentViews addObject:shortcut.contentStack];
         [centerConstraints addObject:shortcut.contentCenterXConstraint];
     }
-    self.separators = ApolloFeedShortcutInstallLayout(self,
-                                                      shortcuts,
-                                                      contentViews,
-                                                      centerConstraints,
-                                                      layout,
-                                                      UIColor.separatorColor,
-                                                      0.0);
+    if (ApolloCompactListEnabledForDevice() && layout == ApolloSubredditFeedLayoutSideBySide) {
+        self.wrappingPlan = ApolloMetaFeedSideBySidePlan(visibleFeedIndexes, availableWidth, tableView.traitCollection);
+        UIStackView *rows = [UIStackView new];
+        rows.translatesAutoresizingMaskIntoConstraints = NO;
+        rows.axis = UILayoutConstraintAxisVertical;
+        rows.alignment = UIStackViewAlignmentFill;
+        rows.spacing = 4.0;
+        [self addSubview:rows];
+        [NSLayoutConstraint activateConstraints:@[
+            [rows.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14.0],
+            [rows.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14.0],
+            [rows.topAnchor constraintEqualToAnchor:self.topAnchor constant:8.0],
+            [rows.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8.0]
+        ]];
+        NSMutableArray<UIView *> *separators = [NSMutableArray array];
+        for (NSUInteger rowIndex = 0; rowIndex < self.wrappingPlan.rowRanges.count; rowIndex++) {
+            NSRange range = self.wrappingPlan.rowRanges[rowIndex].rangeValue;
+            NSArray<ApolloMetaFeedShortcutControl *> *items = [shortcuts subarrayWithRange:range];
+            UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:items];
+            row.axis = UILayoutConstraintAxisHorizontal;
+            row.alignment = UIStackViewAlignmentFill;
+            row.distribution = UIStackViewDistributionFill;
+            [rows addArrangedSubview:row];
+            NSLayoutConstraint *rowHeight = [row.heightAnchor constraintEqualToConstant:self.wrappingPlan.rowHeights[rowIndex].doubleValue];
+            // Native separators and an in-flight table resize can make the
+            // content view fractionally shorter than the delegate's row height.
+            rowHeight.priority = UILayoutPriorityRequired - 1.0;
+            rowHeight.active = YES;
+            CGFloat sum = 0.0;
+            for (NSUInteger item = range.location; item < NSMaxRange(range); item++) {
+                sum += self.wrappingPlan.itemWidths[item].doubleValue;
+            }
+            for (NSUInteger item = range.location; item < NSMaxRange(range); item++) {
+                ApolloMetaFeedShortcutControl *shortcut = shortcuts[item];
+                CGFloat ratio = self.wrappingPlan.itemWidths[item].doubleValue / sum;
+                [shortcut.widthAnchor constraintEqualToAnchor:row.widthAnchor multiplier:ratio].active = YES;
+                if (item + 1 == NSMaxRange(range)) continue;
+                UIView *separator = [UIView new];
+                separator.translatesAutoresizingMaskIntoConstraints = NO;
+                separator.userInteractionEnabled = NO;
+                separator.backgroundColor = UIColor.separatorColor;
+                [row addSubview:separator];
+                [NSLayoutConstraint activateConstraints:@[
+                    [separator.widthAnchor constraintEqualToConstant:2.0 / MAX(tableView.traitCollection.displayScale, 1.0)],
+                    [separator.centerXAnchor constraintEqualToAnchor:shortcut.trailingAnchor],
+                    [separator.topAnchor constraintEqualToAnchor:row.topAnchor constant:6.0],
+                    [separator.bottomAnchor constraintEqualToAnchor:row.bottomAnchor constant:-6.0]
+                ]];
+                [separators addObject:separator];
+            }
+        }
+        self.separators = separators;
+    } else {
+        self.separators = ApolloFeedShortcutInstallLayout(self,
+                                                          shortcuts,
+                                                          contentViews,
+                                                          centerConstraints,
+                                                          layout,
+                                                          UIColor.separatorColor,
+                                                          0.0);
+    }
     self.tableView = tableView;
     return self;
 }
@@ -608,7 +805,9 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
         }
     }
 
-    UIFont *font = self.usesCompactFourUp
+    UIFont *font = self.layout == ApolloSubredditFeedLayoutSideBySide
+        ? [UIFont preferredFontForTextStyle:UIFontTextStyleBody compatibleWithTraitCollection:self.traitCollection]
+        : self.usesCompactFourUp
         ? ApolloMetaFeedCompactFourUpTitleFont(self.layout, self.traitCollection)
         : referenceLabel.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleBody
                                  compatibleWithTraitCollection:self.traitCollection];
@@ -624,6 +823,9 @@ UIImage *ApolloSubredditClassicMetaFeedIcon(NSInteger index) {
     }
     for (UIView *separator in self.separators) {
         separator.backgroundColor = separatorColor;
+    }
+    if (self.wrappingPlan && ![self.wrappingPlan.font isEqual:font]) {
+        ApolloSubredditIndexScheduleGeometryRefresh(self.tableView, NO);
     }
 }
 
@@ -768,7 +970,6 @@ static BOOL ApolloSubredditIndexOwningTitleLooksLikeSubreddits(UITableView *tabl
 static BOOL ApolloSubredditIndexShouldInspectTable(UITableView *tableView) {
     if (!tableView) return NO;
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) return YES;
-
     id owner = (id)tableView.dataSource;
     if (!owner) owner = (id)tableView.delegate;
     Class redditListClass = ApolloClassRedditListViewController;
@@ -898,6 +1099,14 @@ static void ApolloSubredditIndexScrollToTitle(UITableView *tableView, NSString *
     SEL sectionForTitle = @selector(tableView:sectionForSectionIndexTitle:atIndex:);
     if (dataSource && [dataSource respondsToSelector:sectionForTitle]) {
         section = ((NSInteger (*)(id, SEL, UITableView *, NSString *, NSInteger))objc_msgSend)(dataSource, sectionForTitle, tableView, title, titleIndex);
+    }
+
+    // The compact alphabet's first entry doubles as the top shortcut. Match
+    // native section-zero navigation without leaving any table header/inset
+    // above the viewport when the custom index is being scrubbed.
+    if (ApolloCompactListEnabledForDevice() && titleIndex == 0 && section == 0) {
+        [tableView setContentOffset:CGPointMake(tableView.contentOffset.x, -tableView.adjustedContentInset.top) animated:NO];
+        return;
     }
 
     NSInteger sectionCount = [tableView numberOfSections];
@@ -1119,6 +1328,142 @@ static CGFloat ApolloSubredditIndexContentRightMargin(UITableViewCell *cell, BOO
     return drawer ? 16.0 : 0.0;
 }
 
+static BOOL ApolloSubredditIndexUsesCompactRows(UITableView *tableView) {
+    if (!ApolloCompactListEnabledForDevice() || !tableView) return NO;
+    // Header heights can be requested before the first cell registers its
+    // table. Recognize Apollo's actual data source at that first measurement;
+    // this remains independent of the enhancements master.
+    return [sApolloSubredditKnownTables containsObject:tableView]
+        || (ApolloClassRedditListViewController
+            && [tableView.dataSource isKindOfClass:ApolloClassRedditListViewController]);
+}
+
+static NSInteger ApolloSubredditIndexFirstCompactCollationSection(UITableView *tableView) {
+    if (!ApolloSubredditIndexUsesCompactRows(tableView)) return NSNotFound;
+    // Apollo's data model ends with UILocalizedIndexedCollation's sections
+    // (including # and non-Latin alphabets). The Following remapper only
+    // reorders/inserts the named prefix, so count that prefix from the actual
+    // presented table rather than assuming a fixed section number or reading
+    // a rendered header label. Do not call sectionForSectionIndexTitle: here:
+    // Apollo can schedule a scroll as a side effect of that navigation method.
+    NSInteger sectionCount = tableView.numberOfSections;
+    NSInteger collationCount = (NSInteger)[UILocalizedIndexedCollation currentCollation].sectionTitles.count;
+    NSInteger firstCollationSection = sectionCount - collationCount;
+    if (collationCount <= 0 || firstCollationSection < 4) return NSNotFound;
+    return firstCollationSection;
+}
+
+static NSInteger ApolloSubredditIndexCompactSubredditsHeaderSection(UITableView *tableView) {
+    NSInteger first = ApolloSubredditIndexFirstCompactCollationSection(tableView);
+    if (first == NSNotFound) return NSNotFound;
+    // Use visible row counts: Following can move every row out of a native
+    // letter bucket. An empty A (or localized first bucket) must not leave a
+    // floating heading above an empty section or remove the heading entirely.
+    for (NSInteger section = first; section < tableView.numberOfSections; section++) {
+        if ([tableView numberOfRowsInSection:section] > 0) return section;
+    }
+    return NSNotFound;
+}
+
+static BOOL ApolloSubredditIndexHidesCompactHeader(UITableView *tableView, NSInteger section) {
+    NSInteger first = ApolloSubredditIndexFirstCompactCollationSection(tableView);
+    if (first == NSNotFound || section < first || section >= tableView.numberOfSections) return NO;
+    NSString *named = ApolloFollowingCanonicalTitleForVisibleSection(tableView, section);
+    if (named.length > 0) return NO;
+    return section != ApolloSubredditIndexCompactSubredditsHeaderSection(tableView);
+}
+
+static BOOL ApolloSubredditIndexApplyCompactHeaderVisibility(UIView *header, UITableView *tableView) {
+    if (!header) return NO;
+    ApolloSubredditIndexApplyCompactHeaderTitle(header, tableView);
+    NSNumber *section = objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey);
+    BOOL hidden = section && ApolloSubredditIndexHidesCompactHeader(tableView, section.integerValue);
+    NSNumber *nativeHidden = objc_getAssociatedObject(header, &kApolloSubredditCompactHeaderHiddenStateKey);
+    if (hidden) {
+        if (!nativeHidden) {
+            objc_setAssociatedObject(header, &kApolloSubredditCompactHeaderHiddenStateKey,
+                @(header.hidden), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        if (!header.hidden) header.hidden = YES;
+    } else if (nativeHidden) {
+        header.hidden = nativeHidden.boolValue;
+        objc_setAssociatedObject(header, &kApolloSubredditCompactHeaderHiddenStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return hidden;
+}
+
+static void ApolloSubredditIndexRestoreCompactRow(UITableViewCell *cell) {
+    ApolloSubredditIndexRestoreCompactStar(cell);
+    NSDictionary *state = objc_getAssociatedObject(cell, &kApolloSubredditCompactRowStateKey);
+    if (!state) return;
+    [NSLayoutConstraint deactivateConstraints:state[@"compactConstraints"]];
+    [NSLayoutConstraint activateConstraints:state[@"nativeVerticalConstraints"]];
+    objc_setAssociatedObject(cell, &kApolloSubredditCompactRowStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditIndexApplyCompactRow(UITableView *tableView, UITableViewCell *cell) {
+    if (!ApolloClassRedditListTableViewCell || ![cell isMemberOfClass:ApolloClassRedditListTableViewCell]) return;
+    if (!ApolloSubredditIndexUsesCompactRows(tableView)) {
+        ApolloSubredditIndexRestoreCompactRow(cell);
+        return;
+    }
+    ApolloSubredditIndexApplyCompactStar(tableView, cell);
+    if (objc_getAssociatedObject(cell, &kApolloSubredditCompactRowStateKey)) return;
+
+    // Do not write layoutMargins here. Before attachment UIKit can report 0pt
+    // authored margins while the normal row inherits 15pt. Saving those early
+    // values and replaying them after folding collapsed retained rows to the
+    // icon's 28pt height. Keep the native margins and inheritance untouched;
+    // switch only the stack's two vertical anchors before UIKit measures it.
+    UIStackView *stack = ApolloSubredditIndexRedditListMainStackView(cell);
+    if (!stack) return;
+    UILayoutGuide *guide = cell.contentView.layoutMarginsGuide;
+    NSLayoutConstraint *nativeTop = nil;
+    NSLayoutConstraint *nativeBottom = nil;
+    for (NSLayoutConstraint *constraint in cell.contentView.constraints) {
+        if (!constraint.active || constraint.relation != NSLayoutRelationEqual) continue;
+        BOOL stackFirst = constraint.firstItem == stack && constraint.secondItem == guide;
+        BOOL stackSecond = constraint.secondItem == stack && constraint.firstItem == guide;
+        if (!stackFirst && !stackSecond) continue;
+        if (constraint.firstAttribute == NSLayoutAttributeTop && constraint.secondAttribute == NSLayoutAttributeTop) {
+            nativeTop = constraint;
+        } else if (constraint.firstAttribute == NSLayoutAttributeBottom && constraint.secondAttribute == NSLayoutAttributeBottom) {
+            nativeBottom = constraint;
+        }
+    }
+    if (!nativeTop || !nativeBottom) {
+        if (!objc_getAssociatedObject(cell, &kApolloSubredditCompactRowLoggedKey)) {
+            ApolloLog(@"[SubredditIndex] compact anchors unavailable class=%@ top=%d bottom=%d constraints=%lu",
+                NSStringFromClass(cell.class), nativeTop != nil, nativeBottom != nil,
+                (unsigned long)cell.contentView.constraints.count);
+            objc_setAssociatedObject(cell, &kApolloSubredditCompactRowLoggedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+
+    NSArray<NSLayoutConstraint *> *native = @[nativeTop, nativeBottom];
+    NSLayoutConstraint *top = [stack.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:ApolloCompactListVerticalPadding];
+    NSLayoutConstraint *bottom = [stack.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-ApolloCompactListVerticalPadding];
+    NSLayoutConstraint *minimum = [cell.contentView.heightAnchor constraintGreaterThanOrEqualToConstant:ApolloCompactListRowMinimumHeight];
+    top.identifier = @"ApolloCompactSubredditTop";
+    bottom.identifier = @"ApolloCompactSubredditBottom";
+    minimum.identifier = @"ApolloCompactSubredditMinimumHeight";
+    NSArray<NSLayoutConstraint *> *compact = @[top, bottom, minimum];
+    objc_setAssociatedObject(cell, &kApolloSubredditCompactRowStateKey,
+        @{@"nativeVerticalConstraints": native, @"compactConstraints": compact}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [NSLayoutConstraint deactivateConstraints:native];
+    [NSLayoutConstraint activateConstraints:compact];
+    // Apollo still owns the icon, fonts, subtitles, and horizontal editing/
+    // reorder geometry. Self-sizing can grow beyond the 36pt compact minimum.
+    static BOOL logged = NO;
+    if (!logged) {
+        logged = YES;
+        ApolloLog(@"[SubredditIndex] compact anchors installed nativeTop=%.1f nativeBottom=%.1f",
+            nativeTop.constant, nativeBottom.constant);
+    }
+}
+
+
 static void ApolloSubredditIndexApplyCellMarginsOnce(UITableViewCell *cell) {
     BOOL drawer = ApolloDuoSplitIsSubredditOverlayView(cell);
     BOOL isolatedMargins = drawer || ApolloDuoRailHasVisibleSideBar();
@@ -1192,7 +1537,8 @@ static BOOL ApolloSubredditIndexStringLooksLikeSubredditName(NSString *string) {
             @"FAVORITES",
             @"MODERATOR",
             @"MULTIREDDITS",
-            @"FOLLOWING" // ApolloFollowingSection's synthetic section
+            @"FOLLOWING", // ApolloFollowingSection's synthetic section
+            @"SUBREDDITS"
         ]];
     });
     if ([blocked containsObject:trimmed]) return NO;
@@ -1212,6 +1558,7 @@ static BOOL ApolloSubredditIndexStringLooksLikeHeaderTitle(NSString *string) {
     if (trimmed.length == 0) return NO;
     if ([trimmed isEqualToString:@"FAVORITES"] || [trimmed isEqualToString:@"MODERATOR"] || [trimmed isEqualToString:@"MULTIREDDITS"]) return YES;
     if ([trimmed isEqualToString:@"FOLLOWING"]) return YES; // ApolloFollowingSection's synthetic section
+    if ([trimmed isEqualToString:@"SUBREDDITS"]) return YES;
     if (trimmed.length == 1) {
         unichar ch = [trimmed characterAtIndex:0];
         if ([[NSCharacterSet uppercaseLetterCharacterSet] characterIsMember:ch]) return YES;
@@ -1239,6 +1586,32 @@ static UILabel *ApolloSubredditIndexHeaderLabelInView(UIView *view) {
         }
     }
     return nil;
+}
+
+static void ApolloSubredditIndexApplyCompactHeaderTitle(UIView *header, UITableView *tableView) {
+    // Use the native label directly so localized collation titles do not need
+    // to match the modern header styling's title recognizer first.
+    UILabel *label = ApolloObjectIvar(header, "label");
+    if (![label isKindOfClass:UILabel.class]) return;
+    NSString *nativeTitle = objc_getAssociatedObject(header, &kApolloSubredditCompactHeaderTitleStateKey);
+    if (nativeTitle && ![label.text isEqualToString:@"SUBREDDITS"]) {
+        // Apollo reconfigured this instance for another section. Its new title
+        // takes precedence over the previous section's captured letter.
+        nativeTitle = nil;
+        objc_setAssociatedObject(header, &kApolloSubredditCompactHeaderTitleStateKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
+    NSNumber *section = objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey);
+    BOOL isSubreddits = section && section.integerValue == ApolloSubredditIndexCompactSubredditsHeaderSection(tableView);
+    if (isSubreddits) {
+        if (!nativeTitle) {
+            objc_setAssociatedObject(header, &kApolloSubredditCompactHeaderTitleStateKey,
+                label.text ?: @"", OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+        label.text = @"SUBREDDITS";
+    } else if (nativeTitle) {
+        label.text = nativeTitle;
+        objc_setAssociatedObject(header, &kApolloSubredditCompactHeaderTitleStateKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    }
 }
 
 static BOOL ApolloSubredditIndexViewContainsView(UIView *container, UIView *target) {
@@ -1469,6 +1842,66 @@ static void ApolloSubredditIndexRemoveStarProxyFromCell(UITableViewCell *cell) {
     ApolloSubredditStarHitProxy *proxy = objc_getAssociatedObject(cell, &kApolloSubredditStarProxyKey);
     [proxy removeFromSuperview];
     objc_setAssociatedObject(cell, &kApolloSubredditStarProxyKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditIndexRestoreCompactStar(UITableViewCell *cell) {
+    NSDictionary *state = objc_getAssociatedObject(cell, &kApolloSubredditCompactStarStateKey);
+    if (!state) return;
+    UIControl *control = state[@"control"];
+    UIStackView *stack = state[@"stack"];
+    // Keep native width/height constraints intact. Restoring the original
+    // arranged position lets UIStackView resume its normal accessory layout.
+    control.hidden = [state[@"hidden"] boolValue];
+    if (stack && control.superview == stack && ![stack.arrangedSubviews containsObject:control]) {
+        NSArray<UIView *> *arranged = stack.arrangedSubviews;
+        NSUInteger index = MIN([state[@"index"] unsignedIntegerValue], arranged.count);
+        // Apollo can insert/remove the native list icon while Compact List is
+        // enabled. Preserve the accessory's neighbors, not a stale slot index.
+        UIView *previous = state[@"previous"];
+        UIView *next = state[@"next"];
+        NSUInteger previousIndex = previous ? [arranged indexOfObjectIdenticalTo:previous] : NSNotFound;
+        NSUInteger nextIndex = next ? [arranged indexOfObjectIdenticalTo:next] : NSNotFound;
+        if (previousIndex != NSNotFound) index = previousIndex + 1;
+        else if (nextIndex != NSNotFound) index = nextIndex;
+        [stack insertArrangedSubview:control atIndex:index];
+    }
+    objc_setAssociatedObject(cell, &kApolloSubredditCompactStarStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloSubredditIndexApplyCompactStar(UITableView *tableView, UITableViewCell *cell) {
+    UIControl *control = ApolloSubredditIndexRedditListAccessoryButton(cell);
+    if (!ApolloSubredditIndexUsesCompactRows(tableView)
+        || !ApolloSubredditIndexControlHasFavoriteAction(control)) {
+        ApolloSubredditIndexRestoreCompactStar(cell);
+        return;
+    }
+    ApolloSubredditIndexRemoveStarProxyFromCell(cell);
+    NSDictionary *state = objc_getAssociatedObject(cell, &kApolloSubredditCompactStarStateKey);
+    if (state && state[@"control"] != control) {
+        ApolloSubredditIndexRestoreCompactStar(cell);
+        state = nil;
+    }
+    if (!state) {
+        NSMutableDictionary *saved = [@{@"control": control, @"hidden": @(control.hidden)} mutableCopy];
+        UIStackView *stack = ApolloSubredditIndexRedditListMainStackView(cell);
+        NSUInteger index = [stack.arrangedSubviews indexOfObjectIdenticalTo:control];
+        if (stack && stack.axis == UILayoutConstraintAxisHorizontal && index != NSNotFound) {
+            saved[@"stack"] = stack;
+            saved[@"index"] = @(index);
+            if (index > 0) saved[@"previous"] = stack.arrangedSubviews[index - 1];
+            if (index + 1 < stack.arrangedSubviews.count) saved[@"next"] = stack.arrangedSubviews[index + 1];
+        }
+        state = saved;
+        objc_setAssociatedObject(cell, &kApolloSubredditCompactStarStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    // Only favorite actions disappear. The same native accessory also hosts
+    // multireddit expand chevrons, which must remain available in Compact List.
+    // Removing a star from arrangedSubviews reclaims its width and spacing
+    // without changing fixed icon-size constraints or covering the reorder grip.
+    // It stays in the hierarchy, retained by Apollo, for native reuse/restoration.
+    UIStackView *stack = state[@"stack"];
+    if ([stack.arrangedSubviews containsObject:control]) [stack removeArrangedSubview:control];
+    if (!control.hidden) control.hidden = YES;
 }
 
 @implementation ApolloSubredditStarHitProxy
@@ -1767,26 +2200,14 @@ static CGPoint ApolloSubredditIndexClampedContentOffset(UITableView *tableView, 
     return requestedOffset;
 }
 
-static NSInteger ApolloSubredditIndexSectionForIndexTitle(UITableView *tableView, NSString *title) {
-    NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
-    NSInteger titleIndex = [titles indexOfObject:title];
-    if (titleIndex == NSNotFound) return NSNotFound;
-
-    NSInteger section = titleIndex;
-    id<UITableViewDataSource> dataSource = tableView.dataSource;
-    SEL sectionForTitle = @selector(tableView:sectionForSectionIndexTitle:atIndex:);
-    if (dataSource && [dataSource respondsToSelector:sectionForTitle]) {
-        section = ((NSInteger (*)(id, SEL, UITableView *, NSString *, NSInteger))objc_msgSend)(dataSource, sectionForTitle, tableView, title, titleIndex);
-    }
-    return section;
-}
-
 static BOOL ApolloSubredditIndexCellIsInFavoritesSection(UITableViewCell *cell, UITableView *tableView) {
     if (!cell || !tableView) return NO;
     NSIndexPath *indexPath = [tableView indexPathForCell:cell];
     if (!indexPath) return NO;
-    NSInteger favoritesSection = ApolloSubredditIndexSectionForIndexTitle(tableView, @"★");
-    return favoritesSection != NSNotFound && indexPath.section == favoritesSection;
+    // Section identity must not depend on an index glyph: compact mode omits
+    // the star, while Favorites still supports native editing and deletion.
+    NSString *title = ApolloFollowingCanonicalTitleForVisibleSection(tableView, indexPath.section);
+    return title ? [title isEqualToString:@"FAVORITES"] : indexPath.section == 1;
 }
 
 static NSDictionary *ApolloSubredditIndexCaptureScrollAnchor(UITableView *tableView) {
@@ -1938,8 +2359,8 @@ static void ApolloSubredditIndexScheduleFavoritesRefresh(UITableView *tableView,
 static void ApolloSubredditIndexInstallStarProxyForCell(UITableViewCell *cell, UITableView *tableView) {
     if (!cell || !tableView) return;
 
-    if (tableView.editing || cell.editing) {
-        // In edit mode Apollo's reorder grip lives in the same right-side area.
+    if (ApolloSubredditIndexUsesCompactRows(tableView) || tableView.editing || cell.editing) {
+        // Compact List has no star target. In edit mode Apollo's reorder grip lives in the same right-side area.
         // Let the native reorder gesture win instead of covering it with our
         // larger transparent star hit target.
         ApolloSubredditIndexRemoveStarProxyFromCell(cell);
@@ -2183,7 +2604,7 @@ static UIView *ApolloSubredditIndexModernPressOverlay(UITableView *tableView, UI
     UIView *container = cell.contentView ?: (UIView *)cell;
     UIView *overlay = objc_getAssociatedObject(cell, &kApolloSubredditModernPressOverlayKey);
     BOOL glass = NO;
-    if (@available(iOS 26.0, *)) glass = ApolloDuoSplitIsGlassSubredditOverlayView(cell);
+    if (@available(iOS 26.0, *)) glass = ApolloDuoSplitIsGlassSubredditOverlayView(cell) || ApolloCompactSubredditPanelUsesGlass(cell);
     if (!overlay || overlay.superview != container || glass != [overlay isKindOfClass:UIVisualEffectView.class]) {
         [overlay removeFromSuperview];
         overlay = glass ? [[UIVisualEffectView alloc] initWithEffect:nil] : [[UIView alloc] initWithFrame:container.bounds];
@@ -2234,7 +2655,7 @@ static void ApolloSubredditIndexSetModernPressOverlayVisible(UITableViewCell *ce
 
     // Apollo keeps the current destination selected in its sidebar. The
     // overlay is a transient drawer: only a held press should light the glass.
-    if (ApolloDuoSplitIsSubredditOverlayView(cell)) visible = cell.highlighted;
+    if (ApolloDuoSplitIsSubredditOverlayView(cell) || ApolloCompactSubredditPanelContainsView(cell)) visible = cell.highlighted;
     UIView *overlay = ApolloSubredditIndexModernPressOverlay(tableView, cell);
     void (^changes)(void) = nil;
     if (@available(iOS 26.0, *)) {
@@ -2435,7 +2856,11 @@ static void ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(UITableView *
 }
 
 static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UITableViewCell *cell, NSIndexPath *indexPath) {
-    if (!cell || !ApolloSubredditIndexEnsureSubredditTable(tableView)) return;
+    if (!cell) return;
+    if (!ApolloSubredditIndexEnsureSubredditTable(tableView)) {
+        ApolloSubredditIndexApplyCompactRow(tableView, cell);
+        return;
+    }
 
     ApolloSubredditIndexApplySeparatorInsets(tableView);
     ApolloSubredditIndexApplyCellMarginsOnce(cell);
@@ -2446,6 +2871,7 @@ static void ApolloSubredditIndexPrepareCellForDisplay(UITableView *tableView, UI
     }
     ApolloSubredditIndexApplyCellSelectionChrome(cell, tableView);
     ApolloSubredditIndexApplyMultiredditChildStyleIfNeeded(tableView, cell, indexPath);
+    ApolloSubredditIndexApplyCompactRow(tableView, cell);
 }
 
 static void ApolloSubredditIndexUnhideVisualEffectViews(UIView *view) {
@@ -2478,7 +2904,10 @@ static void ApolloSubredditIndexRestoreHeaderNativeChrome(UIView *header) {
         header.backgroundColor = ApolloSubredditIndexRestoredSurfaceColor(headerBg, YES);
         header.opaque = [state[@"headerOpaque"] boolValue];
 
-        UILabel *label = ApolloSubredditIndexHeaderLabelInView(header);
+        // A compact SUBREDDITS heading may already have regained a localized
+        // native letter (for example kana) that the modern title matcher omits.
+        UILabel *label = ApolloObjectIvar(header, "label");
+        if (![label isKindOfClass:UILabel.class]) label = ApolloSubredditIndexHeaderLabelInView(header);
         if (label) {
             UIFont *font = [state[@"labelFont"] isKindOfClass:[UIFont class]] ? state[@"labelFont"] : nil;
             if (font) label.font = font;
@@ -2506,6 +2935,7 @@ static void ApolloSubredditIndexRestoreHeaderNativeChrome(UIView *header) {
 
     [header setNeedsLayout];
     ApolloDuoSplitPrepareOverlaySurface(header);
+    ApolloCompactSubredditPanelPrepareSurface(header);
     [header setNeedsDisplay];
 }
 
@@ -2557,19 +2987,21 @@ static void ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(UIView *header,
     // Use a dynamic theme color; cached row colors can belong to the previous appearance.
     UIColor *surfaceColor = ApolloThemeSubredditListBackgroundColor()
         ?: ApolloSubredditIndexThemeListBackgroundColor(tableView, header);
-    header.backgroundColor = ApolloDuoSplitIsGlassSubredditOverlayView(tableView) ? UIColor.clearColor
+    header.backgroundColor = (ApolloDuoSplitIsGlassSubredditOverlayView(tableView) || ApolloCompactSubredditPanelUsesGlass(tableView)) ? UIColor.clearColor
         : (ApolloSubredditIndexColorIsVisible(surfaceColor) ? surfaceColor : tableView.backgroundColor);
 }
 
 static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tableView) {
-    if (!ApolloSubredditEnhancementsEnabled()) {
+    if (!header || !tableView) return;
+    if (ApolloSubredditIndexApplyCompactHeaderVisibility(header, tableView)) return;
+    BOOL compact = ApolloSubredditIndexUsesCompactRows(tableView);
+    if (!ApolloSubredditEnhancementsEnabled() && !compact) {
         // Master off: instead of leaving stale modern chrome on a reused header,
         // put the instance back to its native look (no-op unless we styled it).
         ApolloSubredditIndexRestoreHeaderNativeChrome(header);
         return;
     }
-    if (!header || !tableView) return;
-    if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
+    if (!compact && ![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         if (!ApolloSubredditIndexShouldInspectTable(tableView)) return;
         NSArray<NSString *> *titles = ApolloSubredditIndexTitlesForTable(tableView);
         if (!ApolloSubredditIndexLooksLikeSubredditsTable(tableView, titles)) return;
@@ -2582,11 +3014,12 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     NSString *text = [[label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] uppercaseString];
     if (!ApolloSubredditIndexStringLooksLikeHeaderTitle(text)) return;
 
-    if (!sModernSubredditDividers) {
+    if (!sModernSubredditDividers && !compact) {
         // Dividers off means native headers; also strips stale modern chrome from a
         // header that was styled while dividers were on.
         ApolloSubredditIndexRestoreHeaderNativeChrome(header);
         ApolloDuoSplitPrepareOverlaySurface(header);
+        ApolloCompactSubredditPanelPrepareSurface(header);
         return;
     }
 
@@ -2625,84 +3058,91 @@ static void ApolloSubredditIndexStyleHeaderView(UIView *header, UITableView *tab
     CGFloat headerX = 18.0;
     label.frame = CGRectMake(headerX, 0.0, MAX(CGRectGetWidth(header.bounds) - headerX - 54.0, 0.0), CGRectGetHeight(header.bounds));
 
-    if (!separator) {
-        separator = [[UIView alloc] initWithFrame:CGRectZero];
-        separator.userInteractionEnabled = NO;
-        objc_setAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey, separator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [header addSubview:separator];
-    }
-    separator.hidden = NO;
-    separator.backgroundColor = [UIColor clearColor];
-    separator.layer.backgroundColor = UIColor.clearColor.CGColor;
+    if (compact) {
+        // Compact lists retain named group titles, with one SUBREDDITS title
+        // above the alphabetic rows. None of these headings draws a divider.
+        separator.hidden = YES;
+    } else {
+        if (!separator) {
+            separator = [[UIView alloc] initWithFrame:CGRectZero];
+            separator.userInteractionEnabled = NO;
+            objc_setAssociatedObject(header, &kApolloSubredditHeaderSeparatorKey, separator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [header addSubview:separator];
+        }
+        separator.hidden = NO;
+        separator.backgroundColor = [UIColor clearColor];
+        separator.layer.backgroundColor = UIColor.clearColor.CGColor;
 
-    CGFloat lineHeight = 2.0;
-    CGSize labelSize = [text sizeWithAttributes:@{ NSFontAttributeName: label.font }];
-    CGFloat lineX = CGRectGetMinX(label.frame) + ceil(labelSize.width) + 12.0;
-    CGFloat lineMaxX = CGRectGetWidth(header.bounds) - 8.0;
-    ApolloSubredditIndexOverlayView *indexOverlay =
-        ApolloSubredditIndexVisibleOverlayForTable(tableView);
-    UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
-    UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
-    CGRect tabFrame = tabBar.window && header.window
-        ? [header convertRect:tabBar.bounds fromView:tabBar]
-        : CGRectZero;
-    BOOL usesDuoTrailingRail = tabBar
-        && !tabBar.hidden
-        && CGRectGetWidth(tabFrame) < 100.0
-        && CGRectGetMidX(tabFrame) > CGRectGetMidX(header.bounds);
-    CGFloat indexMinX = CGFLOAT_MAX;
-    if (header.window && indexOverlay.window) {
-        // Scrubbing scales and translates the active glyphs to the left. A
-        // jump to the first index entry lays out newly visible headers while
-        // that transform is active, so measuring the glyph itself leaves a
-        // shortened line until another scroll. Use the fixed resting slot.
-        CGRect overlayFrame = [header convertRect:indexOverlay.bounds fromView:indexOverlay];
-        indexMinX = CGRectGetMaxX(overlayFrame)
-            - ApolloSubredditIndexGlyphRightInset
-            - (ApolloSubredditIndexGlyphWidth * 0.5);
-    }
-    if (indexMinX != CGFLOAT_MAX) {
-        lineMaxX = MIN(lineMaxX, indexMinX - 1.0);
-    }
+        CGFloat lineHeight = 2.0;
+        CGSize labelSize = [text sizeWithAttributes:@{ NSFontAttributeName: label.font }];
+        CGFloat lineX = CGRectGetMinX(label.frame) + ceil(labelSize.width) + 12.0;
+        CGFloat lineMaxX = CGRectGetWidth(header.bounds) - 8.0;
+        ApolloSubredditIndexOverlayView *indexOverlay =
+            ApolloSubredditIndexVisibleOverlayForTable(tableView);
+        UITabBarController *tabs = (UITabBarController *)ApolloMainTabBarController();
+        UITabBar *tabBar = [tabs isKindOfClass:UITabBarController.class] ? tabs.tabBar : nil;
+        CGRect tabFrame = tabBar.window && header.window
+            ? [header convertRect:tabBar.bounds fromView:tabBar]
+            : CGRectZero;
+        BOOL usesDuoTrailingRail = tabBar
+            && !tabBar.hidden
+            && CGRectGetWidth(tabFrame) < 100.0
+            && CGRectGetMidX(tabFrame) > CGRectGetMidX(header.bounds);
+        CGFloat indexMinX = CGFLOAT_MAX;
+        if (header.window && indexOverlay.window) {
+            // Scrubbing scales and translates the active glyphs to the left. A
+            // jump to the first index entry lays out newly visible headers while
+            // that transform is active, so measuring the glyph itself leaves a
+            // shortened line until another scroll. Use the fixed resting slot.
+            CGRect overlayFrame = [header convertRect:indexOverlay.bounds fromView:indexOverlay];
+            indexMinX = CGRectGetMaxX(overlayFrame)
+                - ApolloSubredditIndexGlyphRightInset
+                - (ApolloSubredditIndexGlyphWidth * 0.5);
+        }
+        if (indexMinX != CGFLOAT_MAX) {
+            lineMaxX = MIN(lineMaxX, indexMinX - 1.0);
+        }
 
-    // The live index is authoritative. In particular, a Rows shortcut layout
-    // may already give this header a width excluding the rail. Subtracting a
-    // cover-sized allowance from that width again shortens the gradient.
-    // While the overlay is detached during reload, convert the rail boundary
-    // into the header's coordinates instead of subtracting it from its width.
-    if (indexMinX == CGFLOAT_MAX && usesDuoTrailingRail) {
-        CGFloat glyphMinX = CGRectGetMinX(tabFrame)
-            - ApolloSubredditIndexTrailingRailGap
-            - ApolloSubredditIndexGlyphRightInset
-            - (ApolloSubredditIndexGlyphWidth * 0.5);
-        lineMaxX = MIN(lineMaxX, glyphMinX - 1.0);
-    }
-    CGFloat lineWidth = MAX(lineMaxX - lineX, 0.0);
-    CGFloat lineY = floor(CGRectGetMidY(header.bounds) - (lineHeight / 2.0));
-    separator.frame = CGRectMake(lineX, lineY, lineWidth, lineHeight);
+        // The live index is authoritative. In particular, a Rows shortcut layout
+        // may already give this header a width excluding the rail. Subtracting a
+        // cover-sized allowance from that width again shortens the gradient.
+        // While the overlay is detached during reload, convert the rail boundary
+        // into the header's coordinates instead of subtracting it from its width.
+        if (indexMinX == CGFLOAT_MAX && usesDuoTrailingRail) {
+            CGFloat glyphMinX = CGRectGetMinX(tabFrame)
+                - ApolloSubredditIndexTrailingRailGap
+                - ApolloSubredditIndexGlyphRightInset
+                - (ApolloSubredditIndexGlyphWidth * 0.5);
+            lineMaxX = MIN(lineMaxX, glyphMinX - 1.0);
+        }
+        CGFloat lineWidth = MAX(lineMaxX - lineX, 0.0);
+        CGFloat lineY = floor(CGRectGetMidY(header.bounds) - (lineHeight / 2.0));
+        separator.frame = CGRectMake(lineX, lineY, lineWidth, lineHeight);
 
-    CAGradientLayer *gradientLayer = objc_getAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey);
-    if (!gradientLayer) {
-        gradientLayer = [CAGradientLayer layer];
-        gradientLayer.startPoint = CGPointMake(0.0, 0.5);
-        gradientLayer.endPoint = CGPointMake(1.0, 0.5);
-        objc_setAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey, gradientLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [separator.layer addSublayer:gradientLayer];
-    }
-    UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, header);
-    UIColor *resolvedAccentColor = ApolloSubredditIndexResolvedColor(accentColor, header.traitCollection);
-    UIColor *visibleColor = [resolvedAccentColor colorWithAlphaComponent:0.76];
-    UIColor *midColor = [resolvedAccentColor colorWithAlphaComponent:0.38];
-    UIColor *clearColor = [resolvedAccentColor colorWithAlphaComponent:0.0];
-    gradientLayer.frame = separator.bounds;
-    gradientLayer.colors = @[(__bridge id)visibleColor.CGColor, (__bridge id)midColor.CGColor, (__bridge id)clearColor.CGColor];
-    gradientLayer.locations = usesDuoTrailingRail
-        ? @[@0.0, @0.62, @1.0]
-        : @[@0.0, @0.93, @1.0];
+        CAGradientLayer *gradientLayer = objc_getAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey);
+        if (!gradientLayer) {
+            gradientLayer = [CAGradientLayer layer];
+            gradientLayer.startPoint = CGPointMake(0.0, 0.5);
+            gradientLayer.endPoint = CGPointMake(1.0, 0.5);
+            objc_setAssociatedObject(separator, &kApolloSubredditHeaderGradientLayerKey, gradientLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [separator.layer addSublayer:gradientLayer];
+        }
+        UIColor *accentColor = ApolloSubredditIndexThemeAccentColor(tableView, header);
+        UIColor *resolvedAccentColor = ApolloSubredditIndexResolvedColor(accentColor, header.traitCollection);
+        UIColor *visibleColor = [resolvedAccentColor colorWithAlphaComponent:0.76];
+        UIColor *midColor = [resolvedAccentColor colorWithAlphaComponent:0.38];
+        UIColor *clearColor = [resolvedAccentColor colorWithAlphaComponent:0.0];
+        gradientLayer.frame = separator.bounds;
+        gradientLayer.colors = @[(__bridge id)visibleColor.CGColor, (__bridge id)midColor.CGColor, (__bridge id)clearColor.CGColor];
+        gradientLayer.locations = usesDuoTrailingRail
+            ? @[@0.0, @0.62, @1.0]
+            : @[@0.0, @0.93, @1.0];
 
-    [header bringSubviewToFront:separator];
+        [header bringSubviewToFront:separator];
+    }
     [header bringSubviewToFront:label];
     ApolloDuoSplitPrepareOverlaySurface(header);
+    ApolloCompactSubredditPanelPrepareSurface(header);
     [header setNeedsDisplay];
 
     if (![objc_getAssociatedObject(tableView, &kApolloSubredditHeaderLoggedKey) boolValue]) {
@@ -2728,13 +3168,14 @@ static void ApolloSubredditIndexHeaderSetFrameHook(id self, SEL _cmd, CGRect fra
         orig_ApolloSubredditHeaderSetFrame(self, _cmd, frame);
     }
 
-    if (!ApolloSubredditEnhancementsEnabled() || !sModernSubredditDividers) return;
     if (![self isKindOfClass:[UIView class]]) return;
     UIView *header = (UIView *)self;
     if (!objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey)) return;
 
     UITableView *tableView = ApolloSubredditIndexTableForView(header);
-    if (![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) return;
+    if (!ApolloSubredditIndexUsesCompactRows(tableView) &&
+        (!ApolloSubredditEnhancementsEnabled() || !sModernSubredditDividers ||
+         ![objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue])) return;
 
     BOOL pinned = ApolloSubredditIndexHeaderIsPinned(header, tableView);
     NSNumber *lastPinned = objc_getAssociatedObject(header, &kApolloSubredditHeaderPinnedStateKey);
@@ -2773,6 +3214,7 @@ static void ApolloSubredditIndexWillDisplayCellHook(id self, SEL _cmd, UITableVi
     }
     ApolloSubredditIndexPrepareCellForDisplay(tableView, cell, indexPath);
     ApolloDuoSplitPrepareOverlaySurface(cell);
+    ApolloCompactSubredditPanelPrepareSurface(cell);
 }
 
 static CGFloat ApolloSubredditIndexHeightForRowHook(id self, SEL _cmd, UITableView *tableView, NSIndexPath *indexPath) {
@@ -2782,17 +3224,26 @@ static CGFloat ApolloSubredditIndexHeightForRowHook(id self, SEL _cmd, UITableVi
             ApolloSubredditIndexEnsureSelectionTable(tableView)) {
             ApolloSubredditFeedLayout layout = ApolloMetaFeedEffectiveLayout(tableView, visibleIndexes);
 
-            // Preserve the two-line Rows height when descriptions are hidden.
+            // Compact List uses the same 4pt vertical padding as subreddit
+            // rows, with room for the native title and icon.
             if (layout == ApolloSubredditFeedLayoutRows) {
-                return ApolloFeedShortcutRowHeight(tableView.traitCollection);
+                return ApolloSubredditIndexUsesCompactRows(tableView)
+                    ? ApolloMetaFeedCompactNativeRowHeight(tableView.traitCollection, visibleIndexes.count)
+                    : ApolloFeedShortcutRowHeight(tableView.traitCollection);
             }
 
             // Collapse custom layouts only after validating the native feed prefix.
             if (ApolloMetaFeedLayoutUsesShortcuts(layout) &&
                 ApolloSubredditIndexMetaFeedRowsValidated(tableView, visibleIndexes)) {
-                return indexPath.row == 0
-                    ? ApolloFeedShortcutLayoutHeight(layout, tableView.traitCollection)
-                    : 0.01;
+                if (indexPath.row != 0) return 0.01;
+                if (ApolloCompactListEnabledForDevice() && layout == ApolloSubredditFeedLayoutSideBySide) {
+                    ApolloMetaFeedWrappingPlan *plan = ApolloMetaFeedSideBySidePlan(visibleIndexes,
+                        ApolloMetaFeedSizingWidth(tableView), tableView.traitCollection);
+                    objc_setAssociatedObject(tableView, &kApolloMetaFeedMeasuredWrappingPlanKey,
+                        plan, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    return plan.height;
+                }
+                return ApolloFeedShortcutLayoutHeight(layout, tableView.traitCollection);
             }
         }
     }
@@ -2800,6 +3251,96 @@ static CGFloat ApolloSubredditIndexHeightForRowHook(id self, SEL _cmd, UITableVi
         return orig_ApolloRedditListHeightForRow(self, _cmd, tableView, indexPath);
     }
     return UITableViewAutomaticDimension;
+}
+
+static CGFloat ApolloSubredditIndexHeightForHeaderHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    // A positive near-zero value suppresses UIKit's default header height.
+    // Keep the section and rows intact for A-Z navigation and native editing.
+    if (ApolloSubredditIndexHidesCompactHeader(tableView, section)) return CGFLOAT_MIN;
+    return orig_ApolloRedditListHeightForHeader
+        ? orig_ApolloRedditListHeightForHeader(self, _cmd, tableView, section)
+        : tableView.sectionHeaderHeight;
+}
+
+static UIView *ApolloSubredditIndexViewForHeaderHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
+    if (ApolloSubredditIndexHidesCompactHeader(tableView, section)) return nil;
+    UIView *header = orig_ApolloRedditListViewForHeader
+        ? orig_ApolloRedditListViewForHeader(self, _cmd, tableView, section) : nil;
+    if (header) {
+        ApolloSubredditIndexTrackHeader(header, tableView);
+        objc_setAssociatedObject(header, &kApolloSubredditHeaderSectionKey, @(section), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ApolloSubredditIndexApplyCompactHeaderVisibility(header, tableView);
+    }
+    return header;
+}
+
+static NSArray *ApolloSubredditIndexIndexTitlesHook(id self, SEL _cmd, UITableView *tableView) {
+    NSArray *titles = orig_ApolloRedditListIndexTitles
+        ? orig_ApolloRedditListIndexTitles(self, _cmd, tableView) : nil;
+    NSInteger first = ApolloSubredditIndexFirstCompactCollationSection(tableView);
+    if (first == NSNotFound || first >= (NSInteger)titles.count) return titles;
+    // The remapper keeps named sections and their index glyphs in the same
+    // prefix. Strip that prefix only at the presentation boundary, after
+    // Following has assembled its visible order. UIKit and our overlay then
+    // receive exactly the same localized alphabet, including the final #.
+    return [titles subarrayWithRange:NSMakeRange((NSUInteger)first, titles.count - (NSUInteger)first)];
+}
+
+static NSInteger ApolloSubredditIndexSectionForIndexTitleHook(id self, SEL _cmd, UITableView *tableView, NSString *title, NSInteger index) {
+    NSInteger first = ApolloSubredditIndexFirstCompactCollationSection(tableView);
+    if (first != NSNotFound) {
+        if (index < 0 || index >= tableView.numberOfSections - first) return NSNotFound;
+        // A (or the first localized letter) includes the feed shortcuts and
+        // named groups. Other letters still target their own visible bucket.
+        // Do not call Apollo's native mapper here: it can enqueue a second,
+        // delayed scroll using the unfiltered index's section coordinates.
+        return index == 0 ? 0 : first + index;
+    }
+    return orig_ApolloRedditListSectionForIndexTitle
+        ? orig_ApolloRedditListSectionForIndexTitle(self, _cmd, tableView, title, index) : NSNotFound;
+}
+
+static void ApolloSubredditIndexInstallCompactHeaderHooks(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = ApolloClassRedditListViewController;
+        if (!cls) return;
+        // Install outside FollowingSection's constructor-installed remapper.
+        // It borrows an alphabetic section's native height for FOLLOWING; an
+        // inner hook would incorrectly collapse that named section too.
+        SEL heightSelector = @selector(tableView:heightForHeaderInSection:);
+        Method heightMethod = class_getInstanceMethod(cls, heightSelector);
+        if (heightMethod) {
+            orig_ApolloRedditListHeightForHeader = (CGFloat (*)(id, SEL, UITableView *, NSInteger))method_getImplementation(heightMethod);
+            if (!class_addMethod(cls, heightSelector, (IMP)ApolloSubredditIndexHeightForHeaderHook, method_getTypeEncoding(heightMethod))) {
+                ApolloSetMethodImplementation(cls, heightMethod, (IMP)ApolloSubredditIndexHeightForHeaderHook);
+            }
+        }
+        SEL viewSelector = @selector(tableView:viewForHeaderInSection:);
+        Method viewMethod = class_getInstanceMethod(cls, viewSelector);
+        if (viewMethod) {
+            orig_ApolloRedditListViewForHeader = (UIView *(*)(id, SEL, UITableView *, NSInteger))method_getImplementation(viewMethod);
+            if (!class_addMethod(cls, viewSelector, (IMP)ApolloSubredditIndexViewForHeaderHook, method_getTypeEncoding(viewMethod))) {
+                ApolloSetMethodImplementation(cls, viewMethod, (IMP)ApolloSubredditIndexViewForHeaderHook);
+            }
+        }
+        SEL titlesSelector = @selector(sectionIndexTitlesForTableView:);
+        Method titlesMethod = class_getInstanceMethod(cls, titlesSelector);
+        if (titlesMethod) {
+            orig_ApolloRedditListIndexTitles = (NSArray *(*)(id, SEL, UITableView *))method_getImplementation(titlesMethod);
+            if (!class_addMethod(cls, titlesSelector, (IMP)ApolloSubredditIndexIndexTitlesHook, method_getTypeEncoding(titlesMethod))) {
+                ApolloSetMethodImplementation(cls, titlesMethod, (IMP)ApolloSubredditIndexIndexTitlesHook);
+            }
+        }
+        SEL indexSelector = @selector(tableView:sectionForSectionIndexTitle:atIndex:);
+        Method indexMethod = class_getInstanceMethod(cls, indexSelector);
+        if (indexMethod) {
+            orig_ApolloRedditListSectionForIndexTitle = (NSInteger (*)(id, SEL, UITableView *, NSString *, NSInteger))method_getImplementation(indexMethod);
+            if (!class_addMethod(cls, indexSelector, (IMP)ApolloSubredditIndexSectionForIndexTitleHook, method_getTypeEncoding(indexMethod))) {
+                ApolloSetMethodImplementation(cls, indexMethod, (IMP)ApolloSubredditIndexSectionForIndexTitleHook);
+            }
+        }
+    });
 }
 
 static void ApolloSubredditIndexInstallHeaderHook(void) {
@@ -3062,8 +3603,8 @@ static void ApolloSubredditIndexScheduleGeometryRefresh(UITableView *tableView, 
 
 // --- Hide Feed Descriptions ------------------------------------------------
 // ApolloSubtitleTableViewCell uniquely identifies the built-in feed rows here.
-// Clear configured detail text, stash it for restoration, and retain the fixed
-// Rows height so hiding descriptions never compresses the row.
+// Clear configured detail text and stash it for restoration. Compact mode
+// always hides it and uses title-only sizing; the full list keeps its setting.
 
 static char kApolloSubredditDescriptionStashKey;
 
@@ -3074,7 +3615,7 @@ static void ApolloSubredditIndexApplyDescriptionPreference(UITableView *tableVie
     UILabel *detailLabel = cell.detailTextLabel;
     if (!detailLabel) return;
 
-    if (sHideSubredditListDescriptions) {
+    if (sHideSubredditListDescriptions || ApolloSubredditIndexUsesCompactRows(tableView)) {
         if (detailLabel.text.length > 0) {
             objc_setAssociatedObject(cell, &kApolloSubredditDescriptionStashKey, detailLabel.text, OBJC_ASSOCIATION_COPY_NONATOMIC);
             detailLabel.text = nil;
@@ -3095,6 +3636,33 @@ static void ApolloSubredditIndexReloadTablePreservingAnchor(UITableView *tableVi
         [tableView layoutIfNeeded];
         ApolloSubredditIndexRestoreScrollAnchor(tableView, anchor);
     }];
+}
+
+static void ApolloSubredditIndexScheduleDensityRefresh(UITableView *tableView) {
+    if (!tableView || ![sApolloSubredditKnownTables containsObject:tableView]) return;
+    BOOL compact = ApolloSubredditIndexUsesCompactRows(tableView);
+    NSNumber *applied = objc_getAssociatedObject(tableView, &kApolloSubredditDensityAppliedKey);
+    if (applied && applied.boolValue == compact) return;
+    if (objc_getAssociatedObject(tableView, &kApolloSubredditDensityRefreshPendingKey)) return;
+    objc_setAssociatedObject(tableView, &kApolloSubredditDensityRefreshPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UITableView *weakTable = tableView;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UITableView *table = weakTable;
+        if (!table) return;
+        BOOL current = ApolloSubredditIndexUsesCompactRows(table);
+        NSNumber *previous = objc_getAssociatedObject(table, &kApolloSubredditDensityAppliedKey);
+        if (!previous || previous.boolValue != current) {
+            objc_setAssociatedObject(table, &kApolloSubredditDensityAppliedKey, @(current), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            // Include detached lists: otherwise a full list retains row/header
+            // heights from before the preference changed until the user scrolls.
+            // Restore surviving header views too, including reused named ones.
+            for (UIView *header in ApolloSubredditIndexHeadersForTable(table)) {
+                ApolloSubredditIndexApplyCompactHeaderVisibility(header, table);
+            }
+            ApolloSubredditIndexReloadTablePreservingAnchor(table);
+        }
+        objc_setAssociatedObject(table, &kApolloSubredditDensityRefreshPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    });
 }
 
 static void ApolloSubredditIndexReloadKnownTables(void) {
@@ -3225,8 +3793,55 @@ static BOOL ApolloSubredditIndexRecordMetaFeedCell(UITableView *tableView,
     return NO;
 }
 
+
+static UIImage *ApolloMetaFeedCompactIcon(UIImage *image) {
+    if (!image || MAX(image.size.width, image.size.height) <= ApolloCompactListIconMaximumSize) return image;
+    static NSCache<UIImage *, UIImage *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [NSCache new];
+        cache.countLimit = 32;
+    });
+    UIImage *compact = [cache objectForKey:image];
+    if (compact) return compact;
+    CGFloat ratio = ApolloCompactListIconMaximumSize / MAX(image.size.width, image.size.height);
+    CGSize size = CGSizeMake(image.size.width * ratio, image.size.height * ratio);
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = NO;
+    format.scale = image.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    compact = [[renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [image drawInRect:(CGRect){CGPointZero, size}];
+    }] imageWithRenderingMode:image.renderingMode];
+    [cache setObject:compact forKey:image];
+    return compact;
+}
+
+static void ApolloMetaFeedRestoreCompactIcon(UITableViewCell *cell) {
+    NSDictionary *state = objc_getAssociatedObject(cell, &kApolloMetaFeedCompactIconStateKey);
+    if (!state) return;
+    // Do not overwrite an image Apollo has already replaced while reconfiguring
+    // or changing theme. Restore only the image owned by this compact pass.
+    if (cell.imageView.image == state[@"compact"]) cell.imageView.image = state[@"native"];
+    objc_setAssociatedObject(cell, &kApolloMetaFeedCompactIconStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void ApolloMetaFeedApplyCompactIcon(UITableView *tableView, UITableViewCell *cell) {
+    if (!ApolloSubredditIndexUsesCompactRows(tableView)) {
+        ApolloMetaFeedRestoreCompactIcon(cell);
+        return;
+    }
+    UIImage *native = cell.imageView.image;
+    UIImage *compact = ApolloMetaFeedCompactIcon(native);
+    if (!native || compact == native) return;
+    objc_setAssociatedObject(cell, &kApolloMetaFeedCompactIconStateKey,
+        @{@"native": native, @"compact": compact}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    cell.imageView.image = compact;
+}
+
 static void ApolloSubredditIndexRestoreMetaFeedCell(UITableViewCell *cell) {
     if (!cell) return;
+    ApolloMetaFeedRestoreCompactIcon(cell);
     cell.hidden = NO;
 
     ApolloMetaFeedShortcutsView *shortcutsView = objc_getAssociatedObject(cell, &kApolloMetaFeedShortcutsViewKey);
@@ -3277,6 +3892,7 @@ static void ApolloSubredditIndexApplyMetaFeedShortcuts(UITableView *tableView, U
         if (sSubredditFeedIconStyle == ApolloSubredditFeedIconStyleClassic) {
             UIImage *classicIcon = ApolloSubredditClassicMetaFeedIcon(feedIndex);
             if (classicIcon) cell.imageView.image = classicIcon;
+            ApolloMetaFeedApplyCompactIcon(tableView, cell);
             return;
         }
         UIImage *icon = ApolloFeedShortcutIconImage(feedIndex,
@@ -3284,6 +3900,7 @@ static void ApolloSubredditIndexApplyMetaFeedShortcuts(UITableView *tableView, U
                                                     ApolloSubredditFeedLayoutRows,
                                                     visibleFeedIndexes.count);
         if (icon) cell.imageView.image = icon;
+        ApolloMetaFeedApplyCompactIcon(tableView, cell);
         return;
     }
     if (!ApolloMetaFeedLayoutUsesShortcuts(layout)) return;
@@ -3320,6 +3937,7 @@ static void ApolloSubredditIndexApplyMetaFeedShortcuts(UITableView *tableView, U
     cell.backgroundColor = UIColor.clearColor;
     cell.contentView.backgroundColor = UIColor.clearColor;
 
+    ApolloMetaFeedCaptureSizingInset(tableView, cell);
     ApolloMetaFeedShortcutsView *shortcutsView =
         [[ApolloMetaFeedShortcutsView alloc] initWithTableView:tableView
                                             visibleFeedIndexes:visibleFeedIndexes
@@ -3339,6 +3957,23 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
     if (!tableView.window || !ApolloSubredditIndexEnsureSelectionTable(tableView)) return;
     BOOL enhanced = ApolloSubredditIndexEnsureSubredditTable(tableView);
     BOOL drawer = ApolloDuoSplitIsSubredditOverlayView(tableView);
+    BOOL compactPanel = ApolloCompactSubredditPanelContainsView(tableView);
+    BOOL shortcutHeightChanged = NO;
+    ApolloMetaFeedWrappingPlan *wrappingPlan = nil;
+    NSArray<NSNumber *> *indexes = ApolloSubredditIndexVisibleMetaFeedIndexes(tableView);
+    if (ApolloSubredditIndexUsesCompactRows(tableView)
+        && ApolloMetaFeedEffectiveLayout(tableView, indexes) == ApolloSubredditFeedLayoutSideBySide
+        && ApolloSubredditIndexMetaFeedRowsValidated(tableView, indexes)) {
+        UITableViewCell *firstCell = [tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+        ApolloMetaFeedCaptureSizingInset(tableView, firstCell);
+        wrappingPlan = ApolloMetaFeedSideBySidePlan(indexes, ApolloMetaFeedSizingWidth(tableView), tableView.traitCollection);
+        ApolloMetaFeedWrappingPlan *measured = objc_getAssociatedObject(tableView, &kApolloMetaFeedMeasuredWrappingPlanKey);
+        // Retain the last height actually returned to UITableView. This catches
+        // wrapping changes even when the shortcuts are currently offscreen.
+        shortcutHeightChanged = measured && fabs(measured.height - wrappingPlan.height) > 0.5;
+        objc_setAssociatedObject(tableView, &kApolloMetaFeedMeasuredWrappingPlanKey,
+            wrappingPlan, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     for (UITableViewCell *cell in tableView.visibleCells) {
         // Width and safe-area changes do not necessarily re-vend a cell. Invalidate
         // one-shot preparation only when its geometry/context actually changes,
@@ -3350,7 +3985,7 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
                               @(CGRectGetMinX(cell.contentView.frame)),
                               @(CGRectGetWidth(cell.contentView.frame)),
                               @(cell.safeAreaInsets.left), @(cell.safeAreaInsets.right),
-                              @(drawer), @(ApolloDuoRailHasVisibleSideBar()),
+                              @(drawer), @(compactPanel), @(ApolloDuoRailHasVisibleSideBar()),
                               @(tableView.editing), @(cell.editing)];
         if (state && ![state[@"rowGeometry"] isEqual:geometry]) {
             state[@"rowGeometry"] = geometry;
@@ -3363,11 +3998,16 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
                 ApolloSubredditIndexCellIsMultiredditChild(tableView, cell, [tableView indexPathForCell:cell]));
             ApolloSubredditIndexInstallStarProxyForCell(cell, tableView);
         }
+        ApolloSubredditIndexApplyCompactRow(tableView, cell);
         ApolloMetaFeedShortcutsView *shortcuts = objc_getAssociatedObject(cell, &kApolloMetaFeedShortcutsViewKey);
         if (!shortcuts) continue;
         CGFloat width = ApolloMetaFeedWidthForCell(tableView, cell);
         BOOL compact = ApolloMetaFeedUsesCompactFourUp(shortcuts.layout, shortcuts.shortcuts.count, width);
-        if (compact != shortcuts.usesCompactFourUp) {
+        BOOL wrappingChanged = NO;
+        if (shortcuts.layout == ApolloSubredditFeedLayoutSideBySide && wrappingPlan) {
+            wrappingChanged = !ApolloMetaFeedWrappingPlansMatch(shortcuts.wrappingPlan, wrappingPlan);
+        }
+        if (compact != shortcuts.usesCompactFourUp || wrappingChanged) {
             ApolloSubredditIndexApplyMetaFeedShortcuts(tableView, cell, [tableView indexPathForCell:cell]);
             shortcuts = objc_getAssociatedObject(cell, &kApolloMetaFeedShortcutsViewKey);
         }
@@ -3376,6 +4016,17 @@ static void ApolloSubredditIndexRefreshVisibleRowGeometry(UITableView *tableView
         if (fabs(shortcuts.trailingConstraint.constant - constant) > 0.5) {
             shortcuts.trailingConstraint.constant = constant;
         }
+    }
+    if (shortcutHeightChanged) {
+        // This runs in the coalesced geometry pass, never in layoutSubviews.
+        // Refresh cached table heights once, preserving the current reading row.
+        NSDictionary *anchor = ApolloSubredditIndexCaptureScrollAnchor(tableView);
+        [UIView performWithoutAnimation:^{
+            [tableView beginUpdates];
+            [tableView endUpdates];
+            [tableView layoutIfNeeded];
+            ApolloSubredditIndexRestoreScrollAnchor(tableView, anchor);
+        }];
     }
 }
 
@@ -3451,9 +4102,10 @@ static void ApolloSubredditIndexApplyEnhancementStateToKnownTables(void) {
 }
 
 static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *controller) {
-    UIView *controllerView = controller.view;
+    UIView *controllerView = controller.viewIfLoaded;
     for (UITableView *tableView in sApolloSubredditKnownTables.allObjects) {
         if (![tableView isDescendantOfView:controllerView]) continue;
+        ApolloSubredditIndexScheduleDensityRefresh(tableView);
         [tableView setNeedsLayout];
         [tableView layoutIfNeeded];
         ApolloSubredditIndexInstallOrUpdate(tableView);
@@ -3468,6 +4120,11 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
 }
 
 %hook _TtC6Apollo24RedditListViewController
+
+- (void)viewDidLoad {
+    ApolloSubredditIndexInstallCompactHeaderHooks();
+    %orig;
+}
 
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
@@ -3522,6 +4179,10 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
     if (tableView) {
         if (!sApolloSubredditKnownTables) sApolloSubredditKnownTables = [NSHashTable weakObjectsHashTable];
         [sApolloSubredditKnownTables addObject:tableView];
+        if (!objc_getAssociatedObject(tableView, &kApolloSubredditDensityAppliedKey)) {
+            objc_setAssociatedObject(tableView, &kApolloSubredditDensityAppliedKey,
+                @(ApolloSubredditIndexUsesCompactRows(tableView)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
     }
     if (!ApolloSubredditEnhancementsEnabled()) {
         // Master off: strip any enhancement residue from a reused cell before display.
@@ -3529,6 +4190,7 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
     }
     ApolloSubredditIndexApplyDescriptionPreference(tableView, cell);
     ApolloSubredditIndexApplyMetaFeedShortcuts(tableView, cell, indexPath);
+    ApolloSubredditIndexApplyCompactRow(tableView, cell);
     return cell;
 }
 
@@ -3554,6 +4216,8 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
     // Restore only before Apollo's reuse/configuration pass. Replaying the old
     // snapshot afterwards can replace newly themed colors with those from the
     // other display/appearance. Forget it so the next row gets a fresh baseline.
+    ApolloSubredditIndexRestoreCompactRow((UITableViewCell *)self);
+    ApolloMetaFeedRestoreCompactIcon((UITableViewCell *)self);
     ApolloSubredditIndexRestoreMetaFeedCell((UITableViewCell *)self);
     ApolloSubredditIndexRestoreCellSelectionChrome((UITableViewCell *)self);
     if (objc_getAssociatedObject(self, &kApolloSubredditCellNativeStateKey)) {
@@ -3627,6 +4291,7 @@ static void ApolloSubredditIndexRefreshHeadersForController(UIViewController *co
     if ([objc_getAssociatedObject(tableView, &kApolloSubredditIndexTableKey) boolValue]) {
         ApolloSubredditIndexInstallStarProxyForCell((UITableViewCell *)self, tableView);
     }
+    ApolloSubredditIndexApplyCompactStar(tableView, (UITableViewCell *)self);
 }
 
 %end
@@ -3651,6 +4316,7 @@ static UIStackView *ApolloSubredditIndexRedditListMainStackView(UITableViewCell 
 static void ApolloSubredditIndexRestoreCellNativeState(UITableViewCell *cell) {
     if (!cell) return;
     ApolloSubredditIndexRemoveStarProxyFromCell(cell);
+    ApolloSubredditIndexRestoreCompactRow(cell);
 
     NSDictionary *state = objc_getAssociatedObject(cell, &kApolloSubredditCellNativeStateKey);
     if (state) {
@@ -3804,6 +4470,14 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
               ApolloSubredditIndexDebugColor(ApolloThemeAccentColor(), tables.firstObject.traitCollection));
     for (UITableView *tableView in tables) {
         UITraitCollection *traits = tableView.traitCollection;
+        UIViewController *controller = ApolloSubredditIndexOwningViewController(tableView);
+        UINavigationController *navigation = controller.navigationController;
+        ApolloLog(@"[SubredditIndex][diag] geometry compact=%d editing=%d offset=%@ inset=%@ adjusted=%@ safe=%@ extraSafe=%@ nav=%@ navHidden=%d barHidden=%d",
+                  ApolloSubredditIndexUsesCompactRows(tableView), tableView.isEditing,
+                  NSStringFromCGPoint(tableView.contentOffset), NSStringFromUIEdgeInsets(tableView.contentInset),
+                  NSStringFromUIEdgeInsets(tableView.adjustedContentInset), NSStringFromUIEdgeInsets(tableView.safeAreaInsets),
+                  NSStringFromUIEdgeInsets(controller.additionalSafeAreaInsets), NSStringFromClass(navigation.class),
+                  navigation.navigationBarHidden, navigation.navigationBar.hidden);
         UIView *indexView = nil;
         for (UIView *subview in tableView.subviews) {
             if ([NSStringFromClass(subview.class) rangeOfString:@"TableViewIndex"].location != NSNotFound) {
@@ -3858,6 +4532,14 @@ void ApolloSubredditIndexDebugDescribeTables(void) {
     ApolloSubredditIndexInstallRowHeightHook();
     ApolloSubredditIndexInstallHeaderLayoutHook();
     ApolloSubredditIndexInstallHeaderSetFrameHook();
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"ApolloCompactSubredditListDidChange"
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(__unused NSNotification *notification) {
+        for (UITableView *tableView in sApolloSubredditKnownTables.allObjects) {
+            ApolloSubredditIndexScheduleDensityRefresh(tableView);
+        }
+    }];
     [[NSNotificationCenter defaultCenter] addObserverForName:ApolloModernSubredditDividersChangedNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
