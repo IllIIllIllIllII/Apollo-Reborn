@@ -5,6 +5,7 @@
 #import "ApolloDuoSplitView.h"
 #import "ApolloMediaHinge.h"
 #import "ApolloSearchRecents.h"
+#import "ApolloSearchVisitRecording.h"
 #import "ApolloDuoAccount.h"
 #import "ApolloDuoSubsChrome.h"
 #import "ApolloThemeRuntime.h"
@@ -203,6 +204,10 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 @property(nonatomic, weak) UINavigationController *postsNavigation;
 @property(nonatomic, strong) UIView *listContainer;
 @property(nonatomic, strong) UIVisualEffectView *listGlass;
+@property(nonatomic) BOOL listUsesGlass;
+@property(nonatomic) BOOL listStyleApplied;
+- (void)updateListAppearance;
+- (void)restoreListSurfaceColors;
 @property(nonatomic, strong) UINavigationBar *listNavigationBar;
 @property(nonatomic, strong) UIControl *listDismiss;
 @property(nonatomic, strong) UIButton *listButton;
@@ -270,10 +275,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         [self.listDismiss addTarget:self action:@selector(dismissList) forControlEvents:UIControlEventTouchUpInside];
         self.listDismiss.hidden = YES;
         [self.view addSubview:self.listDismiss];
-        UIVisualEffect *effect;
-        if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-        else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-        self.listGlass = [[UIVisualEffectView alloc] initWithEffect:effect];
+        self.listGlass = [[UIVisualEffectView alloc] initWithEffect:nil];
         self.listGlass.layer.cornerRadius = 28;
         self.listGlass.clipsToBounds = YES;
         // Move a plain container so the material and list travel together.
@@ -387,6 +389,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         }
         self.originalListInsets = self.subredditList.topViewController.additionalSafeAreaInsets;
         [self.subredditList setNavigationBarHidden:YES animated:NO];
+        [self updateListAppearance];
     }
     if (self.accountHeader) {
         self.accountHeaderClip = [UIView new];
@@ -417,8 +420,42 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
-- (void)prepareListGlass {
-    ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
+- (void)updateListAppearance {
+    if (!self.subredditList || !self.listGlass) return;
+    BOOL changed = !self.listStyleApplied || self.listUsesGlass != sDuoSubredditPanelGlassEnabled;
+    BOOL refreshRows = self.listStyleApplied && changed;
+    self.listUsesGlass = sDuoSubredditPanelGlassEnabled;
+    if (changed) {
+        // Keep the same controller, panel geometry, and native Add/Edit items.
+        // Standard restores Apollo's own surfaces instead of clearing them for
+        // the material; it does not change the app-wide Liquid Glass setting.
+        [self restoreListSurfaceColors];
+        UIVisualEffect *effect = nil;
+        if (self.listUsesGlass) {
+            if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+            else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+        }
+        self.listGlass.effect = effect;
+        self.listStyleApplied = YES;
+    }
+    NSString *panelTitle = self.listUsesGlass ? @"" : @"Subreddits";
+    if (![self.listNavigationBar.topItem.title isEqualToString:panelTitle])
+        self.listNavigationBar.topItem.title = panelTitle;
+    self.listGlass.backgroundColor = self.listUsesGlass ? UIColor.clearColor
+        : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
+    // Re-vend only on an explicit style change, never on scroll/layout.
+    if (refreshRows) [ApolloDuoSplitFindTable(self.subredditList.view) reloadData];
+    if (self.listUsesGlass && self.listVisible)
+        ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
+}
+- (void)restoreListSurfaceColors {
+    self.updatingListSurfaces = YES;
+    for (UIView *view in self.listBackgrounds) {
+        id color = [self.listBackgrounds objectForKey:view];
+        view.backgroundColor = color == NSNull.null ? nil : color;
+    }
+    self.updatingListSurfaces = NO;
+    self.listBackgrounds = nil;
 }
 - (void)endListEditing {
     UIViewController *root = self.subredditList.viewControllers.firstObject;
@@ -427,13 +464,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
 - (void)restoreListBackgrounds {
     [self endListEditing];
     ApolloDuoSubsChromeSetPopupNavigationBar(self.subredditList.viewControllers.firstObject, nil);
-    self.updatingListSurfaces = YES;
-    for (UIView *view in self.listBackgrounds) {
-        id color = [self.listBackgrounds objectForKey:view];
-        view.backgroundColor = color == NSNull.null ? nil : color;
-    }
-    self.updatingListSurfaces = NO;
-    self.listBackgrounds = nil;
+    [self restoreListSurfaceColors];
     self.subredditList.viewControllers.firstObject.additionalSafeAreaInsets = self.originalListInsets;
     [self.subredditList setNavigationBarHidden:NO animated:NO];
 }
@@ -536,7 +567,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
         [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
                                            -table.adjustedContentInset.top) animated:NO];
         [table layoutIfNeeded];
-        [self prepareListGlass];
+        [self updateListAppearance];
     }
     self.listDismiss.hidden = NO;
     self.listContainer.hidden = NO;
@@ -714,12 +745,28 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     [self scheduleSplitSafeAreaSync];
     if (self.subredditList) {
         CGFloat width = MIN(360, self.view.bounds.size.width - 96);
+        BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
+        CGFloat bottom = CGRectGetMaxY(self.view.bounds) - 12;
+        if (portrait) {
+            // The floating bottom tab bar overlays this full-height host.
+            // Reserve its native layout frame, not the animated glass platter,
+            // so the drawer stays clear without resizing as the bar minimizes.
+            bottom -= self.view.safeAreaInsets.bottom;
+            UITabBar *tabBar = self.tabBarController.tabBar;
+            if (tabBar.window && tabBar.window == self.view.window) {
+                CGRect barFrame = [tabBar convertRect:tabBar.bounds toView:self.view];
+                if (!CGRectIsEmpty(barFrame) && CGRectGetWidth(barFrame) > CGRectGetHeight(barFrame)
+                    && CGRectGetMidY(barFrame) > CGRectGetMidY(self.view.bounds)) {
+                    bottom = MIN(bottom, CGRectGetMinY(barFrame) - 12);
+                }
+            }
+        }
+        CGFloat height = MAX(0, bottom - 12);
         self.listDismiss.frame = self.view.bounds;
         // Bounds/center stay independent of the presentation transform.
-        self.listContainer.bounds = CGRectMake(0, 0, width, self.view.bounds.size.height - 24);
-        self.listContainer.center = CGPointMake(12 + width / 2, self.view.bounds.size.height / 2);
+        self.listContainer.bounds = CGRectMake(0, 0, width, height);
+        self.listContainer.center = CGPointMake(12 + width / 2, 12 + height / 2);
         self.listGlass.frame = self.listContainer.bounds;
-        BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
         // The drawer covers/intercepts its underlying controls. Keep the
         // navigation items installed so opening it never reflows the bar.
         self.listButton.hidden = NO;
@@ -1009,6 +1056,10 @@ BOOL ApolloDuoSplitIsSubredditOverlayView(UIView *view) {
     return ApolloDuoSubredditOverlayHost(view) != nil;
 }
 
+BOOL ApolloDuoSplitIsGlassSubredditOverlayView(UIView *view) {
+    return ApolloDuoSubredditOverlayHost(view).listUsesGlass;
+}
+
 // Only native list surfaces belong to the drawer material. Walking every
 // descendant also erased the red removal badges and restored their old colors
 // after folding. In particular, never traverse into controls or effect views.
@@ -1042,7 +1093,7 @@ static BOOL ApolloDuoListOwnsSurface(UIView *view, ApolloDuoSplitHost *host) {
 UIColor *ApolloDuoSplitOverlayBackground(UIView *view, UIColor *color) {
     if (!NSThread.isMainThread) return color;
     ApolloDuoSplitHost *host = ApolloDuoSubredditOverlayHost(view);
-    if (!host || host.updatingListSurfaces || !ApolloDuoListOwnsSurface(view, host)) return color;
+    if (!host || !host.listUsesGlass || host.updatingListSurfaces || !ApolloDuoListOwnsSurface(view, host)) return color;
     if (!host.listBackgrounds) host.listBackgrounds = [NSMapTable weakToStrongObjectsMapTable];
     // Theme updates and reused cells may change while the drawer is hidden.
     // Preserve the latest requested native color, not the first light-mode one.
@@ -1052,7 +1103,7 @@ UIColor *ApolloDuoSplitOverlayBackground(UIView *view, UIColor *color) {
 
 void ApolloDuoSplitPrepareOverlaySurface(UIView *surface) {
     ApolloDuoSplitHost *host = ApolloDuoSubredditOverlayHost(surface);
-    if (!host || host.updatingListSurfaces) return;
+    if (!host || !host.listUsesGlass || host.updatingListSurfaces) return;
     if (!host.listBackgrounds) host.listBackgrounds = [NSMapTable weakToStrongObjectsMapTable];
     host.updatingListSurfaces = YES;
     NSMutableArray *views = [NSMutableArray arrayWithObject:surface];
@@ -1193,7 +1244,7 @@ static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, B
     UIEdgeInsets desiredInsets = state.host.originalListInsets;
     desiredInsets.right = -inheritedRight;
     if (!UIEdgeInsetsEqualToEdgeInsets(currentInsets, desiredInsets)) listRoot.additionalSafeAreaInsets = desiredInsets;
-    if (state.host.listVisible) [state.host prepareListGlass];
+    [state.host updateListAppearance];
     // Full-width comments stay on Apollo's native feed navigation stack.
     // Only a real split (or its width-toggle preparation) needs two stacks.
     // Never migrate a page while Apollo's native push/pop owns its transition.
@@ -1592,7 +1643,17 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
     void (^commitTables)(void) = ^{
         [surface layoutIfNeeded];
         for (UINavigationController *navigation in @[state.feed, state.secondary]) {
-            UITableView *table = ApolloDuoSplitFindTable(navigation.topViewController.viewIfLoaded);
+            // The secondary keeps full-screen bounds while UIKit moves its
+            // leading safe area. Invalidate the retained native page as well
+            // as the host, so the table inherits the new column before Texture
+            // measures it instead of waiting for the next scroll callback.
+            UIView *pageView = navigation.topViewController.viewIfLoaded;
+            [navigation.view setNeedsLayout];
+            [pageView setNeedsLayout];
+            [navigation.view layoutIfNeeded];
+            [pageView layoutIfNeeded];
+            UITableView *table = ApolloDuoSplitFindTable(pageView);
+            ApolloDuoRailPrepareTableForTransition(table);
             ApolloDuoMediaPrepareTableForTransition(table);
             SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
             if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
@@ -2746,29 +2807,6 @@ static void ApolloDuoSplitRememberSettings(UINavigationController *nav) {
     else if (nav == state.secondary && stack.count) state.lastSettings = [stack copy];
 }
 
-// Read the synchronous model identity, never the title pill: titles may be
-// localized or temporarily describe the prior page during an asynchronous load.
-// PostsType.subreddit stores its Swift String in the first two words and tag 0
-// at +0x20 (the same native layout used by SubredditHeaders/AutoHideMetaFeeds).
-static NSString *ApolloDuoNamedSubredditForPostsController(UIViewController *controller) {
-    Class postsClass = NSClassFromString(@"Apollo.PostsViewController");
-    if (!postsClass || ![controller isKindOfClass:postsClass]) return nil;
-    Ivar type = class_getInstanceVariable(controller.class, "currentPostsType");
-    if (!type) return nil;
-    ptrdiff_t offset = ivar_getOffset(type);
-    if (offset < 0 || (size_t)offset + 0x21 > class_getInstanceSize(controller.class)) return nil;
-    const uint8_t *storage = (const uint8_t *)(__bridge const void *)controller + offset;
-    if (storage[0x20] != 0) return nil;
-    uint64_t words[2] = {0, 0};
-    memcpy(words, storage, sizeof(words));
-    NSString *name = ApolloDecodeSwiftString(words[0], words[1]);
-    if (name.length == 0) return nil;
-    // Apollo encodes these built-in feeds as the same enum case. They retain
-    // their native reselect behavior; this guard is only for subreddit rows.
-    if ([@[@"all", @"popular", @"mod", @"random", @"randnsfw"] containsObject:name.lowercaseString]) return nil;
-    return name;
-}
-
 static NSIndexPath *(*sApolloDuoListWillSelectOriginal)(id, SEL, UITableView *, NSIndexPath *);
 static NSIndexPath *ApolloDuoListWillSelect(id controller, SEL selector, UITableView *table, NSIndexPath *path) {
     NSIndexPath *candidate = sApolloDuoListWillSelectOriginal
@@ -2783,7 +2821,7 @@ static NSIndexPath *ApolloDuoListWillSelect(id controller, SEL selector, UITable
     // didSelect into native section space later, so resolving a row there would
     // double-map reordered/FOLLOWING sections and could suppress the wrong row.
     NSString *target = ApolloSubredditListNameAtIndexPath(table, candidate);
-    NSString *current = ApolloDuoNamedSubredditForPostsController(state.feed.viewControllers.firstObject);
+    NSString *current = ApolloNamedSubredditForPostsController(state.feed.viewControllers.firstObject);
     if (target.length == 0 || current.length == 0
         || [target caseInsensitiveCompare:current] != NSOrderedSame) return candidate;
 
@@ -2887,7 +2925,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     // slug. Split replacement may lay out before window attachment and omit
     // appearance callbacks; titles/about models can also arrive later.
     NSString *visited = ApolloDuoSplitIsUnfolded() && ((UINavigationController *)self).viewIfLoaded.window
-        ? ApolloDuoNamedSubredditForPostsController(controller) : nil;
+        ? ApolloNamedSubredditForPostsController(controller) : nil;
     if (ApolloDuoSplitRoutePush(self, controller, animated)) {
         if (visited.length) ApolloSearchRecordVisit(visited);
         return;
@@ -2900,7 +2938,6 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         [state.secondary setNavigationBarHidden:NO animated:NO];
     }
     %orig(controller, state.changing ? NO : animated);
-    if (visited.length) ApolloSearchRecordVisit(visited);
     [state.host.viewIfLoaded setNeedsLayout];
     ApolloDuoSplitRememberSettings(self);
 }

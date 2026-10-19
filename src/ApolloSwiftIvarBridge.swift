@@ -10,8 +10,10 @@
 //
 
 import Foundation
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
+#endif
 
 // SafariActivity.url is a non-optional Swift URL stored inline. Its layout
 // changes with Foundation; never read its first word as an NSURL in ObjC.
@@ -76,6 +78,19 @@ public func ApolloSwiftCopyOptionalStringArray(_ storage: UnsafeRawPointer?) -> 
     return Unmanaged.passRetained(value as NSArray).toOpaque()
 }
 
+// PostsViewController.links is a non-optional Array<RDKLink>. Arrays of class
+// references share Array<AnyObject>'s element representation; Swift handles its
+// native/bridged storage and empty-array sentinel. Reading .first is O(1) and
+// never bridges/copies the entire feed. The caller consumes the retained object
+// and validates its RDKLink class before reading subreddit.
+@_cdecl("ApolloSwiftCopyFirstObjectArrayElement")
+public func ApolloSwiftCopyFirstObjectArrayElement(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
+    guard Thread.isMainThread, let storage,
+          let first = storage.assumingMemoryBound(to: Array<AnyObject>.self).pointee.first else { return nil }
+    return Unmanaged.passRetained(first).toOpaque()
+}
+
+#if canImport(UIKit)
 // Apollo's native menu hosts a SwiftUI type that the tweak cannot name. A
 // protocol conformance on the generic hosting controller provides access to
 // its public sizing API without casting that unknown content to AnyView.
@@ -104,14 +119,4 @@ public func ApolloSwiftEnableHostingPreferredContentSize(_ controller: UnsafeRaw
     return true
 }
 
-// PostsViewController.links is a non-optional Array<RDKLink>. Arrays of class
-// references share Array<AnyObject>'s element representation; Swift handles its
-// native/bridged storage and empty-array sentinel. Reading .first is O(1) and
-// never bridges/copies the entire feed. The caller consumes the retained object
-// and validates its RDKLink class before reading subreddit.
-@_cdecl("ApolloSwiftCopyFirstObjectArrayElement")
-public func ApolloSwiftCopyFirstObjectArrayElement(_ storage: UnsafeRawPointer?) -> UnsafeMutableRawPointer? {
-    guard Thread.isMainThread, let storage,
-          let first = storage.assumingMemoryBound(to: Array<AnyObject>.self).pointee.first else { return nil }
-    return Unmanaged.passRetained(first).toOpaque()
-}
+#endif

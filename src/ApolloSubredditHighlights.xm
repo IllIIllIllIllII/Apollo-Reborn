@@ -43,6 +43,7 @@
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import "ApolloClasses.h"
+#import "ApolloDuoRail.h"
 
 NSNotificationName const ApolloCommunityHighlightsDataReadyNotification =
     @"ApolloCommunityHighlightsDataReadyNotification";
@@ -1801,7 +1802,8 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
     if (width <= 0.0) return;
     // The table header spans the whole feed, including the Duo's rail.
     // Keep both the collapse target and the carousel in its usable area.
-    UIEdgeInsets insets = self.settingsPreview ? UIEdgeInsetsZero : self.safeAreaInsets;
+    UIEdgeInsets insets = !self.settingsPreview && ApolloDuoDeviceDetected()
+        ? self.safeAreaInsets : UIEdgeInsetsZero;
     CGFloat leading = insets.left;
     width = MAX(0.0, width - leading - insets.right);
     self.pinView.frame = CGRectMake(leading + kApolloHLSidePadding, 6.0, 12.0, 14.0);
@@ -1930,9 +1932,11 @@ static ApolloHLCarouselView *ApolloHLBuildCarousel(NSString *sub, NSArray<Apollo
     UIScrollView *scroll = [[ApolloHLCarouselScrollView alloc] initWithFrame:CGRectMake(0, scrollY, width, kApolloHLCardHeight)];
     scroll.showsHorizontalScrollIndicator = NO;
     scroll.alwaysBounceHorizontal = YES;
-    scroll.clipsToBounds = YES;
-    // The carousel itself now owns safe-area placement; do not inset twice.
-    scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    BOOL duo = ApolloDuoDeviceDetected();
+    scroll.clipsToBounds = duo;
+    // Duo owns safe-area placement. Regular phones keep upstream's overflow
+    // and native inset behavior for the carousel and its card shadows.
+    if (duo) scroll.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     scroll.delaysContentTouches = NO;
     scroll.directionalLockEnabled = YES;
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:view action:@selector(cardTapped:)];

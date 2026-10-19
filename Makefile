@@ -87,6 +87,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDuoSubsChromeHooks.xm \
     $(SRC_DIR)/ApolloProfilePagination.xm \
     $(SRC_DIR)/ApolloListEmptyState.xm \
+    $(SRC_DIR)/ApolloEmptyFeedNextPage.xm \
     $(SRC_DIR)/ApolloWebTextDecoding.m \
     $(SRC_DIR)/ApolloNitterInstances.m \
     $(SRC_DIR)/ApolloMemoryDiagnostics.m \
@@ -214,6 +215,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloInterruptibleNavTransition.xm \
     $(SRC_DIR)/ApolloSystemBackSwipeGuard.xm \
     $(SRC_DIR)/ApolloLiquidGlassIconPicker.xm \
+    $(SRC_DIR)/ApolloLiquidGlassSpotlight.m \
     $(SRC_DIR)/ApolloModmailLayout.xm \
     $(SRC_DIR)/ApolloModmailSubjectCounter.xm \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \
