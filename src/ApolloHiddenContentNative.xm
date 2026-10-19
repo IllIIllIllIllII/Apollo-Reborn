@@ -508,22 +508,44 @@ static id ApolloHiddenFindTextNode(id root, BOOL (^match)(NSString *text)) {
 }
 
 // The pill goes after a post's title (where Apollo then adds the flair), and
-// before a comment's age, where the old Hidden & Deleted rows showed it.
-static void ApolloHiddenAddPill(id textNode, ApolloHiddenContentReason reason, BOOL leading) {
-    NSAttributedString *text = ApolloHiddenNodeText(textNode);
-    if (!text.length) return;
-    NSDictionary *attributes = [text attributesAtIndex:leading ? 0 : text.length - 1 effectiveRange:NULL];
+// before a comment's age, where the old Hidden & Deleted rows showed it. The
+// text node is tagged rather than edited once: Apollo sets a row's text again
+// later (a post's title when it turns read), and the ASTextNode hook below puts
+// a fresh pill on every text it is given.
+static NSString *const kApolloHiddenPillAttribute = @"ApolloHiddenContentPill";
+static char kApolloHiddenPillNodeKey;
+
+static NSAttributedString *ApolloHiddenTextWithPill(NSAttributedString *text, ApolloHiddenContentReason reason, BOOL leading) {
     NSMutableAttributedString *updated = [text mutableCopy];
+    // Drop a pill from an earlier pass (Apollo rebuilds from the text it was given).
+    [text enumerateAttribute:kApolloHiddenPillAttribute inRange:NSMakeRange(0, text.length)
+                     options:NSAttributedStringEnumerationReverse
+                  usingBlock:^(id value, NSRange range, BOOL *stop) {
+        if (value) [updated deleteCharactersInRange:range];
+    }];
+    if (!updated.length) return updated;
+    NSMutableDictionary *attributes = [[updated attributesAtIndex:leading ? 0 : updated.length - 1 effectiveRange:NULL] mutableCopy];
+    [attributes removeObjectForKey:NSAttachmentAttributeName];
+    attributes[kApolloHiddenPillAttribute] = @YES;
+    NSMutableAttributedString *pill = [[NSMutableAttributedString alloc] initWithAttributedString:ApolloHiddenPill(reason, attributes[NSFontAttributeName])];
+    [pill addAttribute:kApolloHiddenPillAttribute value:@YES range:NSMakeRange(0, pill.length)];
     NSAttributedString *space = [[NSAttributedString alloc] initWithString:@" " attributes:attributes];
-    NSAttributedString *pill = ApolloHiddenPill(reason, attributes[NSFontAttributeName]);
     if (leading) {
-        [updated insertAttributedString:space atIndex:0];
+        [pill appendAttributedString:space];
         [updated insertAttributedString:pill atIndex:0];
     } else {
         [updated appendAttributedString:space];
         [updated appendAttributedString:pill];
     }
-    ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), updated);
+    return updated;
+}
+
+static void ApolloHiddenAddPill(id textNode, ApolloHiddenContentReason reason, BOOL leading) {
+    NSAttributedString *text = ApolloHiddenNodeText(textNode);
+    if (!text.length) return;
+    objc_setAssociatedObject(textNode, &kApolloHiddenPillNodeKey, @((NSInteger)reason * 2 + (leading ? 1 : 0)), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // The hook adds the pill.
+    ((void (*)(id, SEL, id))objc_msgSend)(textNode, @selector(setAttributedText:), text);
 }
 
 static void ApolloHiddenDecorateNode(ApolloHiddenNativeList *state, id node) {
@@ -556,6 +578,23 @@ static ApolloHiddenContentItem *ApolloHiddenItemForNode(ApolloHiddenNativeList *
     NSString *fullName = ApolloHiddenThingFullName(model);
     return fullName ? state.itemsByFullName[fullName] : nil;
 }
+
+@interface ASTextNode : NSObject
+@end
+
+%hook ASTextNode
+
+- (void)setAttributedText:(NSAttributedString *)text {
+    NSNumber *pill = text.length ? objc_getAssociatedObject(self, &kApolloHiddenPillNodeKey) : nil;
+    if (!pill) {
+        %orig;
+        return;
+    }
+    NSInteger value = pill.integerValue;
+    %orig(ApolloHiddenTextWithPill(text, (ApolloHiddenContentReason)(value / 2), (value & 1) != 0));
+}
+
+%end
 
 @interface _TtC6Apollo11ListAdapter : NSObject
 @end
@@ -633,7 +672,48 @@ static ApolloHiddenContentItem *ApolloHiddenItemForNode(ApolloHiddenNativeList *
 
 %end
 
+// MARK: Threads keep the archived post
+//
+// A thread opened from these lists re-fetches its post live, and Reddit's live
+// copy of a removed post has its title rewritten ("[ Removed by moderator ]")
+// and its media dropped. The thread's first fetch comes back as
+// @{ @"link": RDKLink, ... }; for a post these lists hold, the archived model
+// takes the live one's place (with the live counts it already carries).
+static id ApolloHiddenArchivedLinkForIdentifier(id identifier) {
+    if (![identifier isKindOfClass:NSString.class] || ![NSThread isMainThread]) return nil;
+    NSString *fullName = [(NSString *)identifier hasPrefix:@"t3_"] ? identifier : [@"t3_" stringByAppendingString:identifier];
+    os_unfair_lock_lock(&sApolloHiddenListsLock);
+    NSArray<ApolloHiddenNativeList *> *states = sApolloHiddenLists.objectEnumerator.allObjects;
+    os_unfair_lock_unlock(&sApolloHiddenListsLock);
+    for (ApolloHiddenNativeList *state in states) {
+        if (state.kind != ApolloHiddenContentKindPost) continue;
+        ApolloHiddenContentItem *item = state.itemsByFullName[fullName];
+        if (item) return ApolloHiddenModelForItem(state, item);
+    }
+    return nil;
+}
+
+static id ApolloHiddenWrapThreadCompletion(id identifier, id completion) {
+    id archived = completion ? ApolloHiddenArchivedLinkForIdentifier(identifier) : nil;
+    if (!archived) return completion;
+    void (^original)(id, id) = [completion copy];
+    return [^(id result, id error) {
+        if ([result isKindOfClass:NSDictionary.class] && [((NSDictionary *)result)[@"link"] isKindOfClass:ApolloClassRDKLink]) {
+            NSMutableDictionary *patched = [(NSDictionary *)result mutableCopy];
+            patched[@"link"] = archived;
+            ApolloLog(@"[HiddenContent] Thread for %@ keeps its archived post", identifier);
+            original(patched, error);
+            return;
+        }
+        original(result, error);
+    } copy];
+}
+
 %hook RDKClient
+
+- (id)linkAndCommentsForLinkWithIdentifier:(id)identifier commentSort:(long long)commentSort pagination:(id)pagination completion:(id)completion {
+    return %orig(identifier, commentSort, pagination, ApolloHiddenWrapThreadCompletion(identifier, completion));
+}
 
 - (id)upvotedLinksForUser:(id)user pagination:(RDKPagination *)pagination completion:(ApolloHiddenListingCompletion)completion {
     ApolloHiddenNativeList *state = ApolloHiddenListForPlaceholder(user, ApolloHiddenContentKindPost);
