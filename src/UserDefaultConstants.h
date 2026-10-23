@@ -359,6 +359,12 @@ static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
+// In Duo's feed/comments split, open subreddit links in the feed pane while
+// retaining the thread beside it. Defaults ON; applied to the next navigation.
+static NSString *const UDKeyDuoSubredditLinksInFeed = @"DuoSubredditLinksInFeed";
+// Set only after an explicit prompt/Settings choice, so an interrupted alert
+// can be offered again and an existing saved preference remains authoritative.
+static NSString *const UDKeyDuoSubredditPaneChosen = @"DuoSubredditPaneChosen";
 // When ON, press-and-hold anywhere on a post info row (score, comments,
 // timestamp, 🌐 translation marker…) shows the glass-slider magnifier loupe: the
 // row is zoomed in a Liquid Glass card, sliding moves the selection pill

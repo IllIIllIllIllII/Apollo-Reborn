@@ -851,6 +851,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic, copy) NSString *tabKind;
 @property(nonatomic) BOOL selectingAccountShortcut;
 @property(nonatomic) BOOL changing;
+@property(nonatomic) BOOL routingSubredditLink;
+@property(nonatomic, weak) UIAlertController *subredditPanePrompt;
 @property(nonatomic) BOOL postsTogglingSplit;
 @property(nonatomic) BOOL navigationBarWasHidden;
 @property(nonatomic) BOOL needsDefault;
@@ -2632,6 +2634,92 @@ static BOOL ApolloDuoSplitHasDeferredPresentationInWindow(UIWindow *window) {
 }
 %end
 
+static BOOL ApolloDuoPostsCanRouteSubredditLink(ApolloDuoSplitState *state,
+                                               UINavigationController *nav,
+                                               UIViewController *page) {
+    return state.feed && state.secondary && state.split && !state.changing && !state.routingSubredditLink
+        && ApolloDuoPostsUsesSplit(state)
+        && (nav == state.feed || nav == state.secondary || nav == state.outer)
+        && ApolloNamedSubredditForPostsController(page).length;
+}
+
+static void ApolloDuoPostsOpenSubreddit(ApolloDuoSplitState *state, UIViewController *page,
+                                       BOOL leftPane, BOOL animated) {
+    BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
+    state.needsDefault = NO;
+    if (leftPane) {
+        // Replace only the feed root, retaining the right-hand thread and its
+        // reading position. Drawer selections retain their existing path.
+        [state.feed setViewControllers:@[page] animated:animate];
+    } else {
+        // Bypass this policy for the resumed push, not UIKit's animator or
+        // the rest of Apollo's navigation hooks. Even an outer-stack request
+        // must honor an explicit Right Pane choice.
+        state.routingSubredditLink = YES;
+        [state.secondary pushViewController:page animated:animate];
+        state.routingSubredditLink = NO;
+    }
+    [state.host setListVisible:NO animated:animate];
+    ApolloDuoPostsSyncColumns(state);
+    ApolloLog(@"[DuoSplit] subreddit link opened in %@ pane", leftPane ? @"left" : @"right");
+}
+
+static BOOL ApolloDuoPostsRouteSubredditLink(ApolloDuoSplitState *state,
+                                              UINavigationController *nav,
+                                              UIViewController *page, BOOL animated) {
+    if (!ApolloDuoPostsCanRouteSubredditLink(state, nav, page)) return NO;
+    // Consume additional taps while the original request is awaiting a choice.
+    // The alert retains its destination until dismissal has completed.
+    if (state.subredditPanePrompt) return YES;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    UIViewController *presenter = state.outer;
+    if (![defaults boolForKey:UDKeyDuoSubredditPaneChosen]
+        && presenter.viewIfLoaded.window && !presenter.presentedViewController
+        && !presenter.isBeingDismissed && !nav.transitionCoordinator) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Where should subreddits open?"
+            message:@"Browse on the left while keeping your current thread open, or open on the right. You can change this later in Settings → Apollo Reborn → Subreddits."
+            preferredStyle:UIAlertControllerStyleAlert];
+        __weak UIAlertController *weakAlert = alert;
+        __weak ApolloDuoSplitState *weakState = state;
+        __weak UINavigationController *weakNavigation = nav;
+        void (^choose)(BOOL) = ^(BOOL leftPane) {
+            sDuoSubredditLinksInFeed = leftPane;
+            [defaults setBool:leftPane forKey:UDKeyDuoSubredditLinksInFeed];
+            [defaults setBool:YES forKey:UDKeyDuoSubredditPaneChosen];
+            void (^resume)(void) = ^{
+                ApolloDuoSplitState *liveState = weakState;
+                if (!liveState) return;
+                liveState.subredditPanePrompt = nil;
+                UINavigationController *destination = liveState.feed ?: liveState.outer ?: weakNavigation;
+                if (ApolloDuoPostsCanRouteSubredditLink(liveState, destination, page)) {
+                    ApolloDuoPostsOpenSubreddit(liveState, page, leftPane, animated);
+                } else if (!page.navigationController) {
+                    // Folding, rotating or disabling the split while the alert
+                    // is up can retire the original child navigation stack.
+                    // Complete the tap on the current retained stack instead.
+                    [destination pushViewController:page animated:animated];
+                }
+            };
+            UIViewController *owner = weakAlert.presentingViewController;
+            if (owner) [owner dismissViewControllerAnimated:YES completion:resume];
+            else resume();
+        };
+        UIAlertAction *left = [UIAlertAction actionWithTitle:@"Left Pane" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { choose(YES); }];
+        [alert addAction:left];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Right Pane" style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) { choose(NO); }]];
+        alert.preferredAction = left;
+        state.subredditPanePrompt = alert;
+        [presenter presentViewController:alert animated:YES completion:nil];
+        return YES;
+    }
+    // If a modal/transition prevents presentation, use the current preference
+    // without recording a choice. Offer the prompt on the next eligible tap.
+    ApolloDuoPostsOpenSubreddit(state, page, sDuoSubredditLinksInFeed, animated);
+    return YES;
+}
+
 static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewController *page, BOOL animated) {
     // UIKit pushes column containers while adapting a split. Those are native
     // containment operations, not sidebar selections. Redirecting the secondary
@@ -2653,6 +2741,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         }
     }
     if (state.feed && !state.changing) {
+        if (ApolloDuoPostsRouteSubredditLink(state, nav, page, animated)) return YES;
         if (state.host.postsColumnsPaired && (nav == state.feed || nav == state.outer)) {
             NSString *incomingPost = ApolloDuoCommentsPostID(page);
             NSString *visiblePost = ApolloDuoCommentsPostID(state.secondary.topViewController);

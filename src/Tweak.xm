@@ -3741,6 +3741,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
+                                    UDKeyDuoSubredditLinksInFeed: @YES,
+                                    UDKeyDuoSubredditPaneChosen: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
                                     UDKeyInfoRowTapUpvote: @YES,
@@ -4057,6 +4059,10 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sTabBarSwipeNavigation = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyTabBarSwipeNavigation];
     sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
     sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
+    sDuoSubredditLinksInFeed = [standardDefaults boolForKey:UDKeyDuoSubredditLinksInFeed];
+    // Preserve earlier toggle values, including OFF, without treating them
+    // as an answer to the new one-time chooser. Only this build's explicit
+    // prompt/Settings actions mark DuoSubredditPaneChosen.
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
     if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {

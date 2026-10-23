@@ -2958,6 +2958,24 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                                       perAccountFavorites, sortFavoritesAlphabetically, confirmFavoriteToggle ]];
 }
 
+- (ApolloSettingsSection *)buildSubredditsDuoNavigationSection {
+    ApolloSettingsRow *leftPane =
+        [ApolloSettingsRow switchRowWithID:@"sub.duoSubredditLinksInFeed"
+                                     title:@"Open Subreddits in Left Pane"
+                                      isOn:^BOOL { return sDuoSubredditLinksInFeed; }
+                                  onToggle:^(UISwitch *sender) {
+            sDuoSubredditLinksInFeed = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn
+                forKey:UDKeyDuoSubredditLinksInFeed];
+            [NSUserDefaults.standardUserDefaults setBool:YES forKey:UDKeyDuoSubredditPaneChosen];
+        }];
+    ApolloSettingsSection *section = [ApolloSettingsSection sectionWithTitle:@"Duo Navigation"
+        footer:@"Choose where subreddit links from posts and comments open in Duo's feed/comments split. On keeps your current thread on the right and opens the subreddit on the left. Off opens it on the right. Changes apply immediately."
+        rows:@[leftPane]];
+    section.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+    return section;
+}
+
 - (ApolloSettingsSection *)buildSubredditsLayoutSection {
     __weak typeof(self) weakSelf = self;
 
@@ -5219,6 +5237,7 @@ static NSDictionary *ApolloWidgetAccountCredentials(void) {
 }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return [@[ [self buildSubredditsMainSection],
+               [self buildSubredditsDuoNavigationSection],
                [self buildSubredditsLayoutSection] ]
         arrayByAddingObjectsFromArray:[self buildSubredditsSearchSections]];
 }
