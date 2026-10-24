@@ -17,11 +17,18 @@ def extract(path, declaration):
 fixture = (root / 'tests/duo_subreddit_navigation_tests.m').read_text()
 fixture = fixture.replace('// INCLUDE_PRODUCTION_ROUTING', '\n'.join(extract(
     root / 'src/ApolloDuoSplitView.xm', declaration) for declaration in [
+        'static NSUInteger ApolloDuoPostsFeedPageCount(',
+        'static UIViewController *ApolloDuoPostsCurrentFeed(',
+        'UINavigationController *ApolloDuoSplitDetailNavigation(',
         'static BOOL ApolloDuoPostsCanRouteSubredditLink(',
         'static void ApolloDuoPostsOpenSubreddit(',
         'static BOOL ApolloDuoPostsRouteSubredditLink(']))
 fixture = fixture.replace('// INCLUDE_PRODUCTION_SETTING', extract(
     root / 'src/settings/CustomAPIViewController.m', '- (ApolloSettingsSection *)buildSubredditsDuoNavigationSection'))
+split = (root / 'src/ApolloDuoSplitView.xm').read_text()
+a = split.index('    BOOL separateComments =')
+b = split.index('    [state.host.viewIfLoaded setNeedsLayout];', a)
+fixture = fixture.replace('// INCLUDE_PRODUCTION_STACK_MIGRATION', split[a:b])
 startup = (root / 'src/Tweak.xm').read_text()
 start = startup.index('    sDuoSubredditLinksInFeed = [standardDefaults')
 end = startup.index('    // Value 1 belonged', start)

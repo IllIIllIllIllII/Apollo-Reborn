@@ -100,6 +100,7 @@
 @property (nonatomic, strong) UISplitViewController *split;
 @property (nonatomic, strong) ApolloDuoSplitHost *host;
 @property (nonatomic) BOOL changing;
+@property (nonatomic) BOOL routingSubredditLink;
 @end
 @implementation ApolloDuoSplitState
 @end
@@ -376,6 +377,12 @@ int main(void) {
         unfolded = NO;
         UpdateDecision(state);
         Check(closes == 1 && !lastClosePreserved, @"closing Duo still collapses Posts normally");
+        ApolloDuoSplitState *routing = Posts();
+        routing.routingSubredditLink = YES;
+        for (UINavigationController *origin in @[routing.feed, routing.secondary]) {
+            Check(!ApolloDuoSplitRoutePush(origin, Page(@"account"), YES),
+                  @"an intentional pane push bypasses redirection without recursing into a dashboard");
+        }
         CheckProfileOwnership();
         CheckAccountsRemoval();
         printf("%lu checks, %lu failures\n", (unsigned long)checks, (unsigned long)failures);

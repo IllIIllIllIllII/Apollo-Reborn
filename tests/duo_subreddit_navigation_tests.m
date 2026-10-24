@@ -72,6 +72,12 @@ enum { UIAlertActionStyleDefault, UIAlertControllerStyleAlert };
 - (void)addAction:(UIAlertAction *)action { [self.actions addObject:action]; }
 @end
 
+@interface TestPostsPage : UIViewController
+@end
+@implementation TestPostsPage
+@end
+static Class ApolloClassPostsViewController;
+
 @interface UINavigationController : UIViewController
 @property(nonatomic, copy) NSArray<UIViewController *> *viewControllers;
 @property(nonatomic) BOOL lastAnimated;
@@ -89,7 +95,7 @@ enum { UIAlertActionStyleDefault, UIAlertControllerStyleAlert };
 @end
 
 @interface ApolloDuoSplitHost : NSObject
-@property(nonatomic) BOOL listVisible;
+@property(nonatomic) BOOL listVisible, postsShowingDetail, postsSplitEnabled;
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated;
 @end
 @implementation ApolloDuoSplitHost
@@ -100,7 +106,7 @@ enum { UIAlertActionStyleDefault, UIAlertControllerStyleAlert };
 @property(nonatomic, strong) UINavigationController *feed, *secondary, *outer, *primary;
 @property(nonatomic, strong) NSObject *split;
 @property(nonatomic, strong) ApolloDuoSplitHost *host;
-@property(nonatomic) BOOL changing, needsDefault, routingSubredditLink;
+@property(nonatomic) BOOL changing, needsDefault, routingSubredditLink, postsTogglingSplit;
 @property(nonatomic, weak) UIAlertController *subredditPanePrompt;
 @end
 @implementation ApolloDuoSplitState
@@ -121,6 +127,8 @@ enum { UIAlertActionStyleDefault, UIAlertControllerStyleAlert };
 static BOOL sDuoSubredditLinksInFeed = YES;
 static BOOL splitEnabled, landscape, reduceMotion, adaptiveBars;
 static NSUInteger syncs;
+static ApolloDuoSplitState *ApolloDuoSplitStateForNavigation(UINavigationController *nav, __unused BOOL create) { return nav.duoState; }
+static BOOL ApolloDuoPostsHasLandscapeColumns(__unused ApolloDuoSplitState *state) { return landscape; }
 static BOOL ApolloDuoPostsUsesSplit(__unused ApolloDuoSplitState *state) { return splitEnabled && landscape; }
 static NSString *ApolloNamedSubredditForPostsController(UIViewController *page) { return page.subreddit; }
 static BOOL UIAccessibilityIsReduceMotionEnabled(void) { return reduceMotion; }
@@ -194,6 +202,9 @@ static NSString *const UDKeyDuoSubredditPaneChosen = @"DuoSubredditPaneChosen";
 @end
 
 // INCLUDE_PRODUCTION_ROUTING
+static void SyncHistory(ApolloDuoSplitState *state) {
+    // INCLUDE_PRODUCTION_STACK_MIGRATION
+}
 static void LoadPreference(__unused NSDictionary *persistentDomain) {
     NSUserDefaults *standardDefaults = NSUserDefaults.standardUserDefaults;
     // INCLUDE_PRODUCTION_PREFERENCE_LOAD
@@ -210,7 +221,7 @@ static void Check(BOOL condition, NSString *message) {
 static ApolloDuoSplitState *State(void) {
     ApolloDuoSplitState *state = [ApolloDuoSplitState new];
     state.feed = [UINavigationController new];
-    state.feed.viewControllers = @[[UIViewController new]];
+    state.feed.viewControllers = @[[TestPostsPage new]];
     state.secondary = [UINavigationController new];
     state.secondary.viewControllers = @[[UIViewController new], [UIViewController new]];
     state.primary = [UINavigationController new];
@@ -221,6 +232,7 @@ static ApolloDuoSplitState *State(void) {
     state.split = [NSObject new];
     state.host = [ApolloDuoSplitHost new];
     state.host.listVisible = YES;
+    state.host.postsSplitEnabled = YES;
     state.needsDefault = YES;
     return state;
 }
@@ -235,10 +247,55 @@ static void CheckUnrouted(ApolloDuoSplitState *state, UINavigationController *or
 }
 
 static UIViewController *Subreddit(void) {
-    UIViewController *page = [UIViewController new];
+    UIViewController *page = [TestPostsPage new];
     page.subreddit = @"iPhoneDuo";
     return page;
 }
+static void CheckFeedHistory(void) {
+    landscape = splitEnabled = YES;
+    ApolloDuoSplitState *state = State();
+    UIViewController *home = state.feed.viewControllers.firstObject;
+    UIViewController *subreddit = Subreddit();
+    UIViewController *next = Subreddit();
+    state.feed.viewControllers = @[home, subreddit, next];
+    NSArray *thread = state.secondary.viewControllers;
+    Check(ApolloDuoPostsFeedPageCount(state.feed.viewControllers) == 3 && ApolloDuoPostsCurrentFeed(state) == next,
+          @"multiple subreddit pages remain left-pane history");
+    SyncHistory(state);
+    Check(state.feed.viewControllers.count == 3 && state.secondary.viewControllers == thread,
+          @"landscape synchronization does not mistake previous feeds for comments");
+    state.host.postsShowingDetail = YES;
+    Check(ApolloDuoSplitDetailNavigation(state.feed) == state.feed && ApolloDuoSplitDetailNavigation(state.secondary) == state.secondary,
+          @"Back in either explicit pane stays in that pane even while both are visible");
+    Check(ApolloDuoSplitDetailNavigation(state.outer) == state.secondary,
+          @"shared outer Back still closes the right detail first");
+    state.secondary.viewControllers = @[thread.firstObject];
+    state.host.postsShowingDetail = NO;
+    Check(ApolloDuoSplitDetailNavigation(state.outer) == state.feed && ApolloDuoPostsCurrentFeed(state) == next,
+          @"after closing the thread the left history remains reachable");
+    state.feed.viewControllers = @[home, subreddit];
+    Check(ApolloDuoPostsCurrentFeed(state) == subreddit, @"left Back restores the previous retained subreddit");
+    state.feed.viewControllers = @[home];
+    Check(ApolloDuoPostsCurrentFeed(state) == home, @"another left Back restores the original retained feed");
+    UIViewController *comment = [UIViewController new];
+    state.feed.viewControllers = @[home, subreddit, comment];
+    SyncHistory(state);
+    Check(state.feed.viewControllers.count == 2 && state.feed.viewControllers.firstObject == home
+          && state.secondary.viewControllers.lastObject == comment,
+          @"unfolding moves only the thread suffix to the right, preserving all feed history");
+    landscape = NO;
+    SyncHistory(state);
+    Check(state.feed.viewControllers.count == 3 && state.feed.viewControllers[1] == subreddit
+          && state.feed.viewControllers.lastObject == comment && state.secondary.viewControllers.count == 1,
+          @"portrait restores the native feed-plus-thread Back stack");
+    landscape = YES;
+    SyncHistory(state);
+    Check(state.feed.viewControllers.count == 2 && state.secondary.viewControllers.lastObject == comment,
+          @"repeated rotations preserve controller identity and do not duplicate pages");
+    Check(ApolloDuoPostsFeedPageCount(@[]) == 0 && ApolloDuoPostsFeedPageCount(@[[UIViewController new]]) == 1,
+          @"startup and empty stacks remain valid");
+}
+
 static void CheckPromptLifecycle(void) {
     for (NSUInteger choice = 0; choice < 2; choice++) {
         [preferences removeAllObjects];
@@ -263,7 +320,7 @@ static void CheckPromptLifecycle(void) {
         [state.outer finishDismissal];
         Check(!state.subredditPanePrompt, @"completed choice releases the pending request");
         if (choice == 0) {
-            Check(state.feed.viewControllers.firstObject == page && state.secondary.viewControllers == thread,
+            Check(state.feed.viewControllers.lastObject == page && state.feed.viewControllers.firstObject == feed.firstObject && state.secondary.viewControllers == thread,
                   @"Left completes the original tap and preserves the current thread");
         } else {
             Check(state.feed.viewControllers == feed && state.secondary.viewControllers.lastObject == page
@@ -334,6 +391,7 @@ static void CheckPromptLifecycle(void) {
 
 int main(void) {
     @autoreleasepool {
+        ApolloClassPostsViewController = TestPostsPage.class;
         preferences = [NSMutableDictionary dictionary];
         sDuoSubredditLinksInFeed = NO;
         LoadPreference(@{});
@@ -359,7 +417,7 @@ int main(void) {
         Check(row.isOn() && [preferences[UDKeyDuoSubredditLinksInFeed] boolValue] && [preferences[UDKeyDuoSubredditPaneChosen] boolValue],
               @"real settings callback updates live routing state and persists the enabled value");
         splitEnabled = landscape = YES;
-        UIViewController *subreddit = [UIViewController new];
+        UIViewController *subreddit = [TestPostsPage new];
         subreddit.subreddit = @"iPhoneDuo";
         for (NSUInteger origin = 0; origin < 3; origin++) {
             for (NSUInteger motion = 0; motion < 2; motion++) {
@@ -368,8 +426,8 @@ int main(void) {
                 NSArray *thread = state.secondary.viewControllers;
                 UINavigationController *nav = @[state.feed, state.secondary, state.outer][origin];
                 Check(ApolloDuoPostsRouteSubredditLink(state, nav, subreddit, YES), @"content subreddit link is routed");
-                Check(state.feed.viewControllers.count == 1 && state.feed.viewControllers.firstObject == subreddit,
-                      @"subreddit replaces the left feed root without growing its Back stack");
+                Check(state.feed.viewControllers.count == 2 && state.feed.viewControllers.lastObject == subreddit,
+                      @"subreddit pushes onto the left feed Back stack");
                 Check(state.secondary.viewControllers == thread && state.secondary.writes == 0,
                       @"right thread instances and navigation history are retained");
                 Check(state.feed.lastAnimated == !reduceMotion && !state.needsDefault && !state.host.listVisible,
@@ -404,6 +462,7 @@ int main(void) {
               && !state.routingSubredditLink && state.outer.presentations == 0,
               @"Right choice opens right without recursion or another prompt");
         CheckPromptLifecycle();
+        CheckFeedHistory();
         printf("OK: %lu checks\n", (unsigned long)checks);
     }
     return 0;
