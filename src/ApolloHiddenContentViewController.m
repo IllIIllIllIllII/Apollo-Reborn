@@ -447,7 +447,11 @@
 
 - (void)apollo_updateEmptyState {
     [self.emptyStateLabel removeFromSuperview];
-    if (!self.loaded || self.loading || self.tabItems[self.selectedTab].count > 0) return;
+    // An empty list shows only the message (Apollo's list would keep its
+    // loading spinner under it).
+    BOOL empty = self.loaded && !self.loading && self.tabItems[self.selectedTab].count == 0;
+    if (self.listsRevealed) self.lists[self.selectedTab].view.hidden = empty;
+    if (!empty) return;
     NSString *kind = self.selectedTab == 0 ? @"posts" : @"comments";
     [self apollo_showStatusText:[NSString stringWithFormat:@"No hidden or deleted %@ found in the archive for this account.", kind]];
 }
