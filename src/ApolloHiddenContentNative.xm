@@ -31,10 +31,6 @@
 + (instancetype)paginationWithLimit:(unsigned long long)limit;
 @end
 
-@interface ASTextNodeShim : NSObject
-@property (nonatomic, copy) NSAttributedString *attributedText;
-@end
-
 typedef void (^ApolloHiddenListingCompletion)(NSArray *things, RDKPagination *pagination, NSError *error);
 
 static const NSUInteger kApolloHiddenDefaultPageSize = 25;

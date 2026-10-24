@@ -491,14 +491,17 @@ static ApolloHiddenContentItem *ApolloHiddenContentItemFromArcticDict(NSDictiona
 }
 
 // The archived copy is the content: Reddit rewrites a live title or body once
-// the item is removed, even when it still shows as Hidden here. Live counts
-// are layered on when the item still resolves. The fields Apollo's cells read
+// the item is removed, even when it still shows as Hidden here. Live counts and
+// the account's own vote and save are layered on when the item still resolves. The fields Apollo's cells read
 // for context (name, parent title) are filled in when the archive lacks them.
 static NSDictionary *ApolloHiddenContentRedditData(NSDictionary *archiveRaw, ApolloHiddenContentItem *item, NSDictionary * _Nullable liveData) {
     NSMutableDictionary *data = [archiveRaw mutableCopy];
-    for (NSString *key in @[@"score", @"ups", @"num_comments", @"upvote_ratio"]) {
+    for (NSString *key in @[@"score", @"ups", @"num_comments", @"upvote_ratio", @"saved"]) {
         if ([liveData[key] isKindOfClass:NSNumber.class]) data[key] = liveData[key];
     }
+    // `likes` is true/false for a vote and null for none; the archive's copy
+    // is never the viewer's.
+    if (liveData) data[@"likes"] = liveData[@"likes"] ?: NSNull.null;
     data[@"name"] = item.fullName;
     if (item.fullName.length > 3 && ![data[@"id"] isKindOfClass:NSString.class]) {
         data[@"id"] = [item.fullName substringFromIndex:3];
@@ -654,6 +657,12 @@ void ApolloHiddenContentFetchWithProgress(NSString *username, ApolloHiddenConten
                           (unsigned long)hiddenCount, (unsigned long)removedCount, (unsigned long)deletedCount,
                           (unsigned long)unresolvableFullNames.count);
 
+                // Every candidate failed its live check (Reddit refused the
+                // requests): nothing was actually checked, which isn't "none".
+                if (results.count == 0 && candidates.count > 0 && unresolvableFullNames.count > 0) {
+                    completion(nil, @"Reddit didn't answer the check of the archived items. Try again in a moment.");
+                    return;
+                }
                 finish(results, !liveIncomplete && !arcticIncomplete && unresolvableFullNames.count == 0);
             });
         });
