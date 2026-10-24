@@ -310,8 +310,10 @@ static void ApolloHiddenContentClassify(NSArray<NSString *> *candidateFullNames,
             NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
             BOOL failed = error || !data.length || (http && (http.statusCode < 200 || http.statusCode >= 300));
             if (failed) {
-                ApolloLogError(@"[HiddenContent] /api/info chunk of %lu id(s) failed (status=%ld error=%@) -- excluding those item(s) from results this pass",
-                          (unsigned long)chunk.count, (long)(http ? http.statusCode : 0), error.localizedDescription ?: @"none");
+                // The body tells Reddit's network-security block page (HTML) from an API error.
+                NSString *body = data.length ? [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, MIN(data.length, (NSUInteger)160))] encoding:NSUTF8StringEncoding] : nil;
+                ApolloLogError(@"[HiddenContent] /api/info chunk of %lu id(s) via %@ failed (status=%ld error=%@ body=%@) -- excluding those item(s) from results this pass",
+                          (unsigned long)chunk.count, components.URL.host, (long)(http ? http.statusCode : 0), error.localizedDescription ?: @"none", body ?: @"none");
                 @synchronized (lock) {
                     [unresolvable addObjectsFromArray:chunk];
                 }
