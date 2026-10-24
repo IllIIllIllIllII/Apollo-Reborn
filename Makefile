@@ -352,6 +352,8 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloReduceRateLimiting.m \
     $(SRC_DIR)/ApolloWebJSONWriteRepair.m \
     $(SRC_DIR)/ApolloWebJSONIdentity.xm \
+    $(SRC_DIR)/ApolloFailedGalleryMedia.m \
+    $(SRC_DIR)/ApolloFailedGalleryMediaHook.xm \
     $(SRC_DIR)/ApolloWebSessionLoginViewController.m \
     $(SRC_DIR)/ApolloWebSessionStore.m \
     $(SRC_DIR)/ApolloProfileEditorWebViewController.m \
