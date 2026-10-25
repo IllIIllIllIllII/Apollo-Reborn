@@ -110,6 +110,7 @@ Class ApolloClassUIBarBadgeView;
 Class ApolloClassUIBadgeView;
 Class ApolloClassUITabButton;
 Class ApolloClassUITabBarButton;
+Class ApolloClassUIButtonBarButton;
 Class ApolloClassUIButtonLabel;
 Class ApolloClassUIContextMenuListView;
 Class ApolloClassUIContextMenuPlatformMetricsGlass;
@@ -250,6 +251,7 @@ __attribute__((constructor)) static void ApolloClassesResolve(void) {
     ApolloClassUIBadgeView = objc_getClass("_UIBadgeView");
     ApolloClassUITabButton = objc_getClass("_UITabButton");
     ApolloClassUITabBarButton = objc_getClass("UITabBarButton");
+    ApolloClassUIButtonBarButton = objc_getClass("_UIButtonBarButton");
     ApolloClassUIButtonLabel = objc_getClass("UIButtonLabel");
     ApolloClassUIContextMenuListView = objc_getClass("_UIContextMenuListView");
     ApolloClassUIContextMenuPlatformMetricsGlass = objc_getClass("_UIContextMenuPlatformMetrics_Glass");
