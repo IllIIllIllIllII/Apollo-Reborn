@@ -564,11 +564,15 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
 %hook _TtC6Apollo22CommentsViewController
 
 - (void)nextResultButtonTappedWithSender:(id)sender {
-    FICRunSelection((UIViewController *)self, ^{ %orig; });
+    FICRunSelection((UIViewController *)self, ^{
+        %orig;
+    });
 }
 
 - (void)previousResultButtonTappedWithSender:(id)sender {
-    FICRunSelection((UIViewController *)self, ^{ %orig; });
+    FICRunSelection((UIViewController *)self, ^{
+        %orig;
+    });
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -608,7 +612,9 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
     sFICMultiQuery = query;
     sFICMultiActive = terms != nil;
     @try {
-        FICRunSelection((UIViewController *)self, ^{ %orig; });
+        FICRunSelection((UIViewController *)self, ^{
+            %orig;
+        });
     } @finally {
         sFICMultiActive = previousActive;
         sFICMultiTerms = previousTerms;

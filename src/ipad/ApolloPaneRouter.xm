@@ -570,7 +570,10 @@ static char kApolloPaneConfiguredPostSection;
 }
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
-    if (!ApolloPaneLayoutActive()) { %orig; return; }
+    if (!ApolloPaneLayoutActive()) {
+        %orig;
+        return;
+    }
 
     // Logos types `self` as id for a runtime-bound class alias.
     UINavigationController *navigationController = (UINavigationController *)self;

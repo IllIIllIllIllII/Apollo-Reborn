@@ -52,6 +52,7 @@ static const CGFloat kApolloPinnedPreviewPinSide = 22.0;        // glyph box
 @property (nonatomic) CGFloat lockedWidth;
 @property (nonatomic) CGFloat lastSeenRowMinY;
 @property (nonatomic, strong) UIButton *pinButton;
+@property (nonatomic, strong) UIButton *headerPinButton;
 @property (nonatomic, strong) UIImageView *pinIcon;
 @property (nonatomic, strong) UILabel *pinCaption;
 @property (nonatomic, strong) UISelectionFeedbackGenerator *pinFeedback;
@@ -86,6 +87,10 @@ static const CGFloat kApolloPinnedPreviewPinSide = 22.0;        // glyph box
         _pinButton.backgroundColor = [UIColor clearColor];
         [_pinButton addTarget:self action:@selector(apollo_pinTapped) forControlEvents:UIControlEventTouchUpInside];
         [_card addSubview:_pinButton];
+        _headerPinButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        _headerPinButton.hidden = YES;
+        [_headerPinButton addTarget:self action:@selector(apollo_pinTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_headerPinButton];
         _pinIcon = [[UIImageView alloc] init];
         _pinIcon.contentMode = UIViewContentModeCenter;
         _pinIcon.userInteractionEnabled = NO;
@@ -122,6 +127,19 @@ static const CGFloat kApolloPinnedPreviewPinSide = 22.0;        // glyph box
     [self apollo_updatePinIcon];
 }
 
+- (void)setPinInHeader:(BOOL)pinInHeader {
+    if (_pinInHeader == pinInHeader) return;
+    _pinInHeader = pinInHeader;
+    UIView *container = pinInHeader ? self : self.card;
+    [container addSubview:self.pinIcon];
+    [container addSubview:self.pinCaption];
+    self.headerPinButton.hidden = !pinInHeader;
+    // Preserve tapping the card, with a single accessible pin control.
+    self.pinButton.isAccessibilityElement = !pinInHeader;
+    [self setNeedsLayout];
+    [self.superview setNeedsLayout];
+}
+
 - (void)setAccentColor:(UIColor *)accentColor {
     _accentColor = accentColor;
     [self apollo_updatePinIcon];
@@ -135,6 +153,7 @@ static const CGFloat kApolloPinnedPreviewPinSide = 22.0;        // glyph box
         ? (self.accentColor ?: [UIColor systemBlueColor])
         : [UIColor tertiaryLabelColor];
     self.pinButton.accessibilityLabel = self.pinned ? @"Unpin preview" : @"Pin preview";
+    self.headerPinButton.accessibilityLabel = self.pinButton.accessibilityLabel;
 }
 
 - (void)apollo_pinTapped {
@@ -274,6 +293,14 @@ static UILabel *ApolloPinnedPreviewFindHeaderLabel(UIView *view) {
     self.pinButton.frame = cardBounds;
     self.pinIcon.frame = CGRectMake(CGRectGetWidth(cardBounds) - kApolloPinnedPreviewPinInset - kApolloPinnedPreviewPinSide,
                                     kApolloPinnedPreviewPinTop, kApolloPinnedPreviewPinSide, kApolloPinnedPreviewPinSide);
+    if (self.pinInHeader) {
+        CGFloat centerY = CGRectGetMinY(self.card.frame) + (self.hasTitleSample
+            ? self.titleOffset.y + self.titleSize.height * 0.5 : -18.0);
+        CGFloat centerX = CGRectGetMaxX(self.card.frame) - kApolloPinnedPreviewPinInset - kApolloPinnedPreviewPinSide * 0.5;
+        self.pinIcon.frame = CGRectMake(centerX - kApolloPinnedPreviewPinSide * 0.5,
+            centerY - kApolloPinnedPreviewPinSide * 0.5, kApolloPinnedPreviewPinSide, kApolloPinnedPreviewPinSide);
+        self.headerPinButton.frame = CGRectMake(centerX - 22.0, centerY - 22.0, 44.0, 44.0);
+    }
     [self.pinCaption sizeToFit];
     CGSize captionSize = self.pinCaption.bounds.size;
     self.pinCaption.frame = CGRectMake(CGRectGetMinX(self.pinIcon.frame) - 6.0 - captionSize.width,
@@ -498,6 +525,13 @@ void ApolloPinnedPreviewAttachHost(UITableView *table, ApolloPinnedPreviewHost *
     // backdrop's top into the table's background, which is the same colour,
     // so nothing reads as a seam.
     CGFloat hostTop = stuck ? self.contentOffset.y : CGRectGetMinY(row);
+    if (host.pinInHeader) {
+        // Include the header button in the host's hit-test bounds at rest as
+        // well as while stuck; no pin glyph or caption covers native content.
+        CGFloat pinCenterY = cardY + (host.hasTitleSample
+            ? host.titleOffset.y + host.titleSize.height * 0.5 : -18.0);
+        hostTop = MIN(hostTop, pinCenterY - 22.0);
+    }
     CGFloat hostBottom = cardY + CGRectGetHeight(row) + (stuck ? kApolloPinnedPreviewStuckBottomPad : 0.0);
     host.frame = CGRectMake(0, hostTop, CGRectGetWidth(self.bounds), hostBottom - hostTop);
     host.card.frame = CGRectMake(cardX, cardY - hostTop, cardW, CGRectGetHeight(row));

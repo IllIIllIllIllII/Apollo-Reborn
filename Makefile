@@ -414,6 +414,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/settings/ApolloProfileLayoutViewController.m \
     $(SRC_DIR)/settings/ApolloLayoutPreviewCard.m \
     $(SRC_DIR)/settings/ApolloLinkPreviewSettingsViewController.m \
+    $(SRC_DIR)/settings/ApolloPostAppearancePreview.m \
     $(SRC_DIR)/settings/InlineMediaSettingsViewController.m \
     $(SRC_DIR)/settings/InfoRowSettingsViewController.m \
     $(SRC_DIR)/settings/ApolloOpenInAppViewController.m \

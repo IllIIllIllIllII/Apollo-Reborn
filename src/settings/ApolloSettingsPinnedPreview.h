@@ -1,5 +1,7 @@
 #import <UIKit/UIKit.h>
 
+__BEGIN_DECLS
+
 // Pinned "Preview" block for settings screens: a card hosted directly in the
 // table (never in a cell) that sits on a transparent spacer row and, while
 // pinned, stays locked at that resting spot — together with a copy of the
@@ -33,6 +35,9 @@
 @property (nonatomic, strong) UIColor *accentColor;              // filled pin glyph
 @property (nonatomic, readonly) BOOL stuck;                      // locked with rows sliding beneath
 @property (nonatomic) BOOL pinned;                               // default YES
+// Keep native post contents unobscured by putting the pin beside "Preview".
+// Existing adopters retain the pin inside the card unless they opt in.
+@property (nonatomic) BOOL pinInHeader;                          // default NO
 @property (nonatomic, copy) void (^pinDidChange)(BOOL pinned);   // persist + animate, see the recipe
 // Where the spacer row lives right now (form screens derive their indices, so
 // this is asked on every layout pass rather than fixed at attach time). nil
@@ -66,3 +71,5 @@ CGFloat ApolloPinnedPreviewSectionCornerRadius(UITableView *table);
 
 // List room needed under the block at rest to bother locking it at all.
 extern const CGFloat kApolloPinnedPreviewMinListViewport;
+
+__END_DECLS

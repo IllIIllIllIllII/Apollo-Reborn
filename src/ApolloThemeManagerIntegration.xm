@@ -16,6 +16,8 @@
 #import "ApolloDuoRail.h"
 #import "settings/ApolloSettingsForm.h"
 #import "settings/ApolloSettingsTableViewController.h"
+#import "settings/ApolloPostAppearancePreview.h"
+#import "settings/ApolloSettingsPinnedPreview.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 
@@ -129,6 +131,71 @@ static CGFloat (*sAppearanceFooterHeightOrig)(id, SEL, UITableView *, NSInteger)
 static CGFloat (*sAppearanceHeaderEstimateOrig)(id, SEL, UITableView *, NSInteger);
 static CGFloat (*sAppearanceFooterEstimateOrig)(id, SEL, UITableView *, NSInteger);
 
+// Keep the native Eureka screen and section identities. The root replaces the
+// Large/Compact sections with disclosure rows; each destination is a fresh
+// native Appearance form filtered to that style plus the shared post options.
+// Its native controls continue to own persistence and feed notifications.
+static const void *kPostAppearanceModeKey = &kPostAppearanceModeKey;
+static const void *kPostAppearancePreviewKey = &kPostAppearancePreviewKey;
+static NSInteger PostAppearanceMode(id vc) {
+    return [objc_getAssociatedObject(vc, kPostAppearanceModeKey) integerValue];
+}
+static NSString *PostAppearanceRawTitle(id vc, UITableView *table, NSInteger section) {
+    NSString *title = sAppearanceHeaderTitleOrig
+        ? sAppearanceHeaderTitleOrig(vc, @selector(tableView:titleForHeaderInSection:), table, section) : nil;
+    return [title isKindOfClass:NSString.class] ? [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"";
+}
+static NSInteger PostAppearanceSectionMode(id vc, UITableView *table, NSInteger section) {
+    NSString *title = PostAppearanceRawTitle(vc, table, section);
+    if ([title caseInsensitiveCompare:@"Large Posts"] == NSOrderedSame) return 1;
+    if ([title caseInsensitiveCompare:@"Compact Posts"] == NSOrderedSame) return 2;
+    return 0;
+}
+static BOOL PostAppearanceSectionHidden(id vc, UITableView *table, NSInteger section) {
+    NSInteger mode = PostAppearanceMode(vc);
+    if (!mode || section == 0) return NO;
+    NSInteger family = PostAppearanceSectionMode(vc, table, section);
+    if (family) return family != mode;
+    NSString *title = PostAppearanceRawTitle(vc, table, section);
+    return ![@[@"Posts", @"Flair", @"Text Size", @"Other"] containsObject:title];
+}
+static BOOL PostAppearancePreviewRow(id vc, NSIndexPath *path) {
+    return PostAppearanceMode(vc) != 0 && path.section == 0;
+}
+static BOOL PostAppearanceLinkRow(id vc, UITableView *table, NSIndexPath *path) {
+    return PostAppearanceMode(vc) == 0 && PostAppearanceSectionMode(vc, table, path.section) != 0;
+}
+static BOOL PostAppearanceOwnedRow(id vc, UITableView *table, NSIndexPath *path) {
+    return PostAppearancePreviewRow(vc, path) || PostAppearanceLinkRow(vc, table, path);
+}
+
+@interface ApolloPostAppearancePreviewCoordinator : NSObject
+@property (nonatomic, weak) UIViewController *controller;
+@property (nonatomic, weak) UITableView *table;
+@property (nonatomic, strong) ApolloPinnedPreviewHost *host;
+@property (nonatomic, strong) ApolloPostAppearancePreview *preview;
+@property (nonatomic) CGFloat height;
+@property (nonatomic) BOOL refreshScheduled;
+@property (nonatomic) BOOL refreshing;
+@property (nonatomic) BOOL heightUpdateScheduled;
+- (void)scheduleRefresh;
+- (void)scheduleHeightUpdate;
+- (void)refresh;
+- (void)updateHeight;
+@end
+
+static void InstallPostAppearancePreview(UIViewController *controller);
+static void OpenPostAppearance(UIViewController *source, NSInteger mode) {
+    Class cls = objc_getClass("_TtC6Apollo32SettingsAppearanceViewController");
+    if (!cls || !source.navigationController) return;
+    UIViewController *page = [(UIViewController *)[cls alloc] initWithNibName:nil bundle:nil];
+    objc_setAssociatedObject(page, kPostAppearanceModeKey, @(mode), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [page loadViewIfNeeded];
+    page.title = mode == 2 ? @"Compact Posts" : @"Large Posts";
+    InstallPostAppearancePreview(page);
+    [source.navigationController pushViewController:page animated:YES];
+}
+
 static BOOL IsMovedListIconsSection(id vc, UITableView *table, NSInteger section) {
     NSString *title = sAppearanceHeaderTitleOrig
         ? sAppearanceHeaderTitleOrig(vc, @selector(tableView:titleForHeaderInSection:), table, section) : nil;
@@ -138,26 +205,38 @@ static BOOL IsMovedListIconsSection(id vc, UITableView *table, NSInteger section
 }
 
 static NSString *AppearanceHeaderTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section)) return nil;
+    if (PostAppearanceMode(vc) && section == 0) return @"Preview";
+    if (PostAppearanceMode(vc) && [PostAppearanceRawTitle(vc, table, section) isEqualToString:@"Posts"])
+        return @"Shared Post Settings";
     if (IsMovedListIconsSection(vc, table, section)) return nil;
     return sAppearanceHeaderTitleOrig ? sAppearanceHeaderTitleOrig(vc, cmd, table, section) : nil;
 }
 static NSString *AppearanceFooterTitle(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section) || (PostAppearanceMode(vc) && section == 0)) return nil;
+    if (!PostAppearanceMode(vc) && PostAppearanceSectionMode(vc, table, section)) return nil;
     if (IsMovedListIconsSection(vc, table, section)) return nil;
     return sAppearanceFooterTitleOrig ? sAppearanceFooterTitleOrig(vc, cmd, table, section) : nil;
 }
 static CGFloat AppearanceHeaderHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section)) return CGFLOAT_MIN;
     if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
     return sAppearanceHeaderHeightOrig ? sAppearanceHeaderHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
 }
 static CGFloat AppearanceFooterHeight(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section) || (PostAppearanceMode(vc) && section == 0) ||
+        (!PostAppearanceMode(vc) && PostAppearanceSectionMode(vc, table, section))) return CGFLOAT_MIN;
     if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
     return sAppearanceFooterHeightOrig ? sAppearanceFooterHeightOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
 }
 static CGFloat AppearanceHeaderEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section)) return CGFLOAT_MIN;
     if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
     return sAppearanceHeaderEstimateOrig ? sAppearanceHeaderEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
 }
 static CGFloat AppearanceFooterEstimate(id vc, SEL cmd, UITableView *table, NSInteger section) {
+    if (PostAppearanceSectionHidden(vc, table, section) || (PostAppearanceMode(vc) && section == 0) ||
+        (!PostAppearanceMode(vc) && PostAppearanceSectionMode(vc, table, section))) return CGFLOAT_MIN;
     if (IsMovedListIconsSection(vc, table, section)) return CGFLOAT_MIN;
     return sAppearanceFooterEstimateOrig ? sAppearanceFooterEstimateOrig(vc, cmd, table, section) : UITableViewAutomaticDimension;
 }
@@ -221,11 +300,9 @@ static NSArray<ApolloAppearanceAppendedSwitchRow *> *AppendedSwitchRows(void) {
 // A section's native header title via the VC's REAL titleForHeader (not
 // replaced on this screen), trimmed; nil when absent.
 static NSString *NativeSectionTitle(id vc, UITableView *tv, NSInteger section) {
-    if (![vc respondsToSelector:@selector(tableView:titleForHeaderInSection:)]) return nil;
-    NSString *title = ((NSString *(*)(id, SEL, UITableView *, NSInteger))objc_msgSend)(
-        vc, @selector(tableView:titleForHeaderInSection:), tv, section);
-    return [title isKindOfClass:[NSString class]]
-        ? [title stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] : nil;
+    // Classification must use the native identity, even when a destination
+    // displays the Posts header as "Shared Post Settings".
+    return PostAppearanceRawTitle(vc, tv, section);
 }
 
 // The row appended to `section`, if any. Sections are classified by header
@@ -253,6 +330,7 @@ static ApolloAppearanceAppendedSwitchRow *AppendedRowAt(id vc, UITableView *tv, 
 }
 
 static BOOL IsSettingsIconThemeSection(id vc, UITableView *table, NSInteger section) {
+    if (PostAppearanceMode(vc)) return NO;
     NSString *title = NativeSectionTitle(vc, table, section);
     return title.length > 0 && [title caseInsensitiveCompare:@"Other"] == NSOrderedSame;
 }
@@ -263,7 +341,7 @@ static BOOL IsSettingsIconThemeRow(id vc, UITableView *table, NSIndexPath *ip) {
 }
 
 static BOOL IsInjectedAppearanceRow(id vc, UITableView *table, NSIndexPath *ip) {
-    return IsSettingsIconThemeRow(vc, table, ip) || AppendedRowAt(vc, table, ip) != nil;
+    return PostAppearanceOwnedRow(vc, table, ip) || IsSettingsIconThemeRow(vc, table, ip) || AppendedRowAt(vc, table, ip) != nil;
 }
 
 static NSString *SettingsIconAppearanceTitle(void) {
@@ -368,6 +446,130 @@ static UISwitch *FirstSwitchInView(UIView *view) {
         if (found) return found;
     }
     return nil;
+}
+
+@implementation ApolloPostAppearancePreviewCoordinator
+- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+- (void)scheduleRefresh {
+    if (![NSThread isMainThread]) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf scheduleRefresh]; });
+        return;
+    }
+    if (self.refreshScheduled || self.refreshing) return;
+    self.refreshScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    // Apollo updates its cached appearance state during the control action.
+    // Recreate the native nodes after that action and its notifications finish.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloPostAppearancePreviewCoordinator *strongSelf = weakSelf;
+        [strongSelf refresh];
+        strongSelf.refreshScheduled = NO;
+    });
+}
+- (void)refresh {
+    UITableView *table = self.table;
+    if (!self.controller || !table || self.refreshing) return;
+    // Keep this guard set through construction and layout. Native appearance
+    // reads can initialize defaults; their synchronous notifications must not
+    // recursively enqueue another rebuild of the same nodes.
+    self.refreshing = YES;
+    [self.preview refresh];
+    self.host.backdropColor = table.backgroundColor ?: ApolloThemePageBackgroundColor();
+    self.host.accentColor = ApolloThemeAccentColor();
+    [self updateHeight];
+    self.refreshing = NO;
+}
+- (void)scheduleHeightUpdate {
+    if (![NSThread isMainThread]) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf scheduleHeightUpdate]; });
+        return;
+    }
+    if (self.heightUpdateScheduled) return;
+    self.heightUpdateScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ApolloPostAppearancePreviewCoordinator *strongSelf = weakSelf;
+        [strongSelf updateHeight];
+        strongSelf.heightUpdateScheduled = NO;
+    });
+}
+- (void)updateHeight {
+    UITableView *table = self.table;
+    if (!table) return;
+    CGFloat width = self.host.measuredCardWidth;
+    if (width < 1) {
+        UIEdgeInsets insets = ApolloPinnedPreviewSectionContentInset(table);
+        width = MAX(1.0, CGRectGetWidth(table.bounds) - insets.left - insets.right);
+    }
+    CGFloat height = [self.preview heightForWidth:width];
+    if (!isfinite(height) || height < 1) return;
+    CGFloat oldHeight = self.height;
+    self.height = height;
+    if (fabs(height - oldHeight) > 0.5) {
+        // Keep the edited row in place when the card changes height. A full
+        // reload here would replace the switch under the user's finger.
+        CGPoint offset = table.contentOffset;
+        BOOL scrolled = offset.y + table.adjustedContentInset.top > 1;
+        [UIView performWithoutAnimation:^{
+            [table beginUpdates];
+            [table endUpdates];
+            [table layoutIfNeeded];
+            if (scrolled && oldHeight > 0) {
+                CGPoint adjustedOffset = offset;
+                adjustedOffset.y += height - oldHeight;
+                CGFloat min = -table.adjustedContentInset.top;
+                CGFloat max = MAX(min, table.contentSize.height - CGRectGetHeight(table.bounds) + table.adjustedContentInset.bottom);
+                adjustedOffset.y = MIN(MAX(adjustedOffset.y, min), max);
+                table.contentOffset = adjustedOffset;
+            }
+        }];
+    }
+    [table setNeedsLayout];
+}
+@end
+
+static void InstallPostAppearancePreview(UIViewController *controller) {
+    if (!PostAppearanceMode(controller) || objc_getAssociatedObject(controller, kPostAppearancePreviewKey)) return;
+    UITableView *table = ApolloSendObject(controller, @selector(tableView));
+    if (![table isKindOfClass:UITableView.class]) return;
+    ApolloPostAppearancePreviewCoordinator *coordinator = [ApolloPostAppearancePreviewCoordinator new];
+    coordinator.controller = controller;
+    coordinator.table = table;
+    coordinator.height = 320.0;
+    coordinator.preview = [ApolloPostAppearancePreview new];
+    coordinator.preview.compact = PostAppearanceMode(controller) == 2;
+    ApolloPinnedPreviewHost *host = [ApolloPinnedPreviewHost new];
+    coordinator.host = host;
+    host.contentView = coordinator.preview;
+    host.pinInHeader = YES;
+    NSString *key = coordinator.preview.compact ? @"ApolloRebornCompactPostPreviewPinned" : @"ApolloRebornLargePostPreviewPinned";
+    NSNumber *saved = [[NSUserDefaults standardUserDefaults] objectForKey:key];
+    host.pinned = saved ? saved.boolValue : YES;
+    __weak ApolloPostAppearancePreviewCoordinator *weakCoordinator = coordinator;
+    host.spacerIndexPath = ^NSIndexPath * { return [NSIndexPath indexPathForRow:0 inSection:0]; };
+    // A new width or an asynchronous image layout only needs measurement.
+    // Recreating nodes here would restart the same image/layout cycle.
+    host.cardWidthDidChange = ^(CGFloat width) { [weakCoordinator scheduleHeightUpdate]; };
+    coordinator.preview.heightDidChange = ^{ [weakCoordinator scheduleHeightUpdate]; };
+    host.pinDidChange = ^(BOOL pinned) {
+        [[NSUserDefaults standardUserDefaults] setBool:pinned forKey:key];
+        UITableView *table = weakCoordinator.table;
+        [table setNeedsLayout];
+        [UIView animateWithDuration:0.25 animations:^{ [table layoutIfNeeded]; }];
+    };
+    objc_setAssociatedObject(controller, kPostAppearancePreviewKey, coordinator, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    object_setClass(table, ApolloPinnedPreviewTableView.class);
+    ApolloPinnedPreviewAttachHost(table, host);
+    for (NSString *notification in @[NSUserDefaultsDidChangeNotification, UIContentSizeCategoryDidChangeNotification,
+        @"com.christianselig.PostCellAppearanceUpdated", @"com.christianselig.AppFontChanged",
+        @"com.christianselig.ApolloSpecificThemeChanged", ApolloFlairColorsChangedNotification]) {
+        [[NSNotificationCenter defaultCenter] addObserver:coordinator selector:@selector(scheduleRefresh)
+            name:notification object:nil];
+    }
+    [coordinator refresh];
+    ApolloLog(@"[PostAppearance] %@ live preview installed", coordinator.preview.compact ? @"compact" : @"large");
 }
 
 // Built once per (screen instance, row), re-themed from its donors and
@@ -565,6 +767,9 @@ extern "C" BOOL ApolloThemeOpenNativeCommentsThemeFromHub(UIViewController *hub)
 }
 
 static NSInteger Rows(id self, SEL _cmd, UITableView *tv, NSInteger section) {
+    if (PostAppearanceSectionHidden(self, tv, section)) return 0;
+    if ((PostAppearanceMode(self) && section == 0) ||
+        (!PostAppearanceMode(self) && PostAppearanceSectionMode(self, tv, section))) return 1;
     if (IsMovedListIconsSection(self, tv, section)) return 0;
     NSInteger n = sRowsOrig ? sRowsOrig(self, _cmd, tv, section) : 0;
     if (AppendedRowForSection(self, tv, section) || IsSettingsIconThemeSection(self, tv, section)) n += 1; // the appended row slot
@@ -640,6 +845,24 @@ static void RewriteThemesRowLabel(UITableViewCell *cell) {
 }
 
 static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearancePreviewRow(self, ip)) {
+        UITableViewCell *cell = [[ApolloPinnedPreviewSpacerCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        ApolloPinnedPreviewClearSpacerCell(cell);
+        objc_setAssociatedObject(cell, kInjectedAppearanceCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return cell;
+    }
+    if (PostAppearanceLinkRow(self, tv, ip)) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        cell.textLabel.text = PostAppearanceRawTitle(self, tv, ip.section);
+        cell.detailTextLabel.text = @"Customize with a live preview";
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.textLabel.textColor = ApolloSettingsPrimaryTextColor();
+        cell.detailTextLabel.textColor = ApolloThemeRuntimeColor(ApolloThemeTokenSecondaryLabel) ?: UIColor.secondaryLabelColor;
+        cell.backgroundColor = ApolloThemeCardBackgroundColor() ?: UIColor.secondarySystemGroupedBackgroundColor;
+        ApolloSettingsApplyCellTypography(cell);
+        objc_setAssociatedObject(cell, kInjectedAppearanceCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return cell;
+    }
     if (IsSettingsIconThemeRow(self, tv, ip)) return BuildSettingsIconThemeCell(self, tv, ip);
     ApolloAppearanceAppendedSwitchRow *appended = AppendedRowAt(self, tv, ip);
     if (appended) return BuildAppendedSwitchCell(self, tv, ip, appended);
@@ -654,6 +877,11 @@ static UITableViewCell *Cell(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip
 // intercepts the appended slot before calling the original — the original
 // would index Eureka's form model with an out-of-bounds row.
 static CGFloat Height(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearancePreviewRow(self, ip)) {
+        ApolloPostAppearancePreviewCoordinator *preview = objc_getAssociatedObject(self, kPostAppearancePreviewKey);
+        return preview ? preview.height : 320.0;
+    }
+    if (PostAppearanceLinkRow(self, tv, ip)) return MAX(60.0, ApolloSettingsFont(UIFontTextStyleBody, tv.traitCollection).lineHeight + ApolloSettingsFont(UIFontTextStyleCaption1, tv.traitCollection).lineHeight + 22.0);
     if (IsInjectedAppearanceRow(self, tv, ip)) {
         if (ip.row == 0 || !sHeightOrig) return UITableViewAutomaticDimension;
         return sHeightOrig(self, _cmd, tv, [NSIndexPath indexPathForRow:0 inSection:ip.section]);
@@ -661,6 +889,7 @@ static CGFloat Height(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
     return sHeightOrig ? sHeightOrig(self, _cmd, tv, ip) : UITableViewAutomaticDimension;
 }
 static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearanceOwnedRow(self, tv, ip)) return Height(self, _cmd, tv, ip);
     if (IsInjectedAppearanceRow(self, tv, ip)) {
         if (ip.row == 0 || !sEstHeightOrig) return 52.0;
         return sEstHeightOrig(self, _cmd, tv, [NSIndexPath indexPathForRow:0 inSection:ip.section]);
@@ -669,6 +898,11 @@ static CGFloat EstHeight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
 }
 
 static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearanceLinkRow(self, tv, ip)) {
+        [tv deselectRowAtIndexPath:ip animated:YES];
+        OpenPostAppearance(self, PostAppearanceSectionMode(self, tv, ip.section));
+        return;
+    }
     if (IsInjectedAppearanceRow(self, tv, ip)) { [tv deselectRowAtIndexPath:ip animated:YES]; return; }
     if (IsThemesRow(ip)) {
         [tv deselectRowAtIndexPath:ip animated:YES];
@@ -680,6 +914,7 @@ static void Select(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
 }
 
 static void WillDisplay(id self, SEL _cmd, UITableView *tv, UITableViewCell *cell, NSIndexPath *ip) {
+    if (PostAppearancePreviewRow(self, ip)) { ApolloPinnedPreviewClearSpacerCell(cell); return; }
     if (IsInjectedAppearanceRow(self, tv, ip)) return;
     if (sWillDisplayOrig) sWillDisplayOrig(self, _cmd, tv, cell, ip);
     if (IsThemesRow(ip)) RewriteThemesRowLabel(cell);
@@ -690,11 +925,13 @@ static void DidEndDisplaying(id self, SEL _cmd, UITableView *tv, UITableViewCell
     if (sDidEndDisplayingOrig) sDidEndDisplayingOrig(self, _cmd, tv, cell, ip);
 }
 static BOOL ShouldHighlight(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearanceLinkRow(self, tv, ip)) return YES;
     if (IsInjectedAppearanceRow(self, tv, ip)) return NO;   // each injected row owns its control
     if (IsThemesRow(ip)) return YES;
     return sShouldHighlightOrig ? sShouldHighlightOrig(self, _cmd, tv, ip) : YES;
 }
 static NSIndexPath *WillSelect(id self, SEL _cmd, UITableView *tv, NSIndexPath *ip) {
+    if (PostAppearanceLinkRow(self, tv, ip)) return ip;
     if (IsInjectedAppearanceRow(self, tv, ip)) return nil;
     if (IsThemesRow(ip)) return ip;
     if (!sWillSelectOrig) return ip;
@@ -881,6 +1118,20 @@ static UIImage *CustomPickerSwatch(void) {
             [accent setFill]; [tri fill];
         }];
 }
+
+%hook _TtC6Apollo32SettingsAppearanceViewController
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    if (PostAppearanceMode(self)) {
+        ((UIViewController *)self).title = PostAppearanceMode(self) == 2 ? @"Compact Posts" : @"Large Posts";
+        [objc_getAssociatedObject(self, kPostAppearancePreviewKey) scheduleRefresh];
+    }
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    %orig;
+    [objc_getAssociatedObject(self, kPostAppearancePreviewKey) scheduleRefresh];
+}
+%end
 
 %hook _TtC6Apollo27SettingsThemeViewController
 
