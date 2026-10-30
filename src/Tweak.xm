@@ -3749,7 +3749,8 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoLandscapeFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
-                                    UDKeySubredditSwitcherSheetEnabled: @YES,
+                                    // Modern with Liquid Glass, Classic in the standard build.
+                                    UDKeySubredditSwitcherSheetEnabled: @(IsLiquidGlass()),
                                     UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,

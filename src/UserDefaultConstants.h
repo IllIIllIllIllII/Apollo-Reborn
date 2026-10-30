@@ -368,7 +368,8 @@ static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
 // Subreddit quick-switcher (feed title tap, Posts tab long press): YES = the
-// tweak's Modern search sheet (default), NO = Apollo's classic inline popup.
+// tweak's Modern search sheet, NO = Apollo's Classic inline popup. Defaults to
+// Modern with Liquid Glass and Classic in the standard build.
 static NSString *const UDKeySubredditSwitcherSheetEnabled = @"SubredditSwitcherSheetEnabled";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →
