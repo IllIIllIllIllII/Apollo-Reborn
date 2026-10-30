@@ -189,6 +189,19 @@ void ApolloSettingsPresentPicker(UIViewController *presenter,
                                  NSInteger currentIndex,
                                  void (^apply)(NSInteger pickedIndex));
 
+// Same sheet, applying once before dismissal when the UIKit hook is available.
+// Otherwise uses the public action handler. Only for synchronous, in-place
+// updates; callbacks must not push or present another controller.
+void ApolloSettingsPresentLivePicker(UIViewController *presenter,
+                                     UIView *_Nullable sourceView,
+                                     NSString *_Nullable title,
+                                     NSArray<NSString *> *optionTitles,
+                                     NSInteger currentIndex,
+                                     void (^apply)(NSInteger pickedIndex));
+
+// Internal selection hook; unmarked actions are ignored.
+void ApolloSettingsApplyLivePickerAction(UIAlertAction *_Nullable action);
+
 // Cached 29pt adaptive icon. Nil traits uses current traits; unknown symbols draw a plain tile.
 UIImage *ApolloSettingsIconTileImage(NSString *symbolName,
                                      UIColor *_Nullable tileColor,

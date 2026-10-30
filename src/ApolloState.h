@@ -125,6 +125,10 @@ extern BOOL sUseProfileAvatarTabIcon;
 // Hide the visible main-tab labels while retaining/restoring the underlying
 // UITabBarItem titles. Opt-in; default OFF via registerDefaults.
 extern BOOL sHideTabBarTitles;
+// Inbox badge style and classic inactive tab icon tint (ApolloTabBarStyle.xm).
+extern BOOL sInboxBadgeShowUnreadCount;
+extern BOOL sInboxBadgeUseThemeAccent;
+extern BOOL sTintInactiveTabIcons;
 #ifdef __cplusplus
 extern "C" {
 #endif

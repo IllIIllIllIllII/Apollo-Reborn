@@ -2161,6 +2161,41 @@ typedef NS_ENUM(NSInteger, Tag) {
         return !(IsLiquidGlass() && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
     };
 
+    ApolloSettingsRow *inboxUnreadCount =
+        [ApolloSettingsRow switchRowWithID:@"interface.inboxUnreadCount"
+                                     title:@"Show Unread Count"
+                                      isOn:^BOOL { return sInboxBadgeShowUnreadCount; }
+                                  onToggle:^(UISwitch *sender) {
+            sInboxBadgeShowUnreadCount = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyInboxBadgeShowUnreadCount];
+            [NSNotificationCenter.defaultCenter postNotificationName:ApolloInboxBadgeChangedNotification object:nil];
+        }];
+
+    ApolloSettingsRow *inboxBadgeColor =
+        [ApolloSettingsRow valueRowWithID:@"interface.inboxBadgeColor"
+                                    title:@"Unread Badge Color"
+                                   detail:^NSString * { return sInboxBadgeUseThemeAccent ? @"Theme Accent" : @"Red"; }
+                                 onSelect:^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+            // Live picker: the badge recolours as the sheet starts dismissing.
+            ApolloSettingsPresentLivePicker(self, [self cellForRowID:@"interface.inboxBadgeColor"],
+                                            @"Unread Badge Color", @[ @"Red", @"Theme Accent" ],
+                                            sInboxBadgeUseThemeAccent ? 1 : 0, ^(NSInteger pickedIndex) {
+                sInboxBadgeUseThemeAccent = pickedIndex == 1;
+                [NSUserDefaults.standardUserDefaults setBool:sInboxBadgeUseThemeAccent forKey:UDKeyInboxBadgeUseThemeAccent];
+                [NSNotificationCenter.defaultCenter postNotificationName:ApolloInboxBadgeChangedNotification object:nil];
+                // Update the visible detail in place; a row reload during the
+                // sheet's dismissal would animate under it.
+                UITableViewCell *cell = [weakSelf cellForRowID:@"interface.inboxBadgeColor"];
+                cell.detailTextLabel.text = sInboxBadgeUseThemeAccent ? @"Theme Accent" : @"Red";
+                [cell setNeedsLayout];
+            });
+        }];
+    inboxBadgeColor.configure = ^(UITableViewCell *cell) {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    };
+
     // Icon-Only already hides every tab label. Hide the narrower profile-only
     // option while it is active, then reinsert it with its remembered value.
     ApolloSettingsRow *hideUsernameTab =
@@ -2288,7 +2323,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
-                                              rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
+                                              rows:@[ profileTabAvatar, iconOnlyTabBar, inboxUnreadCount, inboxBadgeColor, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom, tabBarSwipeNavigation,
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{

@@ -11,6 +11,8 @@
 #import "ApolloThemeShareImage.h"
 #import "ApolloThemeQRScanViewController.h"
 #import "ApolloCommon.h"
+#import "ApolloState.h"
+#import "ApolloTabBarStyle.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <PhotosUI/PhotosUI.h>
 #import <LinkPresentation/LinkPresentation.h>
@@ -366,6 +368,8 @@ typedef void (^ApolloThemeFontSelectionHandler)(ApolloThemeFont font);
 //              5 Generate | 6 Preview | 7 Share | 8 Apply | 9 Delete
 //              5 Generate | 6 Preview | 7 Apply | 8 Delete
 enum { HSCurrent, HSCreate, HSBrowse, HSMyThemes, HSImported, HSOptions, HSCount };
+// Options rows. The tab icon tint row exists only on the classic tab bar.
+enum { HSOptionsLightDark, HSOptionsCommentsTheme, HSOptionsTabIconTint };
 enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, ESShare, ESApply, ESDelete, ESCount };
 
 @implementation ApolloThemeManagerViewController
@@ -874,7 +878,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         case HSBrowse:   return 2;
         case HSMyThemes: return MAX((NSInteger)[self myThemes].count, 1);
         case HSImported: return (NSInteger)[self importedThemes].count; // section exists only with content
-        case HSOptions:  return 2;
+        case HSOptions:  return ApolloTabBarIconTintAvailable() ? 3 : 2;
     }
     return 0;
 }
@@ -1086,7 +1090,17 @@ static NSString *SpacedThemeName(NSString *raw) {
     }
     if (ip.section == HSOptions) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:nil];
-        if (ip.row == 0) {
+        if (ip.row == HSOptionsTabIconTint) {
+            cell.textLabel.text = @"Tint Tab Bar Icons";
+            cell.imageView.image = [UIImage systemImageNamed:@"paintbrush"];
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = sTintInactiveTabIcons;
+            [sw addTarget:self action:@selector(tintTabBarIconsSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        if (ip.row == HSOptionsLightDark) {
             cell.textLabel.text = @"Light/Dark Mode";
             cell.imageView.image = [UIImage systemImageNamed:@"circle.lefthalf.filled"];
         } else {
@@ -1396,11 +1410,16 @@ static NSString *SpacedThemeName(NSString *raw) {
         return;
     }
     if (ip.section == HSOptions) {
-        BOOL ok = (ip.row == 0) ? ApolloThemeOpenNativeLightDarkFromHub(self)
+        if (ip.row == HSOptionsTabIconTint) return;
+        BOOL ok = (ip.row == HSOptionsLightDark) ? ApolloThemeOpenNativeLightDarkFromHub(self)
                                 : ApolloThemeOpenNativeCommentsThemeFromHub(self);
         if (!ok) [self showError:@"Apollo's settings aren't available from here. Go back and reopen Appearance."];
         return;
     }
+}
+
+- (void)tintTabBarIconsSwitchChanged:(UISwitch *)sw {
+    ApolloTabBarIconTintSetEnabled(sw.isOn);
 }
 
 - (void)tableView:(UITableView *)tv accessoryButtonTappedForRowWithIndexPath:(NSIndexPath *)ip {

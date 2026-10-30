@@ -35,8 +35,10 @@ void ApolloPaneSidebarTabBadgeDidChange(UITabBarItem *item) {
         // Read AFTER Apollo/Chat's existing setter hooks finish. That preserves
         // their combined unread count, threshold labels and clear-on-read logic.
         // A zero means no unread messages, so it shouldn't leave a badge pill.
+        // An empty value is the tab bar's unread dot (Inbox dot mode).
         NSString *value = item.badgeValue;
-        if (value.length == 0 || [value isEqualToString:@"0"]) value = nil;
+        if (!value || [value isEqualToString:@"0"]) value = nil;
+        else if (value.length == 0) value = @"•";
         if (tab.badgeValue == value || [tab.badgeValue isEqualToString:value]) return;
         objc_setAssociatedObject(item, &kApplyingSidebarBadge, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         tab.badgeValue = value;

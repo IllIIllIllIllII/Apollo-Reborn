@@ -26,6 +26,8 @@
 #import "ApolloUserProfileCache.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloSubredditCustomIconCache.h"
+#import "ApolloTabBarStyle.h"
+#import "UserDefaultConstants.h"
 #import "ApolloWebJSON.h"
 #import "ApolloWebSessionStore.h"
 #import <UIKit/UIKit.h>
@@ -152,6 +154,13 @@ static NSString *ApolloCombinedInboxBadgeValue(NSString *nativeValue) {
     return [NSString stringWithFormat:@"%ld", (long)chatCount];
 }
 
+// Icon-Only Tab Bar clears item titles and keeps the real one as the
+// accessibility label (ApolloTabBarTitles.xm), so check both.
+static BOOL ApolloTabBarItemIsInbox(UITabBarItem *item) {
+    NSString *name = item.title.length ? item.title : item.accessibilityLabel;
+    return name.length > 0 && [name caseInsensitiveCompare:@"Inbox"] == NSOrderedSame;
+}
+
 // The Inbox tab bar item is normally captured when Apollo touches its badge
 // or the user visits the Inbox — neither is guaranteed by launch. A chat-only
 // unread (background poller, no native unreads, Inbox never opened) must
@@ -164,8 +173,7 @@ static void ApolloEnsureInboxTabBarItemCaptured(void) {
         UIViewController *root = window.rootViewController;
         if (![root isKindOfClass:[UITabBarController class]]) continue;
         for (UITabBarItem *item in ((UITabBarController *)root).tabBar.items) {
-            if (item.title.length == 0 ||
-                [item.title caseInsensitiveCompare:@"Inbox"] != NSOrderedSame) continue;
+            if (!ApolloTabBarItemIsInbox(item)) continue;
             sApolloInboxTabBarItem = item;
             if (![objc_getAssociatedObject(item, &kApolloInboxBadgeInitializedKey) boolValue]) {
                 objc_setAssociatedObject(item, &kApolloInboxNativeBadgeValueKey,
@@ -190,7 +198,7 @@ static void ApolloApplyCombinedInboxBadge(void) {
     NSString *nativeValue = objc_getAssociatedObject(item, &kApolloInboxNativeBadgeValueKey);
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    item.badgeValue = ApolloCombinedInboxBadgeValue(nativeValue);
+    item.badgeValue = ApolloInboxBadgeDisplayValue(ApolloCombinedInboxBadgeValue(nativeValue));
     objc_setAssociatedObject(item, &kApolloInboxApplyingCombinedBadgeKey,
                              nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2923,8 +2931,7 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
         return;
     }
 
-    BOOL titleIdentifiesInbox = self.title.length > 0 &&
-        [self.title caseInsensitiveCompare:@"Inbox"] == NSOrderedSame;
+    BOOL titleIdentifiesInbox = ApolloTabBarItemIsInbox(self);
     if (titleIdentifiesInbox && self != sApolloInboxTabBarItem) {
         sApolloInboxTabBarItem = self;
         objc_setAssociatedObject(self, &kApolloInboxBadgeInitializedKey,
@@ -2943,7 +2950,7 @@ static void ApolloInboxCellApplyAvatar(id cellNode) {
     ChatsFilterLog("Inbox badge native=%{public}@ chat=%ld combined=%{public}@",
                    badgeValue ?: @"none", (long)ApolloModernChatUnreadBadgeCount(),
                    combinedValue ?: @"none");
-    %orig(combinedValue);
+    %orig(ApolloInboxBadgeDisplayValue(combinedValue));
 }
 
 %end
@@ -3234,6 +3241,14 @@ static BOOL ApolloInboxShouldNoteMessageJSONForClass(Class modelClass) {
 %ctor {
     sApolloModernChatBadgeObserver = [[NSNotificationCenter defaultCenter]
         addObserverForName:ApolloModernChatStatusDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        ApolloApplyCombinedInboxBadge();
+    }];
+    // Inbox badge style changed (setting or theme accent): re-display.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:ApolloInboxBadgeChangedNotification
                     object:nil
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(__unused NSNotification *notification) {
