@@ -8,8 +8,11 @@ extern "C" {
 extern const unsigned char ApolloSubredditDefaultIconPNG[];
 extern const unsigned int ApolloSubredditDefaultIconPNG_len;
 
-extern const unsigned char ApolloSubredditDefaultBannerJPG[];
-extern const unsigned int ApolloSubredditDefaultBannerJPG_len;
+extern const unsigned char ApolloSubredditDefaultBannerBasePNG[];
+extern const unsigned int ApolloSubredditDefaultBannerBasePNG_len;
+
+extern const unsigned char ApolloSubredditDefaultBannerTintPNG[];
+extern const unsigned int ApolloSubredditDefaultBannerTintPNG_len;
 
 #ifdef __cplusplus
 }

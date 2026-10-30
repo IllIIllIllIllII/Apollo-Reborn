@@ -121,6 +121,8 @@ static CGFloat ApolloSubredditLocalWidth(UIView *view) {
 
 @interface ApolloSubredditHeaderView : UIView
 @property(nonatomic, strong) UIImageView *bannerImageView;
+// Accent and display scale the default art was drawn for; nil for real banners.
+@property(nonatomic, copy) NSString *defaultBannerKey;
 @property(nonatomic, strong) UIImageView *iconImageView;
 @property(nonatomic, strong) UILabel *displayNameLabel;
 @property(nonatomic, strong) UILabel *nameLabel;
@@ -340,6 +342,8 @@ static void ApolloSubredditTearDownHeader(UIViewController *viewController, BOOL
 static void ApolloSubredditScheduleRepairPass(UIViewController *viewController, NSString *reason);
 static void ApolloSubredditScheduleInstallIfNeeded(UIViewController *viewController);
 static void ApolloSubredditSyncAmbient(ApolloSubredditHeaderView *header);
+static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header);
+static NSString *ApolloSubredditDefaultBannerKey(UIView *view);
 static void ApolloSubredditInstallAmbient(UIViewController *viewController, UITableView *tableView,
                                           ApolloSubredditHeaderView *header, UIView *wrappedHeader);
 static UIColor *ApolloSubredditRemoveAmbient(UIViewController *viewController, UITableView *tableView);
@@ -1009,6 +1013,11 @@ static UIImage *ApolloSubredditSizedActionIcon(UIImage *image) {
     self.sidebarGlassView = [self apollo_applySecondaryActionAppearanceToButton:self.sidebarButton
                                                                       glassView:self.sidebarGlassView];
     _appliedAccent = resolvedAccent;
+    // The default art is drawn for one accent and display scale; redraw it when
+    // either changes (theme, light/dark, first time on screen).
+    if (self.defaultBannerKey && ![self.defaultBannerKey isEqualToString:ApolloSubredditDefaultBannerKey(self)]) {
+        ApolloSubredditApplyDefaultBanner(self);
+    }
 }
 
 - (void)apollo_applySubscriptionGlassWithAccent:(UIColor *)accent {
@@ -1891,19 +1900,71 @@ static UIImage *ApolloSubredditPlaceholderIcon(UITraitCollection *traitCollectio
     return traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? darkIcon : lightIcon;
 }
 
-// TODO: Modernization - cached once per process, so the image keeps the display
-// scale of the first header that asked; key the cache by scale if headers can
-// appear on displays with different scales.
-static UIImage *ApolloSubredditDefaultBanner(UITraitCollection *traitCollection) {
+// The default banner ships as two layers: an untinted base (the astronaut, the
+// rocket's body, white highlights) and a template on top drawn in the theme
+// accent (hills, arrows, the antenna ball, the rocket's nose and fins). They
+// are flattened into one image so everything that reads bannerImageView.image
+// (the immersive backdrop and its blur cache, the search bar's brightness
+// sample) sees what is on screen.
+static UIImage *ApolloSubredditDefaultBannerLayer(const unsigned char *bytes, unsigned int length) {
+    NSData *data = [NSData dataWithBytesNoCopy:(void *)bytes length:length freeWhenDone:NO];
+    return [UIImage imageWithData:data scale:1.0];
+}
+
+static NSString *ApolloSubredditColorKey(UIColor *color) {
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [color getRed:&r green:&g blue:&b alpha:&a];
+    return [NSString stringWithFormat:@"%02x%02x%02x%02x", (int)lround(r * 255), (int)lround(g * 255),
+            (int)lround(b * 255), (int)lround(a * 255)];
+}
+
+// The accent for the default art, resolved against the header's own traits.
+static UIColor *ApolloSubredditDefaultBannerAccent(UIView *view) {
+    UIColor *accent = ApolloThemeAccentColor() ?: view.tintColor;
+    return [accent resolvedColorWithTraitCollection:view.traitCollection];
+}
+
+static CGFloat ApolloSubredditDefaultBannerScale(UIView *view) {
+    CGFloat scale = view.traitCollection.displayScale;
+    return scale > 0 ? scale : 1.0;
+}
+
+// Identifies one render: the resolved accent plus the display scale.
+static NSString *ApolloSubredditDefaultBannerKey(UIView *view) {
+    return [NSString stringWithFormat:@"%@@%.0f", ApolloSubredditColorKey(ApolloSubredditDefaultBannerAccent(view)),
+            ApolloSubredditDefaultBannerScale(view)];
+}
+
+// Keeps only the latest render: every header on screen shares the theme.
+static UIImage *ApolloSubredditDefaultBanner(UIColor *accent, CGFloat scale, NSString *key) {
+    static UIImage *baseLayer = nil;
+    static UIImage *tintLayer = nil;
     static UIImage *cached = nil;
+    static NSString *cachedKey = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        NSData *data = [NSData dataWithBytesNoCopy:(void *)ApolloSubredditDefaultBannerJPG
-                                            length:ApolloSubredditDefaultBannerJPG_len
-                                      freeWhenDone:NO];
-        cached = [UIImage imageWithData:data scale:traitCollection.displayScale];
+        baseLayer = ApolloSubredditDefaultBannerLayer(ApolloSubredditDefaultBannerBasePNG,
+                                                      ApolloSubredditDefaultBannerBasePNG_len);
+        tintLayer = ApolloSubredditDefaultBannerLayer(ApolloSubredditDefaultBannerTintPNG,
+                                                      ApolloSubredditDefaultBannerTintPNG_len);
     });
-    return cached;
+    if (cached && [cachedKey isEqualToString:key]) return cached;
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    format.scale = scale;
+    format.opaque = NO;
+    // The layers' pixel size, in points at the display scale.
+    CGSize size = CGSizeMake(baseLayer.size.width / scale, baseLayer.size.height / scale);
+    CGRect rect = (CGRect){CGPointZero, size};
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size format:format];
+    UIImage *image = [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext *context) {
+        [baseLayer drawInRect:rect];
+        [[tintLayer imageWithTintColor:accent renderingMode:UIImageRenderingModeAlwaysOriginal] drawInRect:rect];
+    }];
+    cached = image;
+    cachedKey = key;
+    ApolloLog(@"[SubredditHeader] rendered default banner %@", key);
+    return image;
 }
 
 static UIColor *ApolloSubredditBannerBackgroundColor(UITraitCollection *traitCollection) {
@@ -1916,6 +1977,7 @@ static UIColor *ApolloSubredditBannerBackgroundColor(UITraitCollection *traitCol
 static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header) {
     if (!header) return;
     header.bannerImageView.image = nil;
+    header.defaultBannerKey = nil;
     header.bannerProvenanceKey = nil;
     header.pendingBannerURL = nil;
     header.bannerImageView.backgroundColor = ApolloSubredditBannerBackgroundColor(header.traitCollection);
@@ -1924,13 +1986,14 @@ static void ApolloSubredditApplyLoadingBanner(ApolloSubredditHeaderView *header)
 
 static void ApolloSubredditApplyDefaultBanner(ApolloSubredditHeaderView *header) {
     if (!header) return;
-    UIImage *defaultBanner = ApolloSubredditDefaultBanner(header.traitCollection);
-    header.bannerImageView.image = defaultBanner;
-    // The default banner is a shared singleton: a constant provenance key means
-    // every header showing it shares one blur cache entry, and no header can
-    // stamp it with a real subreddit's URL.
-    header.bannerProvenanceKey = [NSString stringWithFormat:@"subreddit-default:%@",
-                                  ApolloImmersiveBannerInstanceIdentity(defaultBanner)];
+    NSString *key = ApolloSubredditDefaultBannerKey(header);
+    header.bannerImageView.image = ApolloSubredditDefaultBanner(ApolloSubredditDefaultBannerAccent(header),
+                                                                ApolloSubredditDefaultBannerScale(header), key);
+    header.defaultBannerKey = key;
+    // Keyed by render: headers showing the same default share one blur cache
+    // entry, a theme change gets a fresh one, and no header can stamp it with a
+    // real subreddit's URL.
+    header.bannerProvenanceKey = [NSString stringWithFormat:@"subreddit-default:%@", key];
     header.bannerImageView.backgroundColor = [UIColor clearColor];
     ApolloSubredditSyncAmbient(header);
 }
@@ -1959,6 +2022,7 @@ static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *heade
     UIImage *customBanner = [customCache cachedBannerForSubreddit:subredditName];
     if (customBanner) {
         header.bannerImageView.image = customBanner;
+        header.defaultBannerKey = nil;
         // Instance identity, NOT the raw pointer — a recycled heap address
         // would alias a newly-selected custom image to the dead one's blur.
         header.bannerProvenanceKey = [NSString stringWithFormat:@"subreddit-custom:%@:%@",
@@ -1977,6 +2041,7 @@ static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *heade
         UIImage *banner = [imageCache cachedBannerImageForURL:info.bannerURL];
         if (banner) {
             header.bannerImageView.image = banner;
+            header.defaultBannerKey = nil;
             header.bannerProvenanceKey = info.bannerURL.absoluteString;
             header.pendingBannerURL = nil;
             header.bannerImageView.backgroundColor = [UIColor clearColor];
@@ -2012,6 +2077,7 @@ static void ApolloSubredditApplyBannerForHeader(ApolloSubredditHeaderView *heade
             if ([[ApolloSubredditCustomBannerCache sharedCache] hasCustomBannerForSubreddit:subredditName]) return;
             if (image) {
                 strongHeader.bannerImageView.image = image;
+                strongHeader.defaultBannerKey = nil;
                 strongHeader.bannerProvenanceKey = bannerURL.absoluteString;
                 strongHeader.pendingBannerURL = nil;
                 strongHeader.bannerImageView.backgroundColor = [UIColor clearColor];
@@ -2123,7 +2189,12 @@ void ApolloSubredditHeaderPreviewContentConfigure(UIView *contentView,
     header.userCanSetFlair = YES;
     [header applyInfo:info fallbackSubredditName:fallbackSubredditName];
     header.iconImageView.image = iconImage ?: ApolloSubredditPlaceholderIcon(header.traitCollection);
-    header.bannerImageView.image = bannerImage ?: ApolloSubredditDefaultBanner(header.traitCollection);
+    if (bannerImage) {
+        header.bannerImageView.image = bannerImage;
+        header.defaultBannerKey = nil;
+    } else {
+        ApolloSubredditApplyDefaultBanner(header);
+    }
     [header apollo_applySubscriptionState:YES known:YES];
 }
 
