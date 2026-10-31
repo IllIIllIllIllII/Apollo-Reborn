@@ -57,6 +57,27 @@ BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat 
 CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation);
 void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
 void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated);
+/// The thread the last close (the button, a Back, the drag) took from beside
+/// the Posts feed `nav`, while it can still come back: the feed page it was
+/// closed from is on top, no thread is open, the split still pairs columns and
+/// nothing has forgotten it (another thread, a feed change, a memory warning,
+/// a long stay in the background). Restore reopens it beside the feed, with
+/// any pages pushed over it, through the normal open.
+BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav);
+BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav);
+/// The closed thread brought back with the finger, by the feed's forward
+/// swipe: the snapshot of its pane taken as it closed slides in from the
+/// screen's edge. Begin returns NO without a snapshot that fits (the swipe
+/// then restores on release). Update moves it by the drag's translation and
+/// returns NO once the drag was let go. Progress is the drag over the thread
+/// pane's width, signed like the translation. Finish brings the thread back
+/// or springs it out again, still remembered; Cancel removes the drag at once
+/// (with a nil navigation, whichever drag is active).
+BOOL ApolloDuoSplitInteractiveRestoreBegin(UINavigationController *nav);
+BOOL ApolloDuoSplitInteractiveRestoreUpdate(UINavigationController *nav, CGFloat translation);
+CGFloat ApolloDuoSplitInteractiveRestoreProgress(UINavigationController *nav, CGFloat translation);
+void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL commit, CGFloat velocity);
+void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL animated);
 BOOL ApolloDuoSplitShowSidebar(UINavigationController *navigation);
 /// The Posts split is moving a navigation between its columns. That takes the
 /// navigation out of the window and back in within one turn; its title keeps
