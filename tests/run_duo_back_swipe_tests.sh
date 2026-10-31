@@ -23,12 +23,7 @@ for signature in ['UINavigationController *ApolloDuoSplitDetailNavigation(',
                   'static CGFloat ApolloDuoSplitNativePanReleaseScale(',
                   'static CGFloat ApolloDuoSplitNativePanReleaseScaleForNavigation(',
                   'static void ApolloDuoSplitNativePanReleaseRun(',
-                  'static CGPoint ApolloDuoSplitReleaseTranslation(',
-                  'BOOL ApolloDuoSplitCanRevealSearchColumnWithSwipe(',
-                  'static BOOL ApolloDuoSearchColumnBesideSubreddit(',
-                  'BOOL ApolloDuoSplitCanHideSidebarWithSwipe(',
-                  'BOOL ApolloDuoSplitCanHideSearchColumnWithTap(',
-                  'BOOL ApolloDuoSplitIsPostsListNavigation(']:
+                  'static CGPoint ApolloDuoSplitReleaseTranslation(']:
     start = split.index(signature)
     policies.append(split[start:split.index('\n}', start) + 2])
 # The release window's thread-locals, ahead of the helpers that use them.
