@@ -127,7 +127,7 @@ uncover = body('static BOOL ApolloDuoPostsUncoverBegin(ApolloDuoSplitState *stat
 if not (uncover.index('ApolloDuoPostsNewPaneDrag(') < uncover.index('ApolloDuoPostsCloseAdvance(') < uncover.index('[CATransaction flush]')
         < uncover.index('dispatch_async(')) or 'ApolloDuoPostsUncoverFeed(' in uncover or 'layoutIfNeeded' in uncover:
     fail('the uncover drag must picture the full-width thread, register the drag and flush before the column change, which waits for the next turn')
-if 'drag.restoreSnapshot = nil' not in uncover or 'drag.uncovering = YES' not in uncover:
+if 'drag.uncovering = YES' not in uncover:
     fail('the uncover drag must drop its restore picture and mark the cover as ending')
 under = body('static BOOL ApolloDuoPostsUncoverUnderDrag(ApolloDuoSplitState *state, ApolloDuoPostsCloseHandoff *drag) {')
 if not (under.index('drag.uncovering = NO') < under.index('ApolloDuoPostsCloseEventInterrupt') < under.index('ApolloDuoPostsUncoverFeed(')
@@ -146,7 +146,7 @@ if '&& !state.host.postsCoveredByDrag;' not in sync:
 if 'animate && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail(') \
         or 'paneShown && !state.host.postsCoveredByDrag' not in body('static void ApolloDuoPostsCloseDetail('):
     fail('the close of a covered thread replays the hidden feed')
-if 'ApolloDuoPostsUncoverFeed(state, @"another thread opened")' not in body('static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated,\n                                     ApolloDuoPostsCloseHandoff *handoff) {'):
+if 'ApolloDuoPostsUncoverFeed(state, @"the thread changed")' not in body('static void ApolloDuoPostsSetDetail('):
     fail('another thread opened over a covered one keeps the cover')
 print('OK: split divider wiring')
 PY

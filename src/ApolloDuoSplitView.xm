@@ -32,9 +32,9 @@
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view);
 static void ApolloDuoPostsStopGeometry(UIView *feed);
-@class ApolloDuoSplitHost;
 static void ApolloDuoPostsCancelActiveInteractiveClose(void);
-static void ApolloDuoPostsCancelInteractiveCloseForHost(ApolloDuoSplitHost *host);
+@class ApolloDuoSplitHost;
+@class ApolloDuoSplitHost;
 static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
 
@@ -44,10 +44,6 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
 
 static NSHashTable<id<ApolloDuoLayoutControl>> *sDuoLayoutControls;
 static BOOL sDuoFeedLayoutChanging;
-@class ApolloDuoSplitHost;
-// The one host whose list follows a finger, so the interruptions that cancel
-// a thread close (a fold, a tab switch, a sheet, resigning) can let it go too.
-static __weak ApolloDuoSplitHost *sDuoListDragHost;
 
 static void ApolloDuoRegisterLayoutControl(id<ApolloDuoLayoutControl> control) {
     if (!sDuoLayoutControls) sDuoLayoutControls = [NSHashTable weakObjectsHashTable];
@@ -240,81 +236,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
-// The subreddit drawer's width in a host that wide.
-static CGFloat ApolloDuoListDrawerWidth(CGFloat hostWidth) {
-    return MIN(360, hostWidth - 96);
-}
-
-// The interactive drawer's pure pieces: where the finger puts the subreddit
-// list and when a release shows it. Free of UIKit; tested as shipped
-// (tests/run_duo_interactive_drawer_tests.sh). The rest of the slide runs on
-// ApolloDuoSlideDrawer's spring with the finger's velocity.
-// The drawer parks its width plus a 12pt gap off the leading edge.
-static CGFloat ApolloDuoListDragTravel(CGFloat drawerWidth) {
-    return MAX(drawerWidth, 0.0) + 12.0;
-}
-static CGFloat ApolloDuoListDragOffset(CGFloat translation, CGFloat travel) {
-    return MIN(MAX(translation, 0.0), MAX(travel, 0.0));
-}
-static CGFloat ApolloDuoListDragProgress(CGFloat translation, CGFloat travel) {
-    return travel > 0.0 ? ApolloDuoListDragOffset(translation, travel) / travel : 0.0;
-}
-static CGFloat ApolloDuoListDragTranslationX(CGFloat translation, CGFloat travel) {
-    return -travel + ApolloDuoListDragOffset(translation, travel);
-}
-// A drag starts from any drawer that is not shown, including one still
-// parking after a hide (it is taken over where it is); a second drag never
-// replaces the first.
-static BOOL ApolloDuoListDragBegins(BOOL listVisible, BOOL tracking) {
-    return !listVisible && !tracking;
-}
-// How much of the drawer is shown when a drag takes it over: none when it is
-// hidden, else what its slide (the presentation transform) has brought in.
-// The finger's drag is added to this, so progress follows what it moves.
-static CGFloat ApolloDuoListDragBase(CGFloat presentationTx, CGFloat travel, BOOL containerHidden) {
-    return containerHidden ? 0.0 : MIN(MAX(travel + presentationTx, 0.0), MAX(travel, 0.0));
-}
-// A reveal ends shown only by committing; a hide ends hidden only by
-// committing and springs back shown otherwise. With no drag in hand, a
-// release is neither a Back nor a hide.
-static BOOL ApolloDuoListDragEndsVisible(BOOL tracking, BOOL hiding, BOOL commit) {
-    return tracking && (hiding ? !commit : commit);
-}
-// The interactive hide: a leftward drag, measured against the same travel the
-// reveal uses (the finger moves that much), committing by the reveal's rule
-// mirrored (ApolloDuoBackShouldCommit): a third of the travel, or a leftward
-// flick past 5% of it, and never when released rightward faster than 500.
-// A list still springing in when the finger takes it shows less than the
-// travel: progress is the share of what was shown that has been closed.
-static CGFloat ApolloDuoListHideProgress(CGFloat translation, CGFloat travel, CGFloat base) {
-    CGFloat shown = MIN(MAX(base, 0.0), MAX(travel, 0.0));
-    if (shown <= 0.0) return 1.0;
-    return MIN(MAX(-translation, 0.0), shown) / shown;
-}
-static BOOL ApolloDuoListHideCommits(CGFloat progress, CGFloat leftwardVelocity) {
-    return leftwardVelocity > -500.0 && (progress >= 0.35 || (leftwardVelocity >= 500.0 && progress >= 0.05));
-}
-// Only a shown, idle list, and a drag that heads left and not mostly up or down.
-static BOOL ApolloDuoListHideBegins(BOOL listVisible, BOOL tracking, CGFloat dx, CGFloat dy) {
-    return listVisible && !tracking && dx < 0.0 && fabs(dy) <= fabs(dx);
-}
-// The 28pt at the list's trailing edge, where a drag closes it before a row's does.
-static BOOL ApolloDuoListHideStripContains(CGFloat x, CGFloat width) {
-    return x >= width - 28.0;
-}
-// What the Reduce Motion fade's completion does. The container's alpha is
-// restored whatever happened to the fade (a later slide, a cancel, a fold may
-// have superseded it); only the final place and hiding belong to the newest.
-typedef struct {
-    BOOL restoreAlpha;
-    BOOL settle;
-} ApolloDuoListFadeEnd;
-static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
-    return (ApolloDuoListFadeEnd){.restoreAlpha = YES, .settle = !superseded};
-}
-// End of the interactive drawer's pure pieces.
-
-@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, UIGestureRecognizerDelegate, ApolloDuoLayoutControl>
+@interface ApolloDuoSplitHost : UIViewController <UISplitViewControllerDelegate, ApolloDuoLayoutControl>
 @property(nonatomic, strong) UISplitViewController *split;
 @property(nonatomic, strong) UINavigationController *subredditList;
 @property(nonatomic, weak) UINavigationController *postsNavigation;
@@ -331,34 +253,11 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 @property(nonatomic) BOOL postsShowingDetail;
 @property(nonatomic) BOOL postsSplitEnabled;
 @property(nonatomic) BOOL postsColumnsPaired;
-// The divider dragged past the left limit covers the feed: that thread full
-// width, the feed column hidden, for that thread alone. The split's mode
-// (postsSplitEnabled) and its setting are untouched and nothing is stored;
-// the cover ends when the thread goes, another takes its place, the columns
-// leave landscape, the setting goes off, the split button is pressed or
-// the divider is dragged back from the screen's edge (ApolloDuoPostsUncoverBegin).
 @property(nonatomic) BOOL postsCoveredByDrag;
 @property(nonatomic, weak) UIViewController *postsCoveredThread;
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
-// The subreddit list follows the finger (ApolloDuoSplitInteractiveDrawer*):
-// shown only to the transform, with listVisible still NO until it commits.
-@property(nonatomic) BOOL listDragging;
-// The drag closes the shown list (the scrim's or the trailing strip's pan) instead of pulling it in.
-@property(nonatomic) BOOL listDragHiding;
-@property(nonatomic, strong) UIPanGestureRecognizer *listHideScrimPan;
-@property(nonatomic, strong) UIPanGestureRecognizer *listHideEdgePan;
-- (BOOL)beginListHide;
-@property(nonatomic) CGFloat listDragTravel;
-// How much of the drawer was shown when the drag took it over.
-@property(nonatomic) CGFloat listDragBase;
-- (BOOL)beginListDrag;
-- (BOOL)updateListDrag:(CGFloat)translation;
-- (CGFloat)listDragProgress:(CGFloat)translation;
-- (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity;
-- (void)listHidePanned:(UIPanGestureRecognizer *)pan;
-- (void)cancelListDragNow;
 @property(nonatomic, strong) UIButton *splitButton;
 @property(nonatomic, strong) UIButton *feedLayoutButton;
 @property(nonatomic, strong) UIBarButtonItem *listBarItem;
@@ -412,8 +311,6 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     ]];
     [self.split didMoveToParentViewController:self];
     if (self.subredditList) {
-        // The Posts host: the divider between the feed and a thread moves
-        // with a press and drag when the adjustable split is on.
         ApolloDuoSplitDividerInstall(self.view);
         self.listDismiss = [UIControl new];
         self.listDismiss.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.12];
@@ -427,13 +324,6 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         self.listContainer = [UIView new];
         self.listContainer.hidden = YES;
         [self.view addSubview:self.listContainer];
-        // A leftward drag on the dimmed feed beside the open list, or in a
-        // strip at the list's trailing edge, closes it with the finger. A tap
-        // on the scrim still hides at once; a drag cancels that tap.
-        self.listHideScrimPan = [self newListHidePan];
-        [self.listDismiss addGestureRecognizer:self.listHideScrimPan];
-        self.listHideEdgePan = [self newListHidePan];
-        [self.listContainer addGestureRecognizer:self.listHideEdgePan];
         self.listGlass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.listContainer addSubview:self.listGlass];
         // The drawer's leading corners sit 12pt inside the display's rounded
@@ -568,7 +458,6 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
 }
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
-    ApolloDuoPostsCancelInteractiveCloseForHost(self);
     self.pendingFeedControlsReveal = NO;
     if (self.subredditList) {
         for (UIButton *button in @[self.listButton, self.splitButton, self.feedLayoutButton]) {
@@ -582,7 +471,6 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    ApolloDuoPostsCancelInteractiveCloseForHost(self);
     ApolloDuoPostsStopGeometry(self.searchNavigation.viewIfLoaded);
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
@@ -611,8 +499,7 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
     // Re-vend only on an explicit style change, never on scroll/layout.
     if (refreshRows) [ApolloDuoSplitFindTable(self.subredditList.view) reloadData];
-    // A drawer being pulled in is prepared as a shown one: material cleared first.
-    if (self.listUsesGlass && (self.listVisible || self.listDragging))
+    if (self.listUsesGlass && self.listVisible)
         ApolloDuoSplitPrepareOverlaySurface(self.subredditList.view);
 }
 - (void)restoreListSurfaceColors {
@@ -724,109 +611,37 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
     }
     ApolloLog(@"[DuoSplit] revealing %lu restored feed controls", (unsigned long)buttons.count);
 }
-- (UIPanGestureRecognizer *)newListHidePan {
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(listHidePanned:)];
-    pan.maximumNumberOfTouches = 1;
-    pan.delegate = self;
-    pan.name = @"ApolloReborn.Duo.ListHide";
-    return pan;
-}
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
-    if (gesture != self.listHideScrimPan && gesture != self.listHideEdgePan) return YES;
-    if (!self.listVisible || self.listDragging) return NO;
-    if (gesture == self.listHideScrimPan) return YES;
-    return ApolloDuoListHideStripContains([touch locationInView:self.listContainer].x, CGRectGetWidth(self.listContainer.bounds));
-}
-- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
-    if (gesture != self.listHideScrimPan && gesture != self.listHideEdgePan) return YES;
-    // The motion since touch-down, or the velocity: a slow drag still begins.
-    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gesture;
-    CGPoint motion = [pan translationInView:nil], velocity = [pan velocityInView:nil];
-    return ApolloDuoListHideBegins(self.listVisible, self.listDragging, motion.x, motion.y)
-        || ApolloDuoListHideBegins(self.listVisible, self.listDragging, velocity.x, velocity.y);
-}
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
-        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    // Vertical scrolling never waits for the hide; once it begins it stops that scrolling.
-    return (gesture == self.listHideScrimPan || gesture == self.listHideEdgePan)
-        && [other.view isKindOfClass:UIScrollView.class] && other == ((UIScrollView *)other.view).panGestureRecognizer;
-}
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture
-        shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
-    // Inside the trailing strip the close takes priority over a row's own
-    // leftward drag (unsubscribe): that waits for this to fail.
-    BOOL scrollPan = [other.view isKindOfClass:UIScrollView.class] && other == ((UIScrollView *)other.view).panGestureRecognizer;
-    return gesture == self.listHideEdgePan && [other isKindOfClass:UIPanGestureRecognizer.class] && !scrollPan
-        && ![other.name hasPrefix:@"ApolloReborn.Duo."];
-}
-- (void)listHidePanned:(UIPanGestureRecognizer *)pan {
-    // Measured in the window: a tracked drag moves views under the finger.
-    CGFloat translation = [pan translationInView:nil].x;
-    BOOL ours = self.listDragging && self.listDragHiding;
-    switch (pan.state) {
-        case UIGestureRecognizerStateBegan: {
-            if (![self beginListHide]) {
-                pan.enabled = NO;
-                pan.enabled = YES;
-                return;
-            }
-            // Once it begins it is the hide: stop the list's scrolling.
-            UIPanGestureRecognizer *scrollPan = ApolloDuoSplitFindTable(self.subredditList.view).panGestureRecognizer;
-            scrollPan.enabled = NO;
-            scrollPan.enabled = YES;
-            return;
-        }
-        case UIGestureRecognizerStateChanged:
-            // A fold, a sheet, a resize or a takeover let the drag go: this pan is over.
-            if (!ours || ![self updateListDrag:translation]) {
-                pan.enabled = NO;
-                pan.enabled = YES;
-            }
-            return;
-        case UIGestureRecognizerStateEnded: {
-            if (!ours) return;
-            CGFloat velocity = [pan velocityInView:nil].x;
-            BOOL commit = ApolloDuoListHideCommits(ApolloDuoListHideProgress(translation, self.listDragTravel, self.listDragBase), -velocity);
-            ApolloLog(@"[DuoSwipe] subreddit list: %@ after the finger closed it; velocity=%.0f",
-                      commit ? @"hidden" : @"sprang back", velocity);
-            [self finishListDrag:commit velocity:velocity];
-            return;
-        }
-        default:
-            // Cancelled by the system: back to shown on the spring.
-            if (ours) [self finishListDrag:NO velocity:0];
-            return;
-    }
-}
 - (void)toggleList { [self setListVisible:!self.listVisible animated:YES]; }
-- (void)dismissList {
-    ApolloLog(@"[DuoSwipe] scrim tap: hide the list");
-    [self setListVisible:NO animated:YES];
+- (void)dismissList { [self setListVisible:NO animated:YES]; }
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
+    [self setListVisible:visible animated:animated velocity:0];
 }
-// Material must be cleared after UIKit installs its initial light-mode table
-// background, before exposing the drawer.
-- (void)prepareListReveal {
-    [self.subredditList.view layoutIfNeeded];
-    UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
-    // Reset before the first reveal frame, after the drawer's safe-area
-    // layout, so reopening always starts with the feed shortcuts.
-    [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
-                                       -table.adjustedContentInset.top) animated:NO];
-    [table layoutIfNeeded];
-    [self updateListAppearance];
-}
-// Settles the drawer from `start` to its shown or parked place on the
-// drawer's spring, carrying `velocity` (a released finger's, or 0), and fades
-// the dismiss layer with it. The drawer is hidden for good only if it ends parked.
-- (void)settleListVisible:(BOOL)visible from:(CGFloat)start velocity:(CGFloat)velocity animated:(BOOL)animated {
+- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
+    if (!self.subredditList) return;
+    if (!visible) [self endListEditing];
+    if (self.listVisible == visible) return;
+    [self.view layoutIfNeeded];
+    BOOL wasHidden = self.listContainer.hidden;
+    CGFloat start = wasHidden ? -self.listGlass.bounds.size.width - 12
+        : (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
+    self.listVisible = visible;
+    [self.view setNeedsLayout];
+    if (visible) {
+        // Material must be cleared after UIKit installs its initial light-mode
+        // table background, before exposing the drawer.
+        [self.subredditList.view layoutIfNeeded];
+        UITableView *table = ApolloDuoSplitFindTable(self.subredditList.view);
+        // Reset before the first reveal frame, after the drawer's safe-area
+        // layout, so reopening always starts with the feed shortcuts.
+        [table setContentOffset:CGPointMake(-table.adjustedContentInset.left,
+                                           -table.adjustedContentInset.top) animated:NO];
+        [table layoutIfNeeded];
+        [self updateListAppearance];
+    }
     self.listDismiss.hidden = NO;
     // The spring's tail is visually settled; let taps reach the feed then.
     self.listDismiss.userInteractionEnabled = visible;
     self.listContainer.hidden = NO;
-    self.listContainer.userInteractionEnabled = YES;
-    // A Reduce Motion fade may have been fading the container out.
-    [self.listContainer.layer removeAnimationForKey:@"opacity"];
-    self.listContainer.alpha = 1;
     NSUInteger generation = ++self.listAnimationGeneration;
     NSTimeInterval duration = animated && !UIAccessibilityIsReduceMotionEnabled() ? 0.25 : 0;
     [UIView animateWithDuration:duration delay:0 options:UIViewAnimationOptionCurveEaseOut
@@ -838,180 +653,6 @@ static ApolloDuoListFadeEnd ApolloDuoListFadeEndFor(BOOL superseded) {
         weakSelf.listContainer.hidden = !weakSelf.listVisible;
         weakSelf.listDismiss.hidden = !weakSelf.listVisible;
     });
-}
-- (void)setListVisible:(BOOL)visible animated:(BOOL)animated {
-    [self setListVisible:visible animated:animated velocity:0];
-}
-- (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
-    if (!self.subredditList) return;
-    if (!visible) [self endListEditing];
-    // A drag in hand ends here: the slide below starts from where it is.
-    BOOL dragging = self.listDragging;
-    self.listDragging = NO;
-    self.listDragHiding = NO;
-    if (dragging) sDuoListDragHost = nil;
-    if (self.listVisible == visible && !dragging) return;
-    [self.view layoutIfNeeded];
-    BOOL wasHidden = self.listContainer.hidden;
-    CGFloat start = wasHidden ? -self.listGlass.bounds.size.width - 12
-        : (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
-    self.listVisible = visible;
-    [self.view setNeedsLayout];
-    if (visible && !dragging) [self prepareListReveal];
-    [self settleListVisible:visible from:start velocity:velocity animated:animated];
-}
-// Pulls the hidden drawer in with the finger: transforms and alpha only from
-// here on. The drawer is prepared once, as a reveal would, before it moves.
-- (BOOL)beginListDrag {
-    if (!self.subredditList || !self.view.window
-        || !ApolloDuoListDragBegins(self.listVisible, self.listDragging)) return NO;
-    [self.view layoutIfNeeded];
-    CGFloat width = self.listGlass.bounds.size.width;
-    if (width <= 0.0) return NO;
-    // A hide still parking the drawer is taken over from its presentation.
-    BOOL hidden = self.listContainer.hidden;
-    CGFloat travel = ApolloDuoListDragTravel(width);
-    CGFloat presentationTx = (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
-    // Set first: the appearance prep treats a dragged drawer as a shown one.
-    self.listDragging = YES;
-    if (hidden) [self prepareListReveal];
-    self.listDragTravel = travel;
-    self.listDragBase = ApolloDuoListDragBase(presentationTx, travel, hidden);
-    sDuoListDragHost = self;
-    // A hide that finished earlier must not hide this drag when its turn comes.
-    ++self.listAnimationGeneration;
-    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    [self.listContainer.layer removeAnimationForKey:@"opacity"];
-    self.listContainer.alpha = 1;
-    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(self.listDragBase, travel), 0);
-    // The scrim's fade from the last settle must not run against the finger.
-    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
-    self.listDismiss.alpha = ApolloDuoListDragProgress(self.listDragBase, travel);
-    // The finger that pulls the list in is on the feed; a second one is not
-    // for a drawer that is not open yet.
-    self.listDismiss.userInteractionEnabled = NO;
-    self.listContainer.userInteractionEnabled = NO;
-    self.listDismiss.hidden = NO;
-    self.listContainer.hidden = NO;
-    ApolloLog(@"[DuoSplit] interactive drawer began; shown=%.0f of %.0f", self.listDragBase, travel);
-    return YES;
-}
-// Closes the shown list with the finger: transforms and alpha only, from
-// where its slide has got to. listVisible stays YES (so no Back or forward
-// swipe starts under it) until a commit.
-- (BOOL)beginListHide {
-    CGFloat width = self.listGlass.bounds.size.width;
-    if (!self.subredditList || !self.view.window || width <= 0.0 || self.listContainer.hidden
-        || !self.listVisible || self.listDragging) return NO;
-    CGFloat travel = ApolloDuoListDragTravel(width);
-    CGFloat presentationTx = (self.listContainer.layer.presentationLayer ?: self.listContainer.layer).transform.m41;
-    self.listDragging = YES;
-    self.listDragHiding = YES;
-    self.listDragTravel = travel;
-    self.listDragBase = ApolloDuoListDragBase(presentationTx, travel, NO);
-    sDuoListDragHost = self;
-    ++self.listAnimationGeneration;
-    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    [self.listContainer.layer removeAnimationForKey:@"opacity"];
-    self.listContainer.alpha = 1;
-    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(self.listDragBase, travel), 0);
-    // The scrim's fade from the last settle must not run against the finger.
-    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
-    self.listDismiss.alpha = ApolloDuoListDragProgress(self.listDragBase, travel);
-    ApolloLog(@"[DuoSwipe] subreddit list: the finger began closing it; shown=%.0f of %.0f", self.listDragBase, travel);
-    return YES;
-}
-- (CGFloat)listDragProgress:(CGFloat)translation {
-    // The same measure with or without a drag in hand, so one swipe commits
-    // at the same distance whether the list followed the finger or not.
-    // Before the drawer's first layout its glass is 0 wide: measure against
-    // the width layout gives it, not against the 12pt gap alone.
-    CGFloat width = self.listGlass.bounds.size.width;
-    if (width <= 0.0) width = ApolloDuoListDrawerWidth(self.view.bounds.size.width);
-    CGFloat travel = self.listDragging ? self.listDragTravel : ApolloDuoListDragTravel(width);
-    return ApolloDuoListDragProgress((self.listDragging ? self.listDragBase : 0.0) + translation, travel);
-}
-- (BOOL)updateListDrag:(CGFloat)translation {
-    if (!self.listDragging) return NO;
-    if (!self.view.window) {
-        [self cancelListDragNow];
-        return NO;
-    }
-    CGFloat shown = self.listDragBase + translation;
-    self.listContainer.transform = CGAffineTransformMakeTranslation(ApolloDuoListDragTranslationX(shown, self.listDragTravel), 0);
-    self.listDismiss.alpha = ApolloDuoListDragProgress(shown, self.listDragTravel);
-    return YES;
-}
-// Commits the rest of the slide, or slides the drawer back out, on the
-// drawer's spring from where the finger left it and at the finger's speed.
-// Reduce Motion tracked the finger, then fades instead of sliding.
-- (void)finishListDrag:(BOOL)commit velocity:(CGFloat)velocity {
-    if (!self.listDragging) return;
-    BOOL visible = ApolloDuoListDragEndsVisible(self.listDragging, self.listDragHiding, commit);
-    CGFloat start = self.listContainer.transform.tx;
-    if (!visible) [self endListEditing];
-    self.listDragging = NO;
-    self.listDragHiding = NO;
-    sDuoListDragHost = nil;
-    self.listVisible = visible;
-    [self.view setNeedsLayout];
-    if (!UIAccessibilityIsReduceMotionEnabled()) {
-        [self settleListVisible:visible from:start velocity:velocity animated:YES];
-        return;
-    }
-    // No slide: a shown list snaps to its place; a hidden one fades out
-    // where the finger left it. A fading scrim lets taps reach the feed, as
-    // the spring's tail does.
-    self.listDismiss.userInteractionEnabled = visible;
-    self.listContainer.userInteractionEnabled = YES;
-    NSUInteger generation = ++self.listAnimationGeneration;
-    if (visible) self.listContainer.transform = CGAffineTransformIdentity;
-    __weak typeof(self) weakSelf = self;
-    [UIView animateWithDuration:0.15 animations:^{
-        weakSelf.listDismiss.alpha = visible ? 1 : 0;
-        if (!visible) weakSelf.listContainer.alpha = 0;
-    } completion:^(__unused BOOL finished) {
-        ApolloDuoSplitHost *host = weakSelf;
-        if (!host) return;
-        ApolloDuoListFadeEnd end = ApolloDuoListFadeEndFor(host.listAnimationGeneration != generation);
-        if (end.restoreAlpha) host.listContainer.alpha = 1;
-        if (!end.settle) return;
-        host.listContainer.transform = CGAffineTransformMakeTranslation(visible ? 0 : -host.listGlass.bounds.size.width - 12, 0);
-        host.listContainer.hidden = !host.listVisible;
-        host.listDismiss.hidden = !host.listVisible;
-    }];
-}
-// An interruption: the drawer is parked, hidden and consistent at once.
-- (void)cancelListDragNow {
-    if (!self.listDragging) return;
-    BOOL hiding = self.listDragHiding;
-    self.listDragging = NO;
-    self.listDragHiding = NO;
-    sDuoListDragHost = nil;
-    ++self.listAnimationGeneration;
-    [self.listContainer.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    [self.listContainer.layer removeAnimationForKey:@"opacity"];
-    self.listContainer.alpha = 1;
-    if (hiding) {
-        // A hide the finger was closing goes back to fully shown, scrim and all.
-        self.listContainer.transform = CGAffineTransformIdentity;
-        self.listContainer.hidden = NO;
-        [self.listDismiss.layer removeAnimationForKey:@"opacity"];
-        self.listDismiss.alpha = 1;
-        self.listDismiss.hidden = NO;
-        self.listDismiss.userInteractionEnabled = YES;
-        self.listContainer.userInteractionEnabled = YES;
-        ApolloLog(@"[DuoSplit] interactive list hide removed; the list stays shown");
-        return;
-    }
-    self.listContainer.transform = CGAffineTransformMakeTranslation(-self.listGlass.bounds.size.width - 12, 0);
-    self.listContainer.hidden = YES;
-    [self.listDismiss.layer removeAnimationForKey:@"opacity"];
-    self.listDismiss.alpha = 0;
-    self.listDismiss.hidden = YES;
-    self.listDismiss.userInteractionEnabled = YES;
-    self.listContainer.userInteractionEnabled = YES;
-    ApolloLog(@"[DuoSplit] interactive drawer removed");
 }
 - (void)splitViewController:(UISplitViewController *)splitViewController willChangeToDisplayMode:(UISplitViewControllerDisplayMode)displayMode {
     if (!self.accountHeader) return;
@@ -1176,7 +817,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
     [super viewDidLayoutSubviews];
     [self scheduleSplitSafeAreaSync];
     if (self.subredditList) {
-        CGFloat width = ApolloDuoListDrawerWidth(self.view.bounds.size.width);
+        CGFloat width = MIN(360, self.view.bounds.size.width - 96);
         BOOL portrait = self.view.bounds.size.width <= self.view.bounds.size.height;
         CGFloat bottom = CGRectGetMaxY(self.view.bounds) - 12;
         if (portrait) {
@@ -1272,7 +913,6 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @end
 
 @class ApolloDuoPostsCloseHandoff;
-@class ApolloDuoPostsClosedThread;
 @interface ApolloDuoSplitState : NSObject
 @property(nonatomic, weak) UINavigationController *outer;
 @property(nonatomic, strong) UIViewController *root;
@@ -1298,13 +938,10 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
 @property(nonatomic) BOOL selectingAccountShortcut;
 @property(nonatomic) BOOL changing;
 @property(nonatomic) BOOL postsTogglingSplit;
-// A Posts thread close following the finger, set from the drag's start until
+// An adjustable-divider drag, set from the drag's start until
 // it hands over to the close, springs back or is interrupted. The column
 // sync and the split update leave the state alone while it is set.
 @property(nonatomic, strong) ApolloDuoPostsCloseHandoff *interactiveClose;
-// The thread the last close took from beside the feed, which a forward swipe
-// brings back (ApolloDuoSplitRestoreClosedThread) until something forgets it.
-@property(nonatomic, strong) ApolloDuoPostsClosedThread *closedThread;
 // UIKit's own tap on the column separator, kept off while the adjustable
 // split owns the divider (ApolloDuoPostsSyncSeparatorTap).
 @property(nonatomic, weak) UIGestureRecognizer *separatorTap;
@@ -1440,9 +1077,6 @@ static __thread CGFloat sDuoSplitGestureOffset;
 // navigationBarPanned:) completes a held release at half its view's width.
 // A split pane's view extends under the sidebar or the feed column, so scale
 // only that release's translation: half is then measured on the visible pane.
-static __thread void *sDuoSplitReleaseGesture;
-static __thread void *sDuoSplitReleaseView;
-static __thread CGFloat sDuoSplitReleaseScale = 1.0;
 
 static NSString *ApolloDuoSplitKind(UIViewController *root) {
     NSString *name = NSStringFromClass(root.class);
@@ -1542,44 +1176,20 @@ BOOL ApolloDuoSplitAllowsNavigationSwipe(UINavigationController *nav) {
 // it is a column change, and a native pop would show the backstop. Neither do
 // an empty detail's plain placeholder or Account's Overview beneath the
 // shared header, which only the split's own Back lays out.
-BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    NSArray<UIViewController *> *pages = nav.viewControllers;
-    if (pages.count < 2) return NO;
-    if (!state.split) return YES;
-    if (state.changing) return NO;
-    if (nav == state.feed) return !state.host.postsShowingDetail;
-    if (nav != state.secondary) return NO;
-    if (state.feed) return pages.count > 2;
-    UIViewController *below = pages[pages.count - 2];
-    BOOL placeholder = below.class == UIViewController.class;
-    BOOL overview = [state.kind isEqualToString:@"account"] && below == state.root;
-    return !placeholder && !overview;
-}
+
 
 // An unfolded split lays `nav` out: a pane, its outer host, a sidebar or the
 // drawer list. Folded or in portrait there is none.
-BOOL ApolloDuoSplitIsActive(UINavigationController *nav) {
-    return ApolloDuoSplitStateForNavigation(nav, NO).split != nil;
-}
+
 
 // Back in `nav` closes the Posts thread column: the thread pane right above
 // its backstop, which this file's popViewControllerAnimated: hook closes.
-BOOL ApolloDuoSplitBackClosesThread(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    return state.split && state.feed && !state.changing && nav == state.secondary
-        && nav.viewControllers.count == 2;
-}
+
 
 // A native pop has still left the Posts thread pane on its backstop. Apollo's
 // tab-bar pan and goBack call its Swift pop directly, so they never reach this
 // file's popViewControllerAnimated: hook and its column close.
-static BOOL ApolloDuoPostsPopReachedBackstop(ApolloDuoSplitState *state, UINavigationController *nav,
-                                             UIViewController *shown) {
-    return state.split && state.feed && !state.changing && nav == state.secondary
-        && state.host.postsShowingDetail && nav.viewControllers.count == 1
-        && shown == nav.viewControllers.firstObject;
-}
+
 
 BOOL ApolloDuoSplitCanRevealPostsListWithSwipe(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
@@ -1614,64 +1224,6 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
 static UIView *ApolloDuoSplitMediaSurface(ApolloDuoSplitState *state, UINavigationController *nav) {
     if (!state.split || (nav != state.feed && nav != state.secondary && nav != state.primary)) return nil;
     return state.outer.viewIfLoaded;
-}
-
-// How much wider a pane's navigation view is than the visible pane, or 1
-// when it is not, or either width is missing.
-static CGFloat ApolloDuoSplitNativePanReleaseScale(CGFloat viewWidth, CGFloat paneWidth) {
-    if (!(viewWidth > 0.0) || !(paneWidth > 0.0) || paneWidth >= viewWidth) return 1.0;
-    return viewWidth / paneWidth;
-}
-
-// The scale for the translation Apollo reads on releasing one of its own
-// navigation pans (edge Back, edge Forward, navigation bar) in a visible pane,
-// else 1. Dragging stays unscaled, so the page keeps tracking the finger.
-// The pane is the one the Duo pane Back measures: it excludes the sidebar or
-// feed column and keeps the trailing rail.
-static CGFloat ApolloDuoSplitNativePanReleaseScaleForNavigation(UINavigationController *nav, UIPanGestureRecognizer *gesture) {
-    if (!gesture || (gesture.state != UIGestureRecognizerStateEnded && gesture.state != UIGestureRecognizerStateCancelled)) return 1.0;
-    static const char *const names[] = {"leftScreenEdgePanGestureRecognizer", "rightScreenEdgePanGestureRecognizer",
-                                        "navigationBarPanGestureRecognizer"};
-    BOOL apolloPan = NO;
-    for (size_t index = 0; index < sizeof(names) / sizeof(names[0]); index++) {
-        Ivar ivar = class_getInstanceVariable(nav.class, names[index]);
-        if (ivar && object_getIvar(nav, ivar) == gesture) apolloPan = YES;
-    }
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (!apolloPan || !state.split || state.changing || ApolloDuoSplitIsResizing()
-        || (nav != state.secondary && nav != state.feed)) return 1.0;
-    CGRect pane = ApolloDuoSplitContentFrame(nav, nav.view);
-    return ApolloDuoSplitNativePanReleaseScale(CGRectGetWidth(nav.view.bounds), CGRectIsNull(pane) ? 0.0 : CGRectGetWidth(pane));
-}
-
-// Runs Apollo's pan handler with its release translation scaled for `nav`.
-// Apollo then takes its own finish or cancel branch, with its own bookkeeping.
-// The previous window is restored afterwards, so a nested release is safe.
-static void ApolloDuoSplitNativePanReleaseRun(UINavigationController *nav, UIPanGestureRecognizer *gesture, void (^handler)(void)) {
-    CGFloat scale = ApolloDuoSplitNativePanReleaseScaleForNavigation(nav, gesture);
-    if (scale == 1.0) {
-        handler();
-        return;
-    }
-    void *previousGesture = sDuoSplitReleaseGesture;
-    void *previousView = sDuoSplitReleaseView;
-    CGFloat previousScale = sDuoSplitReleaseScale;
-    sDuoSplitReleaseGesture = (__bridge void *)gesture;
-    sDuoSplitReleaseView = (__bridge void *)nav.view;
-    sDuoSplitReleaseScale = scale;
-    handler();
-    sDuoSplitReleaseGesture = previousGesture;
-    sDuoSplitReleaseView = previousView;
-    sDuoSplitReleaseScale = previousScale;
-}
-
-// The translation `gesture` reports in `view`: scaled only for the pan and
-// view of the release that is running.
-static CGPoint ApolloDuoSplitReleaseTranslation(UIPanGestureRecognizer *gesture, UIView *view, CGPoint translation) {
-    if ((__bridge void *)gesture == sDuoSplitReleaseGesture && (__bridge void *)view == sDuoSplitReleaseView) {
-        translation.x *= sDuoSplitReleaseScale;
-    }
-    return translation;
 }
 
 BOOL ApolloDuoSplitIsAccountFeedController(UIViewController *controller) {
@@ -1857,7 +1409,7 @@ static void ApolloDuoSplitObserveHinge(UITabBarController *tabs) {
             if (previous == status) return;
             objc_setAssociatedObject(owner, &kDuoSplitHingeStatus, @(status), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             ApolloLog(@"[DuoSplit] hinge status %ld -> %ld; re-checking the division region", (long)previous, (long)status);
-            // The columns may move under a thread close following the finger.
+            // The columns may move under an adjustable-divider drag.
             ApolloDuoPostsCancelActiveInteractiveClose();
             // Defer containment work out of UIKit's interaction delivery. The
             // normal update also prepares the tabs that are not selected.
@@ -1952,114 +1504,6 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
     return kept;
 }
 
-// The closed thread's memory: its pure pieces. A close of the thread column
-// (the button, a Back, the drag) remembers the thread for a forward swipe, as
-// Apollo keeps a page popped on a regular iPhone. Apollo forgets that page
-// when a new one is pushed or memory runs low; the split forgets the thread on
-// the same occasions, and whenever it could no longer come back where it was.
-typedef NS_ENUM(NSInteger, ApolloDuoClosedThreadEvent) {
-    ApolloDuoClosedThreadEventCheck,          // nothing happened; the facts alone decide
-    ApolloDuoClosedThreadEventThreadOpened,   // another thread is opening beside the feed
-    ApolloDuoClosedThreadEventFeedOpened,     // a feed is opening: a list row, a feed link, Search, a reroot
-    ApolloDuoClosedThreadEventMemoryWarning,  // the feed's didReceiveMemoryWarning, Apollo's forward wipe
-    ApolloDuoClosedThreadEventForeground,     // the app is back after `away` seconds in the background
-};
-typedef struct {
-    BOOL split;           // the feed pairs a thread beside it (unfolded, landscape, split on)
-    BOOL threadOpen;      // a thread shows beside the feed
-    BOOL feedPageOnTop;   // the feed page it was closed from is still the feed's top page
-    BOOL feedUnchanged;   // and it still shows the same feed (Apollo reuses it in place)
-    BOOL pagesOnStack;    // one of its pages is on a navigation stack again
-    NSTimeInterval away;  // Foreground only: the time in the background
-} ApolloDuoClosedThreadFacts;
-
-// Apollo keeps its own forward page through any time in the background. A
-// thread the reader closed beside the feed is not on screen to remind them,
-// so it lasts only a short trip to another app.
-static const NSTimeInterval kApolloDuoClosedThreadBackgroundLimit = 60.0;
-
-// Why the remembered thread is forgotten now, or nil to keep it.
-static NSString *ApolloDuoClosedThreadForgetReason(ApolloDuoClosedThreadEvent event, ApolloDuoClosedThreadFacts facts) {
-    if (event == ApolloDuoClosedThreadEventThreadOpened) return @"another thread opened";
-    if (event == ApolloDuoClosedThreadEventFeedOpened) return @"a feed opened";
-    if (event == ApolloDuoClosedThreadEventMemoryWarning) return @"memory warning";
-    if (event == ApolloDuoClosedThreadEventForeground && facts.away > kApolloDuoClosedThreadBackgroundLimit)
-        return @"a long stay in the background";
-    if (!facts.split) return @"the split ended";
-    if (facts.threadOpen) return @"a thread is beside the feed";
-    if (!facts.feedPageOnTop) return @"the feed changed";
-    if (!facts.feedUnchanged) return @"the feed page shows another feed";
-    if (facts.pagesOnStack) return @"its pages are on a stack again";
-    return nil;
-}
-
-// What a close remembers: the thread pane's pages above its backstop, the
-// thread and anything pushed over it. Nothing when only the backstop is left.
-static NSArray *ApolloDuoClosedThreadPages(NSArray *paneStack) {
-    return paneStack.count > 1 ? [paneStack subarrayWithRange:NSMakeRange(1, paneStack.count - 1)] : @[];
-}
-
-// A thread a Back closed beside the feed, held for the forward swipe: its
-// pages strongly (no stack holds them any more), its feed page weakly, and
-// the snapshot of its pane as it closed, which the forward swipe slides in
-// (nil when the close had none to take). The snapshot lives here alone: a
-// forgotten or restored thread lets it go.
-@interface ApolloDuoPostsClosedThread : NSObject
-@property(nonatomic, copy) NSArray<UIViewController *> *pages;
-@property(nonatomic, weak) UIViewController *feedPage;
-@property(nonatomic, copy) NSString *feedIdentity;
-@property(nonatomic, strong) UIView *snapshot;
-@property(nonatomic) CGRect pane;
-@property(nonatomic) CGSize canvas;
-@property(nonatomic) CGFloat divider;
-@end
-@implementation ApolloDuoPostsClosedThread @end
-
-// What a feed page shows. Apollo switches a PostsViewController's feed in
-// place (the title jump bar, the subreddit list reusing the visible feed), so
-// the page alone does not say. It writes the PostsType case and the title
-// synchronously on every such switch (see ApolloSubredditHeaders.xm).
-extern NSInteger ApolloPostsTypeTagFromViewController(UIViewController *viewController);
-static NSString *ApolloDuoPostsFeedIdentity(UIViewController *page) {
-    if (!page) return nil;
-    return [NSString stringWithFormat:@"%@|%ld|%@|%@", NSStringFromClass(page.class),
-            (long)ApolloPostsTypeTagFromViewController(page), page.navigationItem.title ?: page.title ?: @"",
-            ApolloNamedSubredditForPostsController(page) ?: @""];
-}
-
-// The state holding a closed thread, for the app-wide events (the background).
-static __weak ApolloDuoSplitState *sDuoPostsClosedThreadState;
-static CFAbsoluteTime sDuoPostsBackgroundedAt;
-
-static void ApolloDuoPostsForgetClosedThread(ApolloDuoSplitState *state, NSString *reason) {
-    if (!state.closedThread) return;
-    ApolloLog(@"[DuoSplit] forgot the closed thread (%lu page(s)): %@",
-              (unsigned long)state.closedThread.pages.count, reason);
-    state.closedThread = nil;
-    if (sDuoPostsClosedThreadState == state) sDuoPostsClosedThreadState = nil;
-}
-
-static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloDuoClosedThreadEvent event,
-                                             NSTimeInterval away) {
-    ApolloDuoPostsClosedThread *closed = state.closedThread;
-    if (!closed) return;
-    // On a stack's pages, not merely parented: a page a non-animated
-    // setViewControllers: just removed can keep its parent a moment longer.
-    BOOL onStack = NO;
-    for (UIViewController *page in closed.pages)
-        onStack = onStack || [page.navigationController.viewControllers containsObject:page];
-    ApolloDuoClosedThreadFacts facts = {
-        .split = state.split && state.feed && ApolloDuoPostsUsesSplit(state),
-        .threadOpen = state.secondary.viewControllers.count > 1,
-        .feedPageOnTop = closed.feedPage && closed.feedPage == state.feed.topViewController,
-        .feedUnchanged = [ApolloDuoPostsFeedIdentity(closed.feedPage) isEqualToString:closed.feedIdentity],
-        .pagesOnStack = onStack,
-        .away = away,
-    };
-    NSString *reason = ApolloDuoClosedThreadForgetReason(event, facts);
-    if (reason) ApolloDuoPostsForgetClosedThread(state, reason);
-}
-
 // Where the split's configured primary column ends: the divider a thread
 // pane sits beside, for the column widths in force whether or not a thread
 // shows (ApolloDuoSplitApplySidebarWidth). Posts landscape pins both bounds
@@ -2071,25 +1515,6 @@ static CGFloat ApolloDuoPostsSplitDivider(ApolloDuoSplitState *state) {
                MAX(split.minimumPrimaryColumnWidth, width * split.preferredPrimaryColumnWidthFraction));
 }
 
-static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages,
-                                               UIView *snapshot, CGRect pane) {
-    UIViewController *feedPage = state.feed.topViewController;
-    if (!pages.count || !feedPage) return;
-    ApolloDuoSplitState *previous = sDuoPostsClosedThreadState;
-    if (previous && previous != state) ApolloDuoPostsForgetClosedThread(previous, @"a thread closed in another split");
-    ApolloDuoPostsClosedThread *closed = [ApolloDuoPostsClosedThread new];
-    closed.pages = pages;
-    closed.feedPage = feedPage;
-    closed.feedIdentity = ApolloDuoPostsFeedIdentity(feedPage);
-    closed.snapshot = snapshot;
-    closed.pane = pane;
-    closed.canvas = state.host.view.bounds.size;
-    closed.divider = ApolloDuoPostsSplitDivider(state);
-    state.closedThread = closed;
-    sDuoPostsClosedThreadState = state;
-    ApolloLog(@"[DuoSplit] remembered the closed thread (%lu page(s)) for a forward swipe; snapshot=%d",
-              (unsigned long)pages.count, snapshot != nil);
-}
 
 // The feed's cover ends with its thread, or when the columns can no longer
 // show it (ApolloDuoSplitCoverEndReason): flags only, the caller lays the
@@ -2117,14 +1542,12 @@ static void ApolloDuoPostsReviewCover(ApolloDuoSplitState *state) {
 }
 
 static void ApolloDuoPostsSyncColumnsWithAnimation(ApolloDuoSplitState *state, BOOL animateDisplayMode) {
-    if (!state.split || !state.feed) ApolloDuoPostsForgetClosedThread(state, @"the split ended");
     // A thread closed or replaced, a rotation to portrait or the setting
     // turned off ends the feed's cover before the columns are placed.
     ApolloDuoPostsReviewCover(state);
     if (!state.feed || !state.split || state.changing || state.interactiveClose) return;
     // A rotation to portrait, the split turned off or a thread put beside the
     // feed by any path ends what a forward swipe could bring back.
-    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventCheck, 0.0);
     // Moving a navigation between columns takes it out of the window and back.
     sDuoSplitMovingColumns++;
     if (sDuoSplitResizingTabs || !ApolloDuoPostsHasLandscapeColumns(state)) {
@@ -2849,9 +2272,6 @@ static const CGFloat kApolloDuoPostsSmearWidth = 3.0;
 // interactive Back feel. Stiffness is its square, damping twice it.
 static const CGFloat kApolloDuoPostsSpringOmega = 2.0 * M_PI / 0.3;
 
-static CGFloat ApolloDuoPostsCloseOffset(CGFloat translation, CGFloat travel) {
-    return MIN(MAX(0.0, translation), MAX(0.0, travel));
-}
 
 static CGFloat ApolloDuoPostsCloseProgress(CGFloat offset, CGFloat width) {
     return width > 0.0 ? MIN(1.0, MAX(0.0, offset / width)) : 0.0;
@@ -2937,35 +2357,6 @@ static CGFloat ApolloDuoPostsEnteringRowShift(const CGRect *before, const CGRect
     return 0.0;
 }
 
-// The forward swipe's restore is the close mirrored, on one offset: the
-// page's distance right of the thread pane's place. The close starts at 0 and
-// commits off the pane at `travel`; the restore starts at `travel`, fully off
-// screen at the feed pane's trailing edge, and commits at 0.
-static CGFloat ApolloDuoPostsDragOffset(BOOL restoring, CGFloat translation, CGFloat travel) {
-    return ApolloDuoPostsCloseOffset(restoring ? travel + translation : translation, travel);
-}
-
-static CGFloat ApolloDuoPostsDragTarget(BOOL restoring, BOOL commit, CGFloat travel) {
-    return restoring == commit ? 0.0 : travel;
-}
-
-// The restore's progress for ApolloDuoForwardShouldCommit: the drag over the
-// thread pane it fills, signed like the translation (negative leftward).
-static CGFloat ApolloDuoPostsRestoreProgress(CGFloat translation, CGFloat width) {
-    return width > 0.0 ? translation / width : 0.0;
-}
-
-// The snapshot a close left serves only the canvas and the divider it was
-// taken with: a size, hinge or posture change since moved the pane, and the
-// restore is then discrete. So is a pane that did not start at its divider
-// (a covered thread's full width).
-static BOOL ApolloDuoClosedThreadSnapshotFits(BOOL snapshot, CGSize canvas, CGSize now, CGFloat divider, CGFloat nowDivider,
-                                              CGFloat paneX) {
-    return snapshot && fabs(canvas.width - now.width) < 1.0 && fabs(canvas.height - now.height) < 1.0
-        && fabs(divider - nowDivider) < 1.0 && fabs(paneX - divider) < 1.0;
-}
-
-// Widen a captured layer by `expansion` with its leading edge fixed.
 static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGRect *surfaceFrame,
                                           CGFloat anchorX, CGFloat expansion) {
     bounds->size.width += expansion;
@@ -2976,7 +2367,7 @@ static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGR
 // What an interactive close hands to ApolloDuoPostsCloseDetail when a drag
 // already owns the departing thread. It is also the drag's own record while
 // the finger is down (ApolloDuoSplitState.interactiveClose), for the forward
-// swipe's restore too (`restoring`), which hands it to ApolloDuoPostsOpenDetail.
+// divider release, which lays out the final columns under the snapshots.
 @interface ApolloDuoPostsCloseHandoff : NSObject
 // Holds everything below and is the host's postsTransitionSnapshot, so every
 // stale-transition cleanup removes the drag with it. Clear, it takes every
@@ -2994,11 +2385,7 @@ static void ApolloDuoPostsInflateGeometry(CGRect *bounds, CGPoint *position, CGR
 @property (nonatomic) CGFloat travel;
 @property (nonatomic) CGFloat velocity;
 @property (nonatomic) CFTimeInterval slideStarted;
-// The forward swipe brings a closed thread back: the page slides in from the
-// screen's edge and commits onto the pane.
-@property (nonatomic) BOOL restoring;
 // The close's drag, for the memory: the pane as it was when the drag began.
-@property (nonatomic, strong) UIView *restoreSnapshot;
 // The slide's spring as handed to Core Animation, so the restore's live
 // thread can run the very same one under it.
 @property (nonatomic) CGFloat slideFrom;
@@ -3072,9 +2459,6 @@ static CASpringAnimation *ApolloDuoPostsSpringWith(NSString *keyPath, id from, i
     return spring;
 }
 
-static CASpringAnimation *ApolloDuoPostsSpring(NSString *keyPath, id from, id to, CGFloat velocity) {
-    return ApolloDuoPostsSpringWith(keyPath, from, to, velocity, kApolloDuoPostsSpringOmega, 0.0);
-}
 
 // Springs the dragged thread to `offset` (0, back over the pane, or the full
 // travel, off it) from wherever the finger left it, with the finger's
@@ -3093,8 +2477,7 @@ static void ApolloDuoPostsSpringDragWith(ApolloDuoPostsCloseHandoff *drag, CGFlo
     float fromOpacity = page.layer.shadowOpacity;
     // A restore lands with its shadow gone: the live thread under it has
     // none, so the page's removal leaves nothing to pop.
-    float toOpacity = drag.restoring && offset <= 0.0 ? 0.0f
-        : ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
+    float toOpacity = ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
     // A divider dragged left: its trailing fill, toward the feed's width.
     UIView *fill = drag.fill;
     CGFloat fromFill = fill ? fill.transform.a : 1.0;
@@ -3135,7 +2518,7 @@ static void ApolloDuoPostsSlideHandoff(ApolloDuoSplitState *state, ApolloDuoPost
     if (!page) return;
     handoff.slideStarted = CACurrentMediaTime();
     __weak ApolloDuoSplitHost *weakHost = state.host;
-    ApolloDuoPostsSpringDrag(handoff, ApolloDuoPostsDragTarget(handoff.restoring, YES, handoff.travel), handoff.velocity, ^{
+    ApolloDuoPostsSpringDrag(handoff, handoff.travel, handoff.velocity, ^{
         [page removeFromSuperview];
         ApolloDuoPostsRemoveEmptyOverlay(weakHost, overlay);
         ApolloDuoSplitScheduleUpdate();
@@ -3316,7 +2699,6 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     }
     UIViewController *backstop = state.secondary.viewControllers.firstObject;
-    NSArray<UIViewController *> *closedPages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
     // A handed-in overlay is the live drag's; it becomes the transition snapshot.
     if (handoff.overlay) {
         state.host.postsTransitionSnapshot = handoff.overlay;
@@ -3334,15 +2716,8 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
     CGRect pane = ApolloDuoPostsDetailPane(state);
     BOOL paneShown = surface.window && !CGRectIsNull(pane) && !CGRectIsEmpty(pane);
     UIView *snapshot = handoff.snapshot;
-    if (!handoff && animate && paneShown)
+    if (!handoff && animate && paneShown && !state.host.postsCoveredByDrag)
         snapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
-    // What a forward swipe slides back in: the pane as it looks now (as the
-    // drag began, for a drag, whose own views cover the pane by now). None
-    // while the feed is covered: the pane is the whole canvas, and the restore
-    // is then discrete.
-    UIView *closedSnapshot = handoff ? handoff.restoreSnapshot
-        : paneShown && !state.host.postsCoveredByDrag ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
-    CGRect closedPane = handoff ? handoff.pane : pane;
     if (snapshot && !handoff) {
         snapshot.frame = pane;
         snapshot.userInteractionEnabled = NO;
@@ -3355,16 +2730,14 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
-        // The thread's page leaves its column, and a forward swipe may put it
-        // back: note its revealed palette while it is still live.
-        ApolloNativeFeedSearchWillMoveBetweenColumns(closedPages.lastObject);
+        // Note the outgoing thread palette while its page is still live.
+        ApolloNativeFeedSearchWillMoveBetweenColumns(state.secondary.topViewController);
         // UIKit installs the moved column's views as it lays them out.
         sDuoSplitMovingColumns++;
         state.changing = YES;
         [state.secondary setViewControllers:@[backstop] animated:NO];
         state.changing = NO;
-        // Off the pane now: what a forward swipe brings back.
-        ApolloDuoPostsRememberClosedThread(state, closedPages, closedSnapshot, closedPane);
+        // The divider close removes the thread from the pane.
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
         sDuoSplitMovingColumns--;
@@ -3426,69 +2799,49 @@ static void ApolloDuoPostsCloseDetail(ApolloDuoSplitState *state, ApolloDuoPosts
 // Closing (page == nil) is shared with the interactive gestures through
 // ApolloDuoPostsCloseDetail. Opening takes the thread's pages: one for a new
 // thread, or a closed thread with the pages pushed over it, brought back.
-static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated,
-                                     ApolloDuoPostsCloseHandoff *handoff);
 static void ApolloDuoPostsSetDetail(ApolloDuoSplitState *state, UIViewController *page, BOOL animated) {
-    if (!page) {
-        ApolloDuoPostsCloseDetail(state, nil, animated);
-        return;
-    }
-    ApolloDuoPostsOpenDetail(state, @[page], animated, nil);
-}
-
-// `handoff` is a committed forward swipe's: its page, already springing onto
-// the pane, stays over the live thread, which runs the same spring under it
-// instead of the open's slide, and the feed narrows in the slide's remaining time.
-static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages, BOOL animated,
-                                     ApolloDuoPostsCloseHandoff *handoff) {
-    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventThreadOpened, 0.0);
-    if (state.interactiveClose && state.interactiveClose != handoff) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+    ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
+    if (state.host.postsCoveredByDrag) ApolloDuoPostsUncoverFeed(state, @"the thread changed");
     UIView *surface = state.host.view;
+    BOOL entering = page != nil;
     BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
     if (!animate) {
         ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     }
     UIViewController *backstop = state.secondary.viewControllers.firstObject;
-    // A handed-in overlay is the live drag's; it becomes the transition snapshot.
-    if (handoff.overlay) {
-        state.host.postsTransitionSnapshot = handoff.overlay;
-    } else {
-        [state.host.postsTransitionSnapshot removeFromSuperview];
-        state.host.postsTransitionSnapshot = nil;
-    }
+    [state.host.postsTransitionSnapshot removeFromSuperview];
+    state.host.postsTransitionSnapshot = nil;
     [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
-    NSArray<UIViewController *> *stack = [@[backstop] arrayByAddingObjectsFromArray:pages];
-    // The cover is the covered thread's alone: another thread opens beside the feed.
-    if (state.host.postsCoveredByDrag && pages.firstObject != state.host.postsCoveredThread)
-        ApolloDuoPostsUncoverFeed(state, @"another thread opened");
-    if (state.host.postsShowingDetail) {
+    if (entering && state.host.postsShowingDetail) {
         [surface layoutIfNeeded];
-        [state.secondary setViewControllers:stack animated:animate];
+        [state.secondary setViewControllers:@[backstop, page] animated:animate];
         return;
     }
 
     [surface layoutIfNeeded];
     NSArray<ApolloDuoPostsGeometry *> *feedGeometry = animate
         ? ApolloDuoPostsCaptureGeometry(state.feed.view, surface) : nil;
+    CGRect pane = !entering ? ApolloDuoPostsDetailPane(state) : CGRectNull;
+    UIView *snapshot = !entering && animate && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
+        ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+    if (snapshot) {
+        snapshot.frame = pane;
+        snapshot.userInteractionEnabled = NO;
+        [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
+        state.host.postsTransitionSnapshot = snapshot;
+    }
     ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
     ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
     ApolloDuoFeedAnchor *feedAnchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
-    ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
     void (^updateColumns)(void) = ^{
-        // UIKit installs the moved column's views as it lays them out.
-        sDuoSplitMovingColumns++;
         state.changing = YES;
-        [state.secondary setViewControllers:stack animated:NO];
+        [state.secondary setViewControllers:page ? @[backstop, page] : @[backstop] animated:NO];
         state.changing = NO;
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
-        sDuoSplitMovingColumns--;
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
-        // A thread brought back has its palette repaired as the feed has
-        // (a page opened fresh was never noted, and is left alone).
-        ApolloNativeFeedSearchFinishColumnMove(pages.lastObject);
         // Texture schedules its row geometry separately from UIKit's column
         // layout. Commit the existing measurement before taking endpoints so
         // cell/media widths participate in the same resize as their live nav.
@@ -3503,77 +2856,40 @@ static void ApolloDuoPostsOpenDetail(ApolloDuoSplitState *state, NSArray<UIViewC
             ApolloDuoRestoreFeedAnchor(table, feedAnchor);
             [table layoutIfNeeded];
         }
-        ApolloDuoPostsHoldIndicator(ApolloDuoSplitFindTable(pages.lastObject.viewIfLoaded));
     };
     if (!animate) {
         [UIView performWithoutAnimation:updateColumns];
-        // Reduce Motion: a short fade of the dragged page over the thread now in place.
-        if (handoff) ApolloDuoPostsFadeHandoff(state, handoff, animated && surface.window ? 0.15 : 0.0);
         return;
     }
-    // Finish containment with UIKit animation disabled (see the close path).
+    // Finish containment with UIKit animation disabled. Running this inside
+    // a UIView animation also animates UIKit's column wrappers, which moves
+    // the whole feed a second time on top of its explicit geometry replay.
+    // Model geometry remains UIKit-owned; only presentation endpoints below
+    // animate from the captured full-width/half-width live view hierarchy.
     [UIView performWithoutAnimation:updateColumns];
+    __weak ApolloDuoSplitHost *weakHost = state.host;
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{ ApolloDuoSplitScheduleUpdate(); }];
-    // The rows get taller as the feed narrows: final-layout text would hang
-    // below a row still growing, over the next one. Replay it as before.
-    NSTimeInterval duration = handoff ? ApolloDuoPostsCloseRemaining(CACurrentMediaTime() - handoff.slideStarted) : 0.32;
-    sDuoReplayCrossfadeCeiling = handoff.overlay;
-    if (duration > 0) ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, duration);
-    sDuoReplayCrossfadeCeiling = nil;
-    if (handoff) {
-        // The live thread arrives on the dragged page's own spring, started
-        // at the same moment, so the page covers it exactly until it lands.
-        CALayer *layer = state.secondary.view.layer;
-        CASpringAnimation *slide = ApolloDuoPostsSpring(@"transform",
-            [NSValue valueWithCATransform3D:CATransform3DMakeTranslation(handoff.slideFrom, 0, 0)],
-            [NSValue valueWithCATransform3D:CATransform3DIdentity], handoff.slideSpring);
-        slide.beginTime = [layer convertTime:handoff.slideStarted fromLayer:nil];
-        [layer addAnimation:slide forKey:@"ApolloDuoSlide"];
-        ApolloLog(@"[DuoSplit] interactive restore hand-off: replay=%.3f", duration);
-    } else {
+    ApolloDuoPostsAnimateGeometry(feedGeometry, state.feed.view, surface, 0.32);
+    if (entering) {
         // Use the live navigation surface so async comment/media updates
         // remain visible throughout the first push.
         CGRect incomingPane = ApolloDuoPostsDetailPane(state);
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(incomingPane);
         if (!CGRectIsNull(incomingPane) && travel > 0)
             ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
+    } else if (snapshot) {
+        CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
+        ApolloDuoSlideView(snapshot, 0, travel, 0.32, ^{
+            [snapshot removeFromSuperview];
+            if (weakHost.postsTransitionSnapshot == snapshot) weakHost.postsTransitionSnapshot = nil;
+            ApolloDuoSplitScheduleUpdate();
+        });
     }
     [CATransaction commit];
 }
 
-// The forward swipe on the full-width Posts feed brings back the thread the
-// last close took from beside it, through the normal open: the same pages
-// (reading position, reply text and all), not a fresh load. A stale memory
-// that no event caught is forgotten here, the first time a swipe asks.
-// The restore that follows the finger is no drag in the way of its own thread.
-BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (!state.closedThread || state.feed != nav || !state.split || state.changing || state.postsTogglingSplit) return NO;
-    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventCheck, 0.0);
-    ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
-    BOOL ownDrag = drag.restoring && drag.phase == ApolloDuoPostsClosePhaseTracking && drag.navigation == nav;
-    return state.closedThread && (!drag || ownDrag) && !state.host.listVisible && !state.host.postsShowingDetail
-        && state.secondary.viewControllers.count == 1;
-}
-
-static BOOL ApolloDuoPostsRestoreClosedThread(ApolloDuoSplitState *state, UINavigationController *nav,
-                                              ApolloDuoPostsCloseHandoff *handoff) {
-    if (!ApolloDuoSplitCanRestoreClosedThread(nav)) return NO;
-    NSArray<UIViewController *> *pages = state.closedThread.pages;
-    state.closedThread = nil;
-    if (sDuoPostsClosedThreadState == state) sDuoPostsClosedThreadState = nil;
-    ApolloLog(@"[DuoSplit] restored the closed thread (%lu page(s)) beside the feed", (unsigned long)pages.count);
-    ApolloDuoPostsOpenDetail(state, pages, YES, handoff);
-    ApolloDuoPostsSyncColumns(state);
-    return YES;
-}
-
-BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav) {
-    return ApolloDuoPostsRestoreClosedThread(ApolloDuoSplitStateForNavigation(nav, NO), nav, nil);
-}
-
-// The Posts thread close that follows the finger (research 3.B). While the
+// Shared snapshot and spring helpers for the adjustable Posts divider. While the
 // finger is down only views made for the drag move: the thread pane's
 // snapshot slides by the drag and the gap it uncovers is filled from the
 // feed's trailing edge. The live thread stays in place, covered and
@@ -3595,10 +2911,7 @@ static void ApolloDuoPostsCloseAdvance(ApolloDuoSplitState *state, ApolloDuoPost
 }
 
 // The drag `nav` began, while it still follows the finger.
-static ApolloDuoPostsCloseHandoff *ApolloDuoPostsTrackingClose(ApolloDuoSplitState *state, UINavigationController *nav) {
-    ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
-    return drag.phase == ApolloDuoPostsClosePhaseTracking && !drag.dividing && drag.navigation == nav ? drag : nil;
-}
+
 
 // Releases short of the threshold spring back over the live thread (a fade
 // with Reduce Motion); interruptions remove the drag at once. Neither lays
@@ -3607,7 +2920,7 @@ static void ApolloDuoPostsCancelInteractiveClose(ApolloDuoSplitState *state, BOO
     ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
     if (!drag) return;
     ApolloDuoSplitHost *host = state.host;
-    NSString *kind = drag.dividing ? @"divider drag" : drag.restoring ? @"thread restore" : @"thread close";
+    NSString *kind = @"divider drag";
     // The divider's drag never springs back here: its release snaps (ApolloDuoSplitDividerFinish).
     if (!animated || drag.dividing || drag.phase != ApolloDuoPostsClosePhaseTracking || !drag.overlay.window) {
         ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventInterrupt);
@@ -3633,7 +2946,7 @@ static void ApolloDuoPostsCancelInteractiveClose(ApolloDuoSplitState *state, BOO
         [UIView animateWithDuration:0.15 animations:^{ overlay.alpha = 0; }
                          completion:^(__unused BOOL finished) { returned(); }];
     } else {
-        ApolloDuoPostsSpringDrag(drag, ApolloDuoPostsDragTarget(drag.restoring, NO, drag.travel), velocity, returned);
+        ApolloDuoPostsSpringDrag(drag, 0.0, velocity, returned);
     }
 }
 
@@ -3641,14 +2954,8 @@ static void ApolloDuoPostsCancelActiveInteractiveClose(void) {
     ApolloDuoSplitState *state = sDuoPostsInteractiveClose;
     if (state) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
     // The same interruptions let a list pulled in with the finger go.
-    [sDuoListDragHost cancelListDragNow];
 }
 
-static void ApolloDuoPostsCancelInteractiveCloseForHost(ApolloDuoSplitHost *host) {
-    ApolloDuoSplitState *state = sDuoPostsInteractiveClose;
-    if (state && state.host == host) ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    [host cancelListDragNow];
-}
 
 // Apollo's own Back shadow on the departing page (ApolloInterruptibleNavTransition.xm),
 // on a plain view around the snapshot so the snapshot's own layer stays as UIKit made it.
@@ -3758,7 +3065,6 @@ static ApolloDuoPostsCloseHandoff *ApolloDuoPostsNewPaneDrag(ApolloDuoSplitState
     drag.pane = pane;
     // A second capture of the same moment for the closed thread's memory:
     // the first one slides off with the drag.
-    drag.restoreSnapshot = [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero];
     drag.travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
     drag.extension = ApolloDuoPostsCloseExtension(state, surface, pane, drag.travel);
     drag.snapshot = ApolloDuoPostsShadowedPage(snapshot, pane, surface.traitCollection);
@@ -3773,50 +3079,9 @@ static ApolloDuoPostsCloseHandoff *ApolloDuoPostsNewPaneDrag(ApolloDuoSplitState
     return drag;
 }
 
-BOOL ApolloDuoSplitInteractiveCloseBegin(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoSplitHost *host = state.host;
-    UIView *surface = host.view;
-    // A drag still springing back is let go; the new one snapshots afresh.
-    ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    // The thread right above the backstop, beside the feed, and nothing else
-    // moving the panes: an open still sliding in, a toggle, a native pop or
-    // a resize leaves this Back to the discrete close on release.
-    BOOL closable = state.split && state.feed && !state.changing && !state.postsTogglingSplit
-        && host.postsColumnsPaired && !host.listVisible && state.secondary.viewControllers.count == 2
-        && nav == state.secondary && surface.window && !sDuoSplitResizingTabs
-        && !state.feed.transitionCoordinator && !state.secondary.transitionCoordinator
-        && !host.postsTransitionSnapshot.window && ![state.secondary.view.layer animationForKey:@"ApolloDuoSlide"];
-    if (!closable) return NO;
-    ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsNewPaneDrag(state);
-    if (!drag) return NO;
-    drag.navigation = nav;
-    ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
-    ApolloLog(@"[DuoSplit] interactive thread close began; smear=%d", drag.extension.subviews.count > 0);
-    return YES;
-}
 
 // Either direction's drag, while the finger moves.
-static BOOL ApolloDuoPostsUpdateDrag(UINavigationController *nav, CGFloat translation, BOOL restoring) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsTrackingClose(state, nav);
-    if (!drag || drag.restoring != restoring) return NO;
-    if (!drag.overlay.window) {
-        ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-        return NO;
-    }
-    // Transforms only: no layout and no Texture work while the finger moves.
-    CGFloat offset = ApolloDuoPostsDragOffset(restoring, translation, drag.travel);
-    drag.snapshot.transform = CGAffineTransformMakeTranslation(offset, 0);
-    drag.extension.transform = CGAffineTransformMakeScale(ApolloDuoPostsGapScale(drag, offset), 1);
-    drag.snapshot.layer.shadowOpacity = ApolloDuoPostsCloseShadowOpacity(
-        ApolloDuoPostsCloseProgress(offset, CGRectGetWidth(drag.pane)));
-    return YES;
-}
 
-BOOL ApolloDuoSplitInteractiveCloseUpdate(UINavigationController *nav, CGFloat translation) {
-    return ApolloDuoPostsUpdateDrag(nav, translation, NO);
-}
 
 // A drag let go past its threshold becomes the close: the render server takes
 // the rest of the slide, a picture of the feed covers its re-layout, and the
@@ -3848,31 +3113,6 @@ static void ApolloDuoPostsCommitInteractiveClose(ApolloDuoSplitState *state, Apo
     ApolloDuoPostsCloseDetail(state, drag, YES);
 }
 
-void ApolloDuoSplitInteractiveCloseFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsTrackingClose(state, nav);
-    if (!drag || drag.restoring) return;
-    BOOL closes = state.split && state.feed && !state.changing && !state.postsTogglingSplit
-        && state.secondary.viewControllers.count == 2 && drag.overlay.window;
-    if (!commit || !closes) {
-        // A commit the split no longer allows was overtaken: remove it at once.
-        ApolloDuoPostsCancelInteractiveClose(state, !commit, velocity);
-        return;
-    }
-    ApolloLog(@"[DuoSplit] interactive thread close committed; velocity=%.0f", velocity);
-    ApolloDuoPostsCommitInteractiveClose(state, drag, velocity);
-}
-
-void ApolloDuoSplitInteractiveCloseCancel(UINavigationController *nav, BOOL animated) {
-    // The pane's navigation is gone: whatever drag is active still goes, so
-    // its full-screen touch shield can never stay up.
-    if (!nav) {
-        ApolloDuoPostsCancelActiveInteractiveClose();
-        return;
-    }
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    if (state.interactiveClose.navigation == nav) ApolloDuoPostsCancelInteractiveClose(state, animated, 0.0);
-}
 
 // The Posts divider pressed and dragged (ApolloDuoSplitDivider.m) is the
 // thread close's drag with the divider as its offset, either way. While the
@@ -3956,7 +3196,7 @@ static __weak UIView *sDuoPostsSettleOverlay;
 static BOOL ApolloDuoPostsPanesStill(ApolloDuoSplitState *state) {
     ApolloDuoSplitHost *host = state.host;
     return state.split && state.feed && !state.changing && !state.postsTogglingSplit
-        && !host.listVisible && !host.listDragging
+        && !host.listVisible
         && state.secondary.viewControllers.count > 1 && host.viewIfLoaded.window && !sDuoSplitResizingTabs
         && ApolloDuoPostsHasLandscapeColumns(state)
         && !state.feed.transitionCoordinator && !state.secondary.transitionCoordinator;
@@ -4326,7 +3566,6 @@ static BOOL ApolloDuoPostsUncoverBegin(ApolloDuoSplitState *state) {
     drag.uncovering = YES;
     // No picture of the pane as the split will show it: a forward swipe
     // after a close restores the thread discretely.
-    drag.restoreSnapshot = nil;
     ApolloDuoPostsAddGuide(state, drag);
     ApolloDuoPostsLightGuide(drag, drag.snapshot.transform.tx);
     ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
@@ -4375,151 +3614,6 @@ static BOOL ApolloDuoPostsUncoverUnderDrag(ApolloDuoSplitState *state, ApolloDuo
     ApolloLog(@"[DuoSplit] the split came back under the uncover drag at %.0f of %.0f in %.0f ms",
               CGRectGetMinX(column), CGRectGetWidth(surface.bounds), (CACurrentMediaTime() - began) * 1000.0);
     return YES;
-}
-
-// The forward swipe's restore, the close's driver run the other way. The
-// snapshot the close left waits fully off screen at the feed pane's trailing
-// edge and comes in with the finger over the live full-width feed, which is
-// not laid out or re-measured until the commit. The commit springs the page
-// onto the pane and runs the existing restore (ApolloDuoPostsOpenDetail with
-// the remembered pages) under it; a spring back leaves the thread remembered.
-BOOL ApolloDuoSplitInteractiveRestoreBegin(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoSplitHost *host = state.host;
-    UIView *surface = host.view;
-    // Nothing else should be dragging here (the route refuses beside any other
-    // drag, and the overlay takes second fingers); let a stray one go at once.
-    ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    ApolloDuoPostsClosedThread *closed = state.closedThread;
-    BOOL restorable = ApolloDuoSplitCanRestoreClosedThread(nav) && surface.window && !sDuoSplitResizingTabs
-        && ApolloDuoClosedThreadSnapshotFits(closed.snapshot != nil, closed.canvas, surface.bounds.size,
-                                             closed.divider, ApolloDuoPostsSplitDivider(state),
-                                             CGRectGetMinX(closed.pane))
-        && !CGRectIsNull(closed.pane) && !CGRectIsEmpty(closed.pane)
-        && !nav.transitionCoordinator && !state.secondary.transitionCoordinator
-        && !host.postsTransitionSnapshot.window && ![state.secondary.view.layer animationForKey:@"ApolloDuoSlide"];
-    if (!restorable) return NO;
-    ApolloDuoPostsCloseHandoff *drag = [ApolloDuoPostsCloseHandoff new];
-    drag.restoring = YES;
-    drag.navigation = nav;
-    drag.pane = closed.pane;
-    drag.travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(closed.pane);
-    drag.snapshot = ApolloDuoPostsShadowedPage(closed.snapshot, closed.pane, surface.traitCollection);
-    drag.snapshot.transform = CGAffineTransformMakeTranslation(drag.travel, 0);
-    drag.snapshot.layer.shadowOpacity = ApolloDuoPostsCloseShadowOpacity(ApolloDuoPostsCloseProgress(drag.travel, CGRectGetWidth(closed.pane)));
-    drag.overlay = [[UIView alloc] initWithFrame:surface.bounds];
-    drag.overlay.backgroundColor = UIColor.clearColor;
-    drag.overlay.accessibilityElementsHidden = YES;
-    [drag.overlay addSubview:drag.snapshot];
-    [host.postsTransitionSnapshot removeFromSuperview];
-    [surface insertSubview:drag.overlay belowSubview:host.listDismiss];
-    host.postsTransitionSnapshot = drag.overlay;
-    ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventBegin);
-    ApolloLog(@"[DuoSplit] interactive thread restore began");
-    return YES;
-}
-
-BOOL ApolloDuoSplitInteractiveRestoreUpdate(UINavigationController *nav, CGFloat translation) {
-    return ApolloDuoPostsUpdateDrag(nav, translation, YES);
-}
-
-CGFloat ApolloDuoSplitInteractiveRestoreProgress(UINavigationController *nav, CGFloat translation) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsTrackingClose(state, nav);
-    return ApolloDuoPostsRestoreProgress(translation, drag.restoring ? CGRectGetWidth(drag.pane) : 0.0);
-}
-
-void ApolloDuoSplitInteractiveRestoreFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoPostsCloseHandoff *drag = ApolloDuoPostsTrackingClose(state, nav);
-    if (!drag.restoring) return;
-    BOOL restores = commit && drag.overlay.window && ApolloDuoSplitCanRestoreClosedThread(nav);
-    if (!restores) {
-        // A commit the split no longer allows was overtaken: remove it at once.
-        ApolloDuoPostsCancelInteractiveClose(state, !commit, velocity);
-        return;
-    }
-    // Cleared first: the restore below syncs the columns, which the flag holds off.
-    ApolloDuoPostsCloseAdvance(state, drag, ApolloDuoPostsCloseEventCommit);
-    drag.velocity = velocity;
-    if (!UIAccessibilityIsReduceMotionEnabled()) {
-        // The render server owns the rest of the slide before the main thread
-        // stalls in the restore's re-layout and Texture re-measure.
-        ApolloDuoPostsSlideHandoff(state, drag);
-        [CATransaction flush];
-    } else {
-        // No slide: the page takes the thread's place before it fades, so the
-        // fade crosses two identical pictures, not an offset one.
-        drag.snapshot.transform = CGAffineTransformIdentity;
-        drag.snapshot.layer.shadowOpacity = 0.0f;
-    }
-    drag.overlay.userInteractionEnabled = NO;
-    ApolloLog(@"[DuoSplit] interactive thread restore committed; velocity=%.0f", velocity);
-    if (!ApolloDuoPostsRestoreClosedThread(state, nav, drag)) ApolloDuoPostsRemoveOverlay(state.host, drag.overlay);
-}
-
-void ApolloDuoSplitInteractiveRestoreCancel(UINavigationController *nav, BOOL animated) {
-    if (!nav) {
-        ApolloDuoPostsCancelActiveInteractiveClose();
-        return;
-    }
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoPostsCloseHandoff *drag = state.interactiveClose;
-    if (drag.restoring && drag.navigation == nav) ApolloDuoPostsCancelInteractiveClose(state, animated, 0.0);
-}
-
-// The subreddit list pulled in with the finger from the Posts feed root, by
-// the same pane Back. Begin prepares the hidden drawer; NO when it can't, and
-// the Back then acts on release. Update moves it by the drag's translation and
-// returns NO once the drag was let go. Progress is the share of the drawer
-// shown. Finish commits it shown or slides it back on the drawer's spring with
-// the release velocity; Cancel removes the drag at once (with a nil
-// navigation, whichever drag is active).
-static ApolloDuoSplitHost *ApolloDuoDrawerHost(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    return state.split && state.feed == nav && !state.changing ? state.host : nil;
-}
-
-BOOL ApolloDuoSplitInteractiveDrawerBegin(UINavigationController *nav) {
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
-    // Nothing else moving the panes: a thread close following a finger, an
-    // open still sliding in, a toggle, a native pop or a resize.
-    if (!host || state.interactiveClose || state.postsTogglingSplit || sDuoSplitResizingTabs
-        || nav.transitionCoordinator || host.postsTransitionSnapshot.window) return NO;
-    return [host beginListDrag];
-}
-
-BOOL ApolloDuoSplitInteractiveDrawerUpdate(UINavigationController *nav, CGFloat translation) {
-    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
-    if (!host.listDragging || host.listDragHiding) return NO;
-    if (sDuoSplitResizingTabs) {
-        [host cancelListDragNow];
-        return NO;
-    }
-    return [host updateListDrag:translation];
-}
-
-CGFloat ApolloDuoSplitInteractiveDrawerProgress(UINavigationController *nav, CGFloat translation) {
-    return [ApolloDuoDrawerHost(nav) listDragProgress:translation];
-}
-
-void ApolloDuoSplitInteractiveDrawerFinish(UINavigationController *nav, BOOL commit, CGFloat velocity) {
-    ApolloDuoSplitHost *host = ApolloDuoDrawerHost(nav);
-    if (!host.listDragging || host.listDragHiding) return;
-    [host finishListDrag:commit velocity:velocity];
-}
-
-void ApolloDuoSplitInteractiveDrawerCancel(UINavigationController *nav, BOOL animated) {
-    if (!nav) {
-        [sDuoListDragHost cancelListDragNow];
-        return;
-    }
-    // A split being rebuilt (state.changing) still lets its drag go.
-    ApolloDuoSplitHost *host = ApolloDuoSplitStateForNavigation(nav, NO).host;
-    if (!host.listDragging || host.listDragHiding) return;
-    if (animated) [host finishListDrag:NO velocity:0];
-    else [host cancelListDragNow];
 }
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view) {
@@ -5252,9 +4346,6 @@ static void ApolloDuoResumeVideosAfterMove(NSArray<UIViewController *> *controll
 
 static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail) {
     [sDuoSplitDeferredPresentations removeObject:state];
-    // Even a close that bails (mid column change, or no split left) lets the
-    // closed thread's pages go.
-    ApolloDuoPostsForgetClosedThread(state, @"the split closed");
     if (!state.split || state.changing) return;
     ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
     state.changing = YES;
@@ -5399,7 +4490,7 @@ static void ApolloDuoSplitUpdate(void) {
         UINavigationController *nav = (id)child;
         ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, open || child == tabs.selectedViewController);
         if (!state) continue;
-        // A thread close following the finger owns its columns until it ends;
+        // The adjustable-divider drag owns its columns until it ends;
         // the interruptions that do need an update cancel it before this runs.
         // One whose views have left the window, or whose pane navigation
         // is gone while it still tracks, is over: let it go. The divider's
@@ -5526,7 +4617,7 @@ static BOOL ApolloDuoSplitHasDeferredPresentationInWindow(UIWindow *window) {
 }
 
 %hook UIViewController
-// A sheet or alert over a thread close following the finger lets it go.
+// A sheet or alert over an adjustable-divider drag lets it go.
 - (void)presentViewController:(UIViewController *)controller animated:(BOOL)animated completion:(void (^)(void))completion {
     ApolloDuoPostsCancelActiveInteractiveClose();
     %orig(controller, animated, completion);
@@ -5584,7 +4675,6 @@ static BOOL ApolloDuoPostsRouteFeedLink(ApolloDuoSplitState *state, UINavigation
         ApolloLog(@"[DuoSplit] feed link to the subreddit already on the left; ignored");
         return YES;
     }
-    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     NSArray *detail = state.secondary.viewControllers.count > 1
         ? [state.secondary.viewControllers subarrayWithRange:NSMakeRange(1, state.secondary.viewControllers.count - 1)] : @[];
     BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
@@ -5695,11 +4785,11 @@ static UIViewController *ApolloDuoPostsPopFeedLink(ApolloDuoSplitState *state, B
     NSArray<UIViewController *> *pages = state.feed.viewControllers;
     if (!state.split || state.changing || pages.count < 2 || !ApolloDuoPostsUsesSplit(state)
         || state.secondary.viewControllers.count > 1) return nil;
-    if (ApolloDuoNativeBackInFlight(state.feed)) return nil;
+    UIGestureRecognizerState swipe = state.feed.interactivePopGestureRecognizer.state;
+    if (swipe == UIGestureRecognizerStateBegan || swipe == UIGestureRecognizerStateChanged) return nil;
     UIViewController *top = pages.lastObject, *previous = pages[pages.count - 2];
     ApolloDuoFeedLinkReturn *ret = objc_getAssociatedObject(previous, &kDuoFeedLinkReturnDetail);
     if (![objc_getAssociatedObject(top, &kDuoFeedLinkPage) boolValue] || !ret.detail.count) return nil;
-    ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
 
     UIView *surface = state.host.view;
     BOOL animate = animated && surface.window && !UIAccessibilityIsReduceMotionEnabled();
@@ -5812,7 +4902,6 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             // has already dismissed by then, so its visibility is not an
             // animation gate; preserve the originating navigation request.
             BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
-            ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
             [state.secondary setViewControllers:@[state.secondary.viewControllers.firstObject] animated:NO];
             ApolloDuoPostsSyncColumns(state);
             [state.host.view layoutIfNeeded];
@@ -5838,10 +4927,6 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         ApolloDuoPostsSyncColumns(state);
         return YES;
     }
-    // A feed pushed mid column change bypasses the routes above; it still
-    // replaces what a closed thread was closed from.
-    if (state.feed && ApolloClassPostsViewController && [page isKindOfClass:ApolloClassPostsViewController])
-        ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     NSArray<ApolloDuoPostsGeometry *> *searchGeometry = nil;
     CGRect searchViewport = CGRectZero;
     if ([state.kind isEqualToString:@"search"] && nav == state.outer && !state.split
@@ -6036,8 +5121,6 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     %orig(tableView, indexPath);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(((UIViewController *)self).navigationController, NO);
     // A picked row is a feed switch, which can reuse the visible feed page.
-    if (state.feed && !((UIViewController *)self).isEditing)
-        ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
     if (!state.feed || state.changing || ((UIViewController *)self).isEditing) return;
     __weak ApolloDuoSplitHost *host = state.host;
     __weak UITableView *table = tableView;
@@ -6062,73 +5145,14 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 - (void)navigationController:(UINavigationController *)navigation didShowViewController:(UIViewController *)controller animated:(BOOL)animated {
     %orig(navigation, controller, animated);
     ApolloDuoInstallBackSwipe(navigation);
-    ApolloDuoNoteNativeBackShown(navigation);
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(navigation, NO);
     // Native didShow finalizes the bar after push/pop and column migration.
     // Relayout the host then so it does not keep the outgoing Back reservation.
     if (navigation == state.feed) {
         [state.host.viewIfLoaded setNeedsLayout];
-        // A push, a pop or a new root on the feed (a subreddit switch, a
-        // feed link, Search) leaves a closed thread behind.
-        if (!state.changing) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventCheck, 0.0);
     }
     ApolloDuoPostsRestoreFeedLinkDetail(state, navigation, controller);
     if (navigation == state.secondary) ApolloDuoSplitSyncGallerySidebar(state);
-    if (ApolloDuoPostsPopReachedBackstop(state, navigation, controller)) {
-        // A Swift-direct pop (the tab-bar pan, the goBack key command) left
-        // the thread pane on its backstop. Close the column at once, without
-        // animation, under a snapshot of the pane: the column is reparented,
-        // which must wait until UIKit has finished this transition, and the
-        // snapshot holds the pane until the close lays out the full-width feed
-        // in the same transaction. Apollo also queued the thread as a forward
-        // page, which the split's own close never does, and a later forward
-        // pan would push it over a new thread. Drop it on purpose with
-        // Apollo's own didReceiveMemoryWarning override, which empties
-        // poppedViewControllers (the native wipe ApolloForwardSwipeExpiry
-        // relies on); the split never edits that Swift array itself. The split
-        // remembers that page instead, as any close of the column does, for
-        // its own forward swipe on the feed.
-        UIViewController *popped = ApolloDuoSplitForwardPage(navigation);
-        if (popped) {
-            // The pane already shows its backstop: no picture of the thread.
-            ApolloDuoPostsRememberClosedThread(state, @[popped], nil, CGRectNull);
-            [navigation didReceiveMemoryWarning];
-        }
-        UIView *surface = state.host.view;
-        CGRect pane = ApolloDuoPostsDetailPane(state);
-        UIView *snapshot = surface.window && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
-            ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
-        if (snapshot) {
-            [state.host.postsTransitionSnapshot removeFromSuperview];
-            snapshot.frame = pane;
-            snapshot.userInteractionEnabled = NO;
-            [surface insertSubview:snapshot belowSubview:state.host.listDismiss];
-            state.host.postsTransitionSnapshot = snapshot;
-        }
-        __weak ApolloDuoSplitState *weakState = state;
-        __weak ApolloDuoSplitHost *weakHost = state.host;
-        __weak UINavigationController *weakNavigation = navigation;
-        __weak UIViewController *weakShown = controller;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ApolloDuoSplitState *live = weakState;
-            if (ApolloDuoPostsPopReachedBackstop(live, weakNavigation, weakShown)) {
-                // Removes the snapshot along with the close's own layout.
-                ApolloDuoPostsSetDetail(live, nil, NO);
-                ApolloLog(@"[DuoSplit] a pop reached the thread backstop; closed the thread column");
-            }
-            if (snapshot && weakHost.postsTransitionSnapshot == snapshot) {
-                [snapshot removeFromSuperview];
-                weakHost.postsTransitionSnapshot = nil;
-            }
-        });
-    }
-}
-// Apollo's override empties its forward pages; the feed forgets its closed
-// thread with them (a real memory warning, or ApolloForwardSwipeExpiry).
-- (void)didReceiveMemoryWarning {
-    %orig;
-    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (self == state.feed) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventMemoryWarning, 0.0);
 }
 - (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
@@ -6143,26 +5167,18 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *nav = (id)self;
     Ivar leftIvar = class_getInstanceVariable(nav.class, "leftScreenEdgePanGestureRecognizer");
     BOOL back = leftIvar && object_getIvar(self, leftIvar) == gesture;
-    // One owner for backward navigation, including when folded. Apollo's edge
-    // pan otherwise competes with the pane-aware swipe and can pop twice. It
-    // owns a pop onto a real page of the same pane (every pop when folded),
-    // and the pane swipe stands down for that one.
-    if (back && ApolloDuoHasBackSwipe(nav) && !ApolloDuoNativeBackPanOwns(nav)) return NO;
+    // One owner for backward navigation, including when folded. Apollo's old
+    // edge pan otherwise competes with the pane-aware swipe and can pop twice.
+    if (back && ApolloDuoHasBackSwipe(nav)) return NO;
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    if (!state.split || state.changing) {
-        BOOL result = %orig(gesture);
-        if (back && result) ApolloDuoNoteNativeBackBegan(nav);
-        return result;
-    }
+    if (!state.split || state.changing) return %orig(gesture);
     Ivar rightIvar = class_getInstanceVariable(nav.class, "rightScreenEdgePanGestureRecognizer");
     BOOL forward = rightIvar && object_getIvar(self, rightIvar) == gesture;
     if (!back && !forward) return %orig(gesture);
     // The outer controller now contains a host, not a browsable page. Its
     // recognizers must not compete with the detail controller's native pans.
-    // A feed with a closed thread to bring back leaves forward to the pane's
-    // forward swipe, so one swipe never both reopens the thread and pushes.
     if ((self != state.secondary && !(self == state.feed && !state.host.postsShowingDetail)) || (back && nav.viewControllers.count < 2) ||
-        (forward && (!ApolloDuoSplitForwardPage(self) || ApolloDuoSplitCanRestoreClosedThread(nav)))) return NO;
+        (forward && !ApolloDuoSplitForwardPage(self))) return NO;
     UIView *view = nav.view;
     CGRect pane = UIEdgeInsetsInsetRect(view.bounds, view.safeAreaInsets);
     CGPoint point = [gesture locationInView:view];
@@ -6174,15 +5190,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     sDuoSplitGesture = NULL;
     sDuoSplitGestureView = NULL;
     sDuoSplitGestureOffset = 0.0;
-    if (back && result) ApolloDuoNoteNativeBackBegan(nav);
     return result;
-}
-- (void)screenEdgePanned:(UIPanGestureRecognizer *)gesture {
-    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
-}
-// Apollo's navigation-bar pan drives the same handler, Back or Forward.
-- (void)navigationBarPanned:(UIPanGestureRecognizer *)gesture {
-    ApolloDuoSplitNativePanReleaseRun(self, gesture, ^{ %orig(gesture); });
 }
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
     // Record the completed navigation request using its synchronous PostsType
@@ -6226,25 +5234,21 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
     UINavigationController *detail = ApolloDuoSplitDetailNavigation(self);
     if (detail != self) return [detail popViewControllerAnimated:animated];
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(self, NO);
-    // A pop from anywhere else (a key command, a button) ends a drag first.
-    ApolloDuoPostsCancelInteractiveClose(state, NO, 0.0);
-    // A pop Apollo's own interactive Back drives, whether it reaches here as
-    // the pan begins or as it ends, is a native page pop: never one of the
-    // split's own (thread close, Account pages, feed-link Back).
-    BOOL native = ApolloDuoNativeBackInFlight(self);
-    if (!native && state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
+    if (state.feed && !state.changing && self == state.secondary && state.secondary.viewControllers.count == 2) {
         UIViewController *page = state.secondary.topViewController;
         ApolloDuoPostsSetDetail(state, nil, animated);
         return page;
     }
-    if (!native && state.split && !state.changing && [state.kind isEqualToString:@"account"]
-        && self == state.secondary && detail.viewControllers.count > 1) {
+    if (state.split && !state.changing && [state.kind isEqualToString:@"account"]
+        && self == state.secondary && detail.viewControllers.count > 1
+        && detail.interactivePopGestureRecognizer.state != UIGestureRecognizerStateBegan
+        && detail.interactivePopGestureRecognizer.state != UIGestureRecognizerStateChanged) {
         UIViewController *page = detail.topViewController;
         ApolloDuoAccountSetPages(state, [detail.viewControllers subarrayWithRange:NSMakeRange(0, detail.viewControllers.count - 1)]);
         ApolloDuoSplitSyncGallerySidebar(state);
         return page;
     }
-    if (!native && state.feed && self == state.feed) {
+    if (state.feed && self == state.feed) {
         UIViewController *popped = ApolloDuoPostsPopFeedLink(state, animated);
         if (popped) return popped;
     }
@@ -6279,9 +5283,6 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         %orig(size, coordinator);
         return;
     }
-    // Fold, unfold or rotation: a thread close following the finger is let
-    // go before the columns change (it needs no layout to go).
-    ApolloDuoPostsCancelActiveInteractiveClose();
     UINavigationController *selectedNavigation = (id)self.selectedViewController;
     UINavigationController *detailNavigation = [selectedNavigation isKindOfClass:UINavigationController.class]
         ? ApolloDuoSplitDetailNavigation(selectedNavigation) : nil;
@@ -6353,14 +5354,12 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 }
 - (void)setSelectedViewController:(UIViewController *)controller {
     BOOL mainTabs = self == (id)ApolloMainTabBarController();
-    if (mainTabs && controller != self.selectedViewController) ApolloDuoPostsCancelActiveInteractiveClose();
     if (mainTabs) ApolloDuoSplitUpdate();
     %orig(controller);
     if (mainTabs) ApolloDuoSplitScheduleUpdate();
 }
 - (void)setSelectedIndex:(NSUInteger)index {
     BOOL mainTabs = self == (id)ApolloMainTabBarController();
-    if (mainTabs && index != self.selectedIndex) ApolloDuoPostsCancelActiveInteractiveClose();
     if (mainTabs) ApolloDuoSplitUpdate();
     %orig(index);
     if (mainTabs) ApolloDuoSplitScheduleUpdate();
@@ -6374,9 +5373,6 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
         point.x += sDuoSplitGestureOffset;
     }
     return point;
-}
-- (CGPoint)translationInView:(UIView *)view {
-    return ApolloDuoSplitReleaseTranslation(self, view, %orig(view));
 }
 %end
 
@@ -6617,18 +5613,6 @@ static void ApolloDuoSplitCoverYouTubeLoading(UIView *loading) {
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
         object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
             ApolloDuoPostsCancelActiveInteractiveClose();
-        }];
-    // A closed thread outlives only a short trip to the background.
-    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
-        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-            sDuoPostsBackgroundedAt = CFAbsoluteTimeGetCurrent();
-        }];
-    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillEnterForegroundNotification
-        object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-            NSTimeInterval away = sDuoPostsBackgroundedAt > 0 ? CFAbsoluteTimeGetCurrent() - sDuoPostsBackgroundedAt : 0.0;
-            sDuoPostsBackgroundedAt = 0;
-            ApolloDuoSplitState *state = sDuoPostsClosedThreadState;
-            if (state) ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventForeground, away);
         }];
     Class subredditList = NSClassFromString(@"Apollo.RedditListViewController");
     if (subredditList) {
