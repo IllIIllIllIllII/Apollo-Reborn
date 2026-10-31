@@ -12,12 +12,6 @@
 #import "ApolloWebJSON.h"              // ApolloWebJSONOptionalReadBackoff
 #import "ApolloWebSessionStore.h"      // ApolloActiveWebSessionUsername
 
-// Constant-pattern regexes are compiled once per call site, not on every call.
-#define APOLLO_STATIC_REGEX(name, pattern, opts) \
-    static NSRegularExpression *name; \
-    static dispatch_once_t name##Once; \
-    dispatch_once(&name##Once, ^{ name = [NSRegularExpression regularExpressionWithPattern:pattern options:opts error:nil]; })
-
 static const NSUInteger ApolloLinkPreviewMaxHTMLBytes = 2 * 1024 * 1024;
 
 typedef void (^ApolloLinkPreviewCompletion)(ApolloLinkPreview *preview);
@@ -160,7 +154,7 @@ static NSString *ApolloLinkPreviewCleanString(NSString *string) {
     NSString *clean = ApolloLinkPreviewDecodeCommonNamedEntities(ApolloLinkPreviewDecodeNumericEntities(string));
     clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-    APOLLO_STATIC_REGEX(whitespace, @"\\s+", 0);
+    NSRegularExpression *whitespace = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:nil];
     clean = [whitespace stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
     return clean.length > 0 ? clean : nil;
 }
@@ -171,7 +165,7 @@ static NSString *ApolloLinkPreviewCleanMultilineString(NSString *string) {
     clean = [clean stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
     clean = [clean stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
 
-    APOLLO_STATIC_REGEX(inlineWhitespace, @"[\\t\\f\\v ]+", 0);
+    NSRegularExpression *inlineWhitespace = [NSRegularExpression regularExpressionWithPattern:@"[\\t\\f\\v ]+" options:0 error:nil];
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     BOOL lastLineWasBlank = YES;
     for (NSString *line in [clean componentsSeparatedByString:@"\n"]) {
@@ -417,7 +411,7 @@ static NSString *ApolloLinkPreviewStringByStrippingHTMLTags(NSString *string) {
     NSString *clean = ApolloLinkPreviewCleanString(string);
     if (clean.length == 0) return nil;
 
-    APOLLO_STATIC_REGEX(tagRegex, @"<[^>]+>", 0);
+    NSRegularExpression *tagRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>" options:0 error:nil];
     clean = [tagRegex stringByReplacingMatchesInString:clean options:0 range:NSMakeRange(0, clean.length) withTemplate:@" "];
     return ApolloLinkPreviewCleanString(clean);
 }
@@ -462,7 +456,9 @@ static NSString *ApolloLinkPreviewDOIFromURL(NSURL *url) {
 
     if (doi.length == 0) {
         NSString *absolute = url.absoluteString.stringByRemovingPercentEncoding ?: url.absoluteString;
-        APOLLO_STATIC_REGEX(doiRegex, @"10\\.\\d{4,9}/[^\\s?#\"'<>]+", NSRegularExpressionCaseInsensitive);
+        NSRegularExpression *doiRegex = [NSRegularExpression regularExpressionWithPattern:@"10\\.\\d{4,9}/[^\\s?#\"'<>]+"
+                                                                                  options:NSRegularExpressionCaseInsensitive
+                                                                                    error:nil];
         NSTextCheckingResult *match = [doiRegex firstMatchInString:absolute options:0 range:NSMakeRange(0, absolute.length)];
         if (match) doi = [absolute substringWithRange:match.range];
     }
@@ -511,7 +507,9 @@ static NSString *ApolloLinkPreviewJSONLDValueForKeys(id object, NSArray<NSString
 static NSDictionary<NSString *, NSString *> *ApolloLinkPreviewJSONLDValuesFromHTML(NSString *html) {
     if (html.length == 0) return @{};
 
-    APOLLO_STATIC_REGEX(scriptRegex, @"<script\\s+[^>]*type\\s*=\\s*(['\"])[^'\"]*ld\\+json[^'\"]*\\1[^>]*>(.*?)</script>", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
+    NSRegularExpression *scriptRegex = [NSRegularExpression regularExpressionWithPattern:@"<script\\s+[^>]*type\\s*=\\s*(['\"])[^'\"]*ld\\+json[^'\"]*\\1[^>]*>(.*?)</script>"
+                                                                                options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                  error:nil];
     NSArray<NSTextCheckingResult *> *matches = [scriptRegex matchesInString:html options:0 range:NSMakeRange(0, html.length)];
     NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
     for (NSTextCheckingResult *match in matches) {
@@ -609,8 +607,12 @@ static BOOL ApolloLinkPreviewIsCachedBotWall(ApolloLinkPreview *preview) {
 static NSURL *ApolloTheNumbersPosterURLFromHTML(NSString *html, NSURL *baseURL) {
     if (html.length == 0 || !ApolloLinkPreviewHostIs(baseURL, @"the-numbers.com")) return nil;
 
-    APOLLO_STATIC_REGEX(imgRegex, @"<img\\s+[^>]*>", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
-    APOLLO_STATIC_REGEX(srcRegex, @"\\bsrc\\s*=\\s*(['\"])(.*?)\\1", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
+    NSRegularExpression *imgRegex = [NSRegularExpression regularExpressionWithPattern:@"<img\\s+[^>]*>"
+                                                                               options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                 error:nil];
+    NSRegularExpression *srcRegex = [NSRegularExpression regularExpressionWithPattern:@"\\bsrc\\s*=\\s*(['\"])(.*?)\\1"
+                                                                              options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                error:nil];
     NSArray<NSTextCheckingResult *> *matches = [imgRegex matchesInString:html options:0 range:NSMakeRange(0, html.length)];
     for (NSTextCheckingResult *match in matches) {
         NSString *tag = [html substringWithRange:match.range];
@@ -630,12 +632,14 @@ static NSURL *ApolloTheNumbersPosterURLFromHTML(NSString *html, NSURL *baseURL) 
 
 static NSString *ApolloTheNumbersSynopsisFromHTML(NSString *html) {
     if (html.length == 0) return nil;
-    APOLLO_STATIC_REGEX(synopsisRegex, @"<h2[^>]*>\\s*Synopsis\\s*</h2>\\s*<p[^>]*>(.*?)</p>", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
+    NSRegularExpression *synopsisRegex = [NSRegularExpression regularExpressionWithPattern:@"<h2[^>]*>\\s*Synopsis\\s*</h2>\\s*<p[^>]*>(.*?)</p>"
+                                                                                   options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                     error:nil];
     NSTextCheckingResult *match = [synopsisRegex firstMatchInString:html options:0 range:NSMakeRange(0, html.length)];
     if (!match || match.numberOfRanges < 2) return nil;
 
     NSString *raw = [html substringWithRange:[match rangeAtIndex:1]];
-    APOLLO_STATIC_REGEX(tags, @"<[^>]+>", 0);
+    NSRegularExpression *tags = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>" options:0 error:nil];
     raw = [tags stringByReplacingMatchesInString:raw options:0 range:NSMakeRange(0, raw.length) withTemplate:@" "];
     return ApolloLinkPreviewTruncatedString(raw, 220);
 }
@@ -1679,8 +1683,10 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
     if (html.length == 0) return @{};
 
     NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
-    APOLLO_STATIC_REGEX(metaRegex, @"<meta\\s+[^>]*>", NSRegularExpressionCaseInsensitive);
-    APOLLO_STATIC_REGEX(attrRegex, @"([a-zA-Z:-]+)\\s*=\\s*(['\"])(.*?)\\2", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
+    NSRegularExpression *metaRegex = [NSRegularExpression regularExpressionWithPattern:@"<meta\\s+[^>]*>" options:NSRegularExpressionCaseInsensitive error:nil];
+    NSRegularExpression *attrRegex = [NSRegularExpression regularExpressionWithPattern:@"([a-zA-Z:-]+)\\s*=\\s*(['\"])(.*?)\\2"
+                                                                               options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                 error:nil];
     NSArray<NSTextCheckingResult *> *metaMatches = [metaRegex matchesInString:html options:0 range:NSMakeRange(0, html.length)];
     for (NSTextCheckingResult *metaMatch in metaMatches) {
         NSString *tag = [html substringWithRange:metaMatch.range];
@@ -1700,7 +1706,9 @@ static NSURL *ApolloLinkPreviewWWWSiblingURL(NSURL *url) {
         }
     }
 
-    APOLLO_STATIC_REGEX(titleRegex, @"<title[^>]*>(.*?)</title>", NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators);
+    NSRegularExpression *titleRegex = [NSRegularExpression regularExpressionWithPattern:@"<title[^>]*>(.*?)</title>"
+                                                                                options:NSRegularExpressionCaseInsensitive | NSRegularExpressionDotMatchesLineSeparators
+                                                                                  error:nil];
     NSTextCheckingResult *titleMatch = [titleRegex firstMatchInString:html options:0 range:NSMakeRange(0, html.length)];
     if (titleMatch && titleMatch.numberOfRanges > 1) {
         values[@"title"] = [html substringWithRange:[titleMatch rangeAtIndex:1]];

@@ -194,7 +194,7 @@ static void ApolloDuoSyncCellBackground(ASCellNode *node) {
     if (!node.isNodeLoaded || !ApolloDuoRailHasVisibleSideBar()) return;
     UIView *ancestor = node.view.superview;
     while (ancestor && ![ancestor isKindOfClass:UITableViewCell.class]) ancestor = ancestor.superview;
-    if ([ancestor isKindOfClass:ApolloClassASTableViewCell]) {
+    if ([ancestor isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
         _ASTableViewCell *cell = (_ASTableViewCell *)ancestor;
         // A queued update must never repaint a cell recycled for another node.
         if (cell.node == node) ApolloDuoSyncOuterCellBackground(cell);
@@ -473,17 +473,10 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 - (void)tableView:(UITableView *)table willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)path {
     %orig(table, cell, path);
     ApolloDuoAccountGridDisplayCell((UITableView *)self, cell, path);
-    if ([cell isKindOfClass:ApolloClassASTableViewCell]) {
+    if ([cell isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
         ASCellNode *node = ((_ASTableViewCell *)cell).node;
-        UIColor *current = node.backgroundColor;
-        UIColor *wanted = ApolloDuoAccountFeedNodeBackground(node, current);
-        // Assigning re-enters the ASCellNode setBackgroundColor: hook, which
-        // already syncs the outer cell; only sync directly when nothing changed.
-        if (wanted != current && ![wanted isEqual:current]) {
-            node.backgroundColor = wanted;
-        } else {
-            ApolloDuoSyncCellBackground(node);
-        }
+        node.backgroundColor = ApolloDuoAccountFeedNodeBackground(node, node.backgroundColor);
+        ApolloDuoSyncCellBackground(node);
     }
 }
 
@@ -523,7 +516,7 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     // color updates intentionally skip the outer UIKit cell. Sync that
     // existing surface once it becomes exposed again, including during the
     // transient sizing callback below. This changes no Texture geometry.
-    if ([cell isKindOfClass:ApolloClassASTableViewCell]) {
+    if ([cell isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
         ApolloDuoSyncCellBackground(((_ASTableViewCell *)cell).node);
     }
     CGFloat width = ApolloDuoRailFeedContentWidth((UITableView *)self);
