@@ -30,6 +30,9 @@
 
 static UITableView *ApolloDuoSplitFindTable(UIView *view);
 static void ApolloDuoPostsStopGeometry(UIView *feed);
+// The setting is the source of truth for the glass drawer; this flag also covers
+// a host whose listUsesGlass is still YES until its next updateListAppearance.
+static BOOL sDuoListGlassMayBeActive;
 @class ApolloDuoSplitHost;
 static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
@@ -472,6 +475,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     BOOL changed = !self.listStyleApplied || self.listUsesGlass != sDuoSubredditPanelGlassEnabled;
     BOOL refreshRows = self.listStyleApplied && changed;
     self.listUsesGlass = sDuoSubredditPanelGlassEnabled;
+    sDuoListGlassMayBeActive = self.listUsesGlass;
     if (changed) {
         // Keep the same controller, panel geometry, and native Add/Edit items.
         // Standard restores Apollo's own surfaces instead of clearing them for
@@ -842,8 +846,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
             if ([secondary isKindOfClass:UINavigationController.class]) navigation = (id)secondary;
         }
         UIViewController *owner = navigation.topViewController;
-        BOOL supportsLayout = [owner isKindOfClass:NSClassFromString(@"Apollo.PostsViewController")]
-            || [owner isKindOfClass:NSClassFromString(@"Apollo.CommentsViewController")];
+        BOOL supportsLayout = [owner isKindOfClass:ApolloClassPostsViewController]
+            || [owner isKindOfClass:ApolloClassCommentsViewController];
         // Carry the same control into full-width comments, just like List and
         // Split. Replacing it with the thread's standalone item makes its
         // glass and glyph disappear/reappear during the native push and Back.
@@ -1117,7 +1121,7 @@ BOOL ApolloDuoSplitIsAccountFeedController(UIViewController *controller) {
         || ![state.secondary.viewControllers containsObject:controller]) return NO;
     // A real comment thread has depth and linked-comment highlight colors.
     // The profile and shortcut lists instead render independent feed cards.
-    return ![NSStringFromClass(controller.class) isEqualToString:@"Apollo.CommentsViewController"];
+    return ![controller isMemberOfClass:ApolloClassCommentsViewController];
 }
 
 BOOL ApolloDuoSplitIsOwnAccountController(UIViewController *controller) {
@@ -1195,7 +1199,11 @@ static BOOL ApolloDuoListOwnsSurface(UIView *view, ApolloDuoSplitHost *host) {
     return NO;
 }
 
+// -[UIView setBackgroundColor:] reaches this for every view in the app, and
+// the host lookup walks the responder chain, so bail unless a glass drawer is
+// possible (see sDuoListGlassMayBeActive).
 UIColor *ApolloDuoSplitOverlayBackground(UIView *view, UIColor *color) {
+    if (!sDuoSubredditPanelGlassEnabled && !sDuoListGlassMayBeActive) return color;
     if (!NSThread.isMainThread) return color;
     ApolloDuoSplitHost *host = ApolloDuoSubredditOverlayHost(view);
     if (!host || !host.listUsesGlass || host.updatingListSurfaces || !ApolloDuoListOwnsSurface(view, host)) return color;
@@ -1526,8 +1534,14 @@ static CGRect ApolloDuoPostsDetailPane(ApolloDuoSplitState *state) {
 @end
 @implementation ApolloDuoPostsGeometry @end
 
+// The geometry animation is the only thing the stop walk removes. It is added
+// in one place with a fixed duration and auto-removes on completion, so once
+// the latest deadline passes no view can still carry it and the recursive
+// subview walk is skipped.
+static CFTimeInterval sDuoPostsGeometryDeadline;
+
 static void ApolloDuoPostsStopGeometry(UIView *feed) {
-    if (!feed) return;
+    if (!feed || CACurrentMediaTime() > sDuoPostsGeometryDeadline) return;
     [feed.layer removeAnimationForKey:@"ApolloDuoPostsGeometry"];
     for (UIView *child in feed.subviews) ApolloDuoPostsStopGeometry(child);
 }
@@ -1631,6 +1645,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
         resize.duration = duration;
         resize.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         [layer addAnimation:resize forKey:@"ApolloDuoPostsGeometry"];
+        sDuoPostsGeometryDeadline = MAX(sDuoPostsGeometryDeadline, CACurrentMediaTime() + duration + 0.25);
         count++;
     }
     ApolloLog(@"[DuoSplit] animating %lu retained surfaces", (unsigned long)count);
@@ -1913,7 +1928,7 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
 // Read the model identity without loading the new controller's view. Feed
 // selections seed link immediately; URL-created controllers seed linkID.
 static NSString *ApolloDuoCommentsPostID(UIViewController *page) {
-    if (![NSStringFromClass(page.class) isEqualToString:@"Apollo.CommentsViewController"]) return nil;
+    if (![page isMemberOfClass:ApolloClassCommentsViewController]) return nil;
     id link = ApolloReadObjectIvar(page, "link");
     id value = [link respondsToSelector:@selector(fullName)]
         ? ((id (*)(id, SEL))objc_msgSend)(link, @selector(fullName)) : nil;
@@ -2358,7 +2373,7 @@ static void ApolloDuoSearchReturnToSearch(ApolloDuoSplitState *state) {
 static void ApolloDuoSearchUpdateBackItem(ApolloDuoSplitState *state) {
     UIViewController *page = state.secondary.viewControllers.firstObject;
     BOOL needsBack = state.split && [state.kind isEqualToString:@"search"]
-        && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"];
+        && [page isMemberOfClass:ApolloClassPostsViewController];
     if (!needsBack || state.searchBackPage != page) ApolloDuoSearchRestoreBackItem(state);
     if (!needsBack || state.searchBackItem) return;
 
@@ -2988,7 +3003,13 @@ static void ApolloDuoSplitUpdate(void) {
     }
 }
 
-void ApolloDuoSplitScheduleUpdate(void) {
+// Bumped by every explicit schedule request (hinge, selection, push/pop,
+// rotation, fold, ...). The viewDidLayoutSubviews hook compares it with the
+// generation it last saw, so only layout passes that follow nothing explicit
+// and change none of the layout inputs are skipped.
+static NSUInteger sDuoSplitExplicitGeneration;
+
+static void ApolloDuoSplitScheduleUpdateCoalesced(void) {
     if (sDuoSplitUpdateScheduled) return;
     UITabBarController *tabs = (id)ApolloMainTabBarController();
     if (![tabs isKindOfClass:UITabBarController.class] || !tabs.isViewLoaded) return;
@@ -2999,6 +3020,58 @@ void ApolloDuoSplitScheduleUpdate(void) {
         sDuoSplitUpdateScheduled = NO;
         ApolloDuoSplitUpdate();
     });
+}
+
+void ApolloDuoSplitScheduleUpdate(void) {
+    sDuoSplitExplicitGeneration++;
+    ApolloDuoSplitScheduleUpdateCoalesced();
+}
+
+// Layout-pass fingerprint: the inputs ApolloDuoSplitUpdate derives its work
+// from that a layout pass alone can change. Zeroed first so memcmp ignores padding.
+typedef struct {
+    CGSize size;
+    NSInteger selectedIndex;
+    int mode;
+    NSInteger horizontalSizeClass;
+    uintptr_t screen;
+    NSUInteger generation;
+    BOOL hasDivision, hasSideBar;
+} ApolloDuoLayoutSignature;
+static char kDuoLayoutSignature;
+
+static BOOL ApolloDuoSplitAnyStateChanging(UITabBarController *tabs) {
+    for (UIViewController *child in tabs.viewControllers) {
+        if (![child isKindOfClass:UINavigationController.class]) continue;
+        if (ApolloDuoSplitStateForNavigation((id)child, NO).changing) return YES;
+    }
+    return NO;
+}
+
+// viewDidLayoutSubviews fires constantly (every scroll-driven relayout of the
+// tab controller); a full Update pass is redundant unless something changed.
+static void ApolloDuoSplitScheduleUpdateFromLayout(UITabBarController *tabs) {
+    ApolloDuoLayoutSignature signature;
+    memset(&signature, 0, sizeof(signature));
+    signature.size = tabs.view.bounds.size;
+    signature.selectedIndex = (NSInteger)tabs.selectedIndex;
+    signature.mode = ApolloDuoCurrentMode();
+    signature.horizontalSizeClass = tabs.traitCollection.horizontalSizeClass;
+    signature.screen = (uintptr_t)tabs.view.window.screen;
+    signature.generation = sDuoSplitExplicitGeneration;
+    signature.hasDivision = !CGRectIsNull(ApolloDuoActiveVerticalDivision(tabs.view));
+    signature.hasSideBar = ApolloDuoRailHasVisibleSideBar();
+    NSValue *previous = objc_getAssociatedObject(tabs, &kDuoLayoutSignature);
+    if (previous && !sDuoSplitUpdateScheduled && !sDuoSplitUpdating && !ApolloDuoSplitAnyStateChanging(tabs)) {
+        ApolloDuoLayoutSignature last;
+        memset(&last, 0, sizeof(last));
+        [previous getValue:&last size:sizeof(last)];
+        if (memcmp(&last, &signature, sizeof(signature)) == 0) return;
+    }
+    objc_setAssociatedObject(tabs, &kDuoLayoutSignature,
+                             [NSValue valueWithBytes:&signature objCType:@encode(ApolloDuoLayoutSignature)],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ApolloDuoSplitScheduleUpdateCoalesced();
 }
 
 static BOOL ApolloDuoSplitHasDeferredPresentationInWindow(UIWindow *window) {
@@ -3283,7 +3356,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             }
         }
         state.needsDefault = NO;
-        if (nav == state.primary || (nav == state.outer && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"])) {
+        if (nav == state.primary || (nav == state.outer && [page isMemberOfClass:ApolloClassPostsViewController])) {
             // Apollo may wait for subreddit data before pushing. The drawer
             // has already dismissed by then, so its visibility is not an
             // animation gate; preserve the originating navigation request.
@@ -3318,7 +3391,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
     if ([state.kind isEqualToString:@"search"] && nav == state.outer && !state.split
         && ApolloDuoSplitShouldOpen((id)nav.tabBarController)) {
         if (state.outer.view.window && !UIAccessibilityIsReduceMotionEnabled()
-            && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"]) {
+            && [page isMemberOfClass:ApolloClassPostsViewController]) {
             // Capture the live Search hierarchy before its controller moves
             // into the new primary navigation container. Retained search-bar
             // and row views will resize with the incoming page, not snap to
@@ -3357,7 +3430,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
         ApolloDuoAccountSetPages(state, @[state.root, page]);
     } else {
         BOOL searchSubreddit = [state.kind isEqualToString:@"search"]
-            && [NSStringFromClass(page.class) isEqualToString:@"Apollo.PostsViewController"];
+            && [page isMemberOfClass:ApolloClassPostsViewController];
         // A new Search detail may still be loading when UIKit performs the
         // root replacement. Animate its entire live navigation pane, including
         // chrome, rather than a blank page whose content appears afterward.
@@ -3735,7 +3808,7 @@ static void ApolloDuoInstallListReselectionGuard(Class listClass) {
 }
 - (void)viewDidLayoutSubviews {
     %orig;
-    if (self == (id)ApolloMainTabBarController()) ApolloDuoSplitScheduleUpdate();
+    if (self == (id)ApolloMainTabBarController()) ApolloDuoSplitScheduleUpdateFromLayout((UITabBarController *)self);
 }
 - (void)setSelectedViewController:(UIViewController *)controller {
     BOOL mainTabs = self == (id)ApolloMainTabBarController();
@@ -3829,9 +3902,8 @@ static CGFloat ApolloDuoEmptyStateCenterX(UILabel *label, CGFloat nativeX) {
     // A label already inside the old safe area does not necessarily receive
     // its own notification when only the sidebar width changes. The table
     // does; refresh the existing label without waiting for another selection.
-    Class emptyLabel = NSClassFromString(@"Apollo.EmptyStateLabel");
     for (UIView *view in [(UITableView *)self subviews]) {
-        if (![view isKindOfClass:emptyLabel]) continue;
+        if (![view isKindOfClass:ApolloClassEmptyStateLabel]) continue;
         CGPoint center = view.center;
         CGFloat x = ApolloDuoEmptyStateCenterX((id)view, center.x);
         if (fabs(center.x - x) > 0.1) view.center = CGPointMake(x, center.y);
