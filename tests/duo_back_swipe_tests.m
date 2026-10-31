@@ -24,7 +24,7 @@
 @property(nonatomic, weak) id delegate;
 @property(nonatomic, copy) NSString *name;
 @property(nonatomic) NSInteger state;
-@property(nonatomic) BOOL delaysTouchesBegan;
+@property(nonatomic) BOOL delaysTouchesBegan, delaysTouchesEnded, cancelsTouchesInView;
 @property(nonatomic) NSUInteger superMoves, targetCount, disables;
 // Starts enabled; counts every disable (UIKit cancels a recognizer then).
 @property(nonatomic, getter=isEnabled) BOOL enabled;
@@ -34,16 +34,23 @@
 - (void)addTarget:(id)target action:(SEL)action;
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
 - (void)reset;
 @end
 @implementation UIGestureRecognizer
-- (instancetype)init { if ((self = [super init])) _enabled = YES; return self; }
+- (instancetype)init {
+    if ((self = [super init])) { _enabled = YES; _cancelsTouchesInView = YES; _delaysTouchesEnded = YES; }
+    return self;
+}
 - (instancetype)initWithTarget:(__unused id)target action:(__unused SEL)action { return [self init]; }
 - (void)setEnabled:(BOOL)enabled { if (!enabled) self.disables++; _enabled = enabled; }
 - (CGPoint)locationInView:(__unused UIView *)view { return self.location; }
 - (void)addTarget:(__unused id)target action:(__unused SEL)action { self.targetCount++; }
 - (void)touchesBegan:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event {}
 - (void)touchesMoved:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event { self.superMoves++; }
+- (void)touchesEnded:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event {}
+- (void)touchesCancelled:(__unused NSSet<UITouch *> *)touches withEvent:(__unused UIEvent *)event {}
 - (void)reset { self.state = 0; }
 @end
 @implementation UIView
@@ -54,7 +61,6 @@
 @end
 @interface UIPanGestureRecognizer : UIGestureRecognizer
 @property(nonatomic) NSUInteger maximumNumberOfTouches;
-@property(nonatomic) BOOL cancelsTouchesInView;
 @property(nonatomic) CGPoint velocity, translation;
 - (CGPoint)velocityInView:(UIView *)view;
 - (CGPoint)translationInView:(UIView *)view;
@@ -76,9 +82,35 @@ typedef struct { CGFloat top, left, bottom, right; } UIEdgeInsets;
 @property(nonatomic) BOOL alwaysBounceHorizontal;
 @end
 @implementation UIScrollView @end
-@interface UISlider : UIView @end
+@interface UITapGestureRecognizer : UIGestureRecognizer @end
+@implementation UITapGestureRecognizer @end
+@interface UITableView : UIScrollView
+@property(nonatomic, getter=isEditing) BOOL editing;
+@end
+@implementation UITableView @end
+@interface UITableViewCell : UIView
+@property(nonatomic, getter=isEditing) BOOL editing;
+@end
+@implementation UITableViewCell @end
+@interface UILongPressGestureRecognizer : UIGestureRecognizer @end
+@implementation UILongPressGestureRecognizer @end
+@interface UIControl : UIView @end
+@implementation UIControl @end
+@interface UIButton : UIControl @end
+@implementation UIButton @end
+@interface UISegmentedControl : UIControl @end
+@implementation UISegmentedControl @end
+@interface UIStepper : UIControl @end
+@implementation UIStepper @end
+@interface UITextField : UIControl @end
+@implementation UITextField @end
+@interface UITextView : UIScrollView
+@property(nonatomic, getter=isSelectable) BOOL selectable;
+@end
+@implementation UITextView @end
+@interface UISlider : UIControl @end
 @implementation UISlider @end
-@interface UISwitch : UIView @end
+@interface UISwitch : UIControl @end
 @implementation UISwitch @end
 @interface UITouch : NSObject
 @property(nonatomic) CGPoint point;
@@ -342,7 +374,7 @@ int main(void) {
         Check(!ApolloDuoBackSwipeCanNavigate(nav), @"outer containment cannot compete with the real pane");
         nav.duoState = nil;
         ApolloDuoInstallBackSwipe(nav); ApolloDuoInstallBackSwipe(nav);
-        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 2, @"recognizer installation is idempotent (swipe + highlight guard)");
+        Check(ApolloDuoHasBackSwipe(nav) && nav.view.gestureRecognizers.count == 3, @"recognizer installation is idempotent (swipe, highlight guard, drag claim)");
         ApolloDuoBackSwipe *owner = objc_getAssociatedObject(nav, &kApolloDuoBackSwipe);
         Check([owner.pan isMemberOfClass:ApolloDuoPaneBackPan.class] && owner.pan.maximumNumberOfTouches == 1
               && [owner.pan.name isEqualToString:@"ApolloReborn.Duo.PaneBack"] && owner.pan.delegate == owner
@@ -393,6 +425,9 @@ int main(void) {
         Check([owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard receives the touches the swipe accepts (edge)");
         touch.point = CGPointMake(200, 300);
         Check(![owner gestureRecognizer:guard shouldReceiveTouch:touch], @"highlight guard ignores interior touches the swipe rejects");
+        // The velocity checks run with a motion since touch-down that is
+        // sideways but not clearly so, (10, 8): the velocity decides them.
+        guard.location = CGPointMake(15, 308);
         guard.velocity = CGPointMake(300, 40);
         Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard begins for a clearly rightward move");
         guard.velocity = CGPointMake(300, 250);
@@ -409,6 +444,140 @@ int main(void) {
               @"highlight guard recognizes simultaneously with anything");
         Check(![owner gestureRecognizer:owner.pan shouldBeRequiredToFailByGestureRecognizer:guard],
               @"the swipe never waits for the highlight guard");
+        // The guard decides from the motion since touch-down too, so a slow
+        // sideways drag (no velocity to speak of) still drops the highlight.
+        guard.velocity = CGPointZero;
+        guard.location = CGPointMake(19, 302);
+        // (A drag slower than the guard's 0.12 s hold never reaches this;
+        // the drag claim owns it.)
+        Check([owner gestureRecognizerShouldBegin:guard],
+              @"highlight guard begins for a clearly sideways motion even without a clear velocity");
+        guard.location = CGPointMake(-9, 302);
+        Check([owner gestureRecognizerShouldBegin:guard], @"highlight guard begins for a slow leftward drag too");
+        guard.location = CGPointMake(10, 314); guard.velocity = CGPointMake(300, 40);
+        Check(![owner gestureRecognizerShouldBegin:guard], @"a mostly vertical motion never begins the guard, whatever the velocity");
+        Check(ApolloDuoHighlightGuardDecides(CGPointMake(14, 2), CGPointZero)
+              && ApolloDuoHighlightGuardDecides(CGPointMake(-14, -3), CGPointZero)
+              && ApolloDuoHighlightGuardDecides(CGPointMake(10, 8), CGPointMake(-300, 10))
+              && !ApolloDuoHighlightGuardDecides(CGPointMake(10, 8), CGPointMake(300, 250))
+              && !ApolloDuoHighlightGuardDecides(CGPointMake(5, 14), CGPointMake(300, 10))
+              && !ApolloDuoHighlightGuardDecides(CGPointMake(0, 12), CGPointZero),
+              @"guard decision: a clear sideways motion or velocity, either way, never a mostly vertical motion");
+        // The selection veto: a touch that has moved more than a few points
+        // is a drag, and never selects a row or fires a row's tap on release.
+        Check(!ApolloDuoTouchIsDrag(CGPointMake(3, 4)) && !ApolloDuoTouchIsDrag(CGPointMake(6, 8))
+              && ApolloDuoTouchIsDrag(CGPointMake(9, 6)) && ApolloDuoTouchIsDrag(CGPointMake(0, -11))
+              && ApolloDuoTouchIsDrag(CGPointMake(-11, 0)),
+              @"veto: past 10pt of travel in any direction is a drag; a tap's jitter is not");
+        ApolloDuoDragClaim *claim = owner.dragClaim;
+        Check(claim && [nav.view.gestureRecognizers containsObject:claim] && claim.cancelsTouchesInView
+              && !claim.delaysTouchesBegan && !claim.delaysTouchesEnded && claim.delegate == owner,
+              @"drag claim: installed beside the Back, cancelling the row's touch, never delaying a tap or its release");
+        UITouch *rowTouch = [UITouch new]; rowTouch.point = CGPointMake(100, 300);
+        NSSet *rowTouches = [NSSet setWithObject:rowTouch];
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(104, 303);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStatePossible, @"drag claim: a tap's jitter leaves the touch to the row");
+        [claim touchesEnded:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStateFailed, @"drag claim: a tap ends undecided, so the row selects at once");
+        [claim reset]; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(108, 302);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(112, 303);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStateBegan,
+              @"drag claim: a slow drag past 10pt claims the touch (the row's highlight is cancelled)");
+        rowTouch.point = CGPointMake(140, 304);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStateChanged, @"drag claim: keeps the touch while it moves");
+        [claim touchesEnded:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStateEnded, @"drag claim: the release is the claim's, not a row selection");
+        [claim reset]; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(100, 289);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        [claim touchesCancelled:rowTouches withEvent:[UIEvent new]];
+        Check(claim.state == UIGestureRecognizerStateCancelled, @"drag claim: a vertical drag claims too, and a cancelled touch cancels it");
+        [claim reset];
+        Check([owner gestureRecognizerShouldBegin:claim], @"drag claim: begins whenever its touch has become a drag");
+        UITapGestureRecognizer *rowTap = [UITapGestureRecognizer new];
+        Check(![owner gestureRecognizer:claim shouldRecognizeSimultaneouslyWithGestureRecognizer:rowTap]
+              && ![owner gestureRecognizer:rowTap shouldRecognizeSimultaneouslyWithGestureRecognizer:claim],
+              @"drag claim: excludes a row's tap (the age alert), so a claimed touch never fires it");
+        Check([owner gestureRecognizer:claim shouldRecognizeSimultaneouslyWithGestureRecognizer:row]
+              && [owner gestureRecognizer:claim shouldRecognizeSimultaneouslyWithGestureRecognizer:scroll.panGestureRecognizer]
+              && [owner gestureRecognizer:owner.pan shouldRecognizeSimultaneouslyWithGestureRecognizer:claim]
+              && [owner gestureRecognizer:guard shouldRecognizeSimultaneouslyWithGestureRecognizer:claim],
+              @"drag claim: runs alongside scrolling, row actions, the Back and the guard; nothing waits");
+        Check(![owner gestureRecognizer:owner.pan shouldBeRequiredToFailByGestureRecognizer:claim]
+              && ![owner gestureRecognizer:claim shouldBeRequiredToFailByGestureRecognizer:row],
+              @"drag claim: no failure requirements either way");
+        // Its touches: a row's, in an unfolded split, not a slider or switch
+        // that tracks the drag, not a list being edited.
+        ApolloDuoSplitState *claimSplit = [ApolloDuoSplitState new];
+        claimSplit.split = [NSObject new]; claimSplit.host = [TestDuoHost new]; claimSplit.feed = nav;
+        UITableView *claimTable = [UITableView new]; claimTable.superview = nav.view;
+        UITableViewCell *claimCell = [UITableViewCell new]; claimCell.superview = claimTable;
+        UIView *claimContent = [UIView new]; claimContent.superview = claimCell;
+        UITouch *cellTouch = [UITouch new]; cellTouch.point = CGPointMake(300, 300); cellTouch.view = claimContent;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: nothing without an unfolded split");
+        nav.duoState = claimSplit;
+        Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: takes a row's touch anywhere in a split pane");
+        cellTouch.view = claimTable;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves touches outside rows alone");
+        UISlider *rowSlider = [UISlider new]; rowSlider.superview = claimCell; cellTouch.view = rowSlider;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a slider in a row to its drag");
+        // Every control the user drags on purpose keeps its drag: only a
+        // row's plain buttons (vote, save, more) are claimed with the row.
+        NSArray<UIView *> *dragged = @[[UISegmentedControl new], [UIStepper new], [UITextField new], [UISwitch new]];
+        for (UIView *control in dragged) {
+            UIView *inner = [UIView new]; inner.superview = control; control.superview = claimCell; cellTouch.view = inner;
+            Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch],
+                  [NSString stringWithFormat:@"drag claim: leaves a %@ in a row to its own tracking", control.class]);
+        }
+        UIButton *rowButton = [UIButton new]; rowButton.superview = claimCell; cellTouch.view = rowButton;
+        Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch],
+              @"drag claim: a row's plain button is claimed with the row (no vote after a drag)");
+        UITextView *selectableText = [UITextView new]; selectableText.selectable = YES; selectableText.superview = claimCell;
+        cellTouch.view = selectableText;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a selectable text view to its selection");
+        selectableText.selectable = NO;
+        Check([owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: a plain text view is just the row");
+        cellTouch.view = claimContent; claimTable.editing = YES;
+        Check(![owner gestureRecognizer:claim shouldReceiveTouch:cellTouch], @"drag claim: leaves a list being edited (reordering) alone");
+        claimTable.editing = NO;
+        // A claimed touch can't fire a row's tap or a press still deciding,
+        // whatever their own delegates allow: they are cancelled when the
+        // claim begins. A press already showing (a hold now scrubbing) keeps it.
+        UITapGestureRecognizer *ageTap = [UITapGestureRecognizer new];
+        UILongPressGestureRecognizer *loupe = [UILongPressGestureRecognizer new];
+        UILongPressGestureRecognizer *heldMenu = [UILongPressGestureRecognizer new];
+        heldMenu.state = UIGestureRecognizerStateBegan;
+        [claimCell addGestureRecognizer:ageTap]; [claimCell addGestureRecognizer:loupe]; [claimCell addGestureRecognizer:heldMenu];
+        [claim reset]; rowTouch.view = claimContent; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(114, 302);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        [owner dragClaimed:claim];
+        Check(ageTap.disables == 1 && loupe.disables == 1 && ageTap.enabled && loupe.enabled,
+              @"drag claim: a sideways claim cancels the row's tap and its undecided loupe (and re-enables them)");
+        Check(heldMenu.disables == 0, @"drag claim: a press already showing keeps the touch (press-and-hold)");
+        [claim reset]; rowTouch.point = CGPointMake(100, 300);
+        [claim touchesBegan:rowTouches withEvent:[UIEvent new]];
+        rowTouch.point = CGPointMake(102, 314);
+        [claim touchesMoved:rowTouches withEvent:[UIEvent new]];
+        [owner dragClaimed:claim];
+        Check(ageTap.disables == 2 && loupe.disables == 1,
+              @"drag claim: a vertical claim cancels the tap but leaves a wobbly hold to the loupe's own veto");
+        [claim reset]; rowTouch.view = nil; nav.duoState = nil;
+        // The info-row loupe makes ancestor pans wait for it; the Duo pane
+        // gestures are exempt (ApolloStatsRowTouch.xm), so a sideways drag
+        // goes to the Back and the claim cancels the loupe.
+        Check(ApolloDuoIsPaneGesture(owner.pan) && ApolloDuoIsPaneGesture(owner.highlightGuard)
+              && ApolloDuoIsPaneGesture(claim) && !ApolloDuoIsPaneGesture(row) && !ApolloDuoIsPaneGesture(nil),
+              @"pane gestures: the Back, its guard and the claim, nothing else");
         // Folded, the native pan owns every pop; the swipe acts for a thread
         // right above the Posts backstop.
         ApolloDuoSplitState *threadSplit = [ApolloDuoSplitState new];
