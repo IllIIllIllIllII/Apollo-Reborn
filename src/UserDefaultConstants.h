@@ -382,6 +382,9 @@ static NSString *const UDKeyDuoSplitFeedShare = @"DuoSplitFeedShare";
 // The retired stop this replaced (1 was 25%, 3 the widest feed). Read as the
 // position when no share is stored, never written.
 static NSString *const UDKeyDuoSplitStop = @"DuoSplitStop";
+// Opt-in tabletop video layout on a partly folded Duo. Default OFF.
+static NSString *const UDKeyDuoTabletopVideoEnabled = @"DuoTabletopVideoEnabled";
+static NSString *const ApolloDuoVideoLayoutDidChangeNotification = @"ApolloDuoVideoLayoutDidChangeNotification";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →
 // content → detail. Opt-in; default OFF via registerDefaults. Installation

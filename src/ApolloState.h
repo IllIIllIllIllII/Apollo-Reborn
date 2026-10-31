@@ -207,6 +207,7 @@ extern BOOL sSubredditSwitcherSheetEnabled;
 // Adjustable Split (default NO): the unfolded landscape Posts divider moves
 // with a press and drag. Read live by ApolloDuoSplitView.
 extern BOOL sDuoAdjustableSplit;
+extern BOOL sDuoTabletopVideoEnabled; // opt-in, default NO
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }
