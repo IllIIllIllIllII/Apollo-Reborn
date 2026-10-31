@@ -204,6 +204,9 @@ extern NSInteger sDuoLandscapeFeedLayout;
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Modern sheet or Apollo's Classic popup (default) for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
+// Adjustable Split (default NO): the unfolded landscape Posts divider moves
+// with a press and drag. Read live by ApolloDuoSplitView.
+extern BOOL sDuoAdjustableSplit;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }

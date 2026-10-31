@@ -28,6 +28,7 @@
 #import "ApolloState.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
+#import "ApolloDuoSplitPosition.h"
 #import "ApolloTranslation.h"
 #import "ApolloRedgifsMissingDuration.h"
 #import "ApolloRedgifsErrorCards.h"
@@ -3750,6 +3751,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyDuoLandscapeFeedLayout: @0,
                                     UDKeyDuoSubredditPanelGlassEnabled: @NO,
                                     UDKeySubredditSwitcherSheetEnabled: @NO,
+                                    UDKeyDuoAdjustableSplit: @NO,
                                     UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
                                     UDKeyIconRowMagnifier: @YES,
@@ -4070,6 +4072,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sDuoLandscapeFeedLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeFeedLayout];
     sDuoSubredditPanelGlassEnabled = [standardDefaults boolForKey:UDKeyDuoSubredditPanelGlassEnabled];
     sSubredditSwitcherSheetEnabled = [standardDefaults boolForKey:UDKeySubredditSwitcherSheetEnabled];
+    sDuoAdjustableSplit = [standardDefaults boolForKey:UDKeyDuoAdjustableSplit];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
     if (sDuoLandscapeFeedLayout != 0 && sDuoLandscapeFeedLayout != 2) {
