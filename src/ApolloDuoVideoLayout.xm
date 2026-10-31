@@ -539,7 +539,10 @@ static ApolloDuoVideoCoordinator *DuoVideoCoordinator(UIViewController *viewer, 
 }
 - (void)layoutSubviews {
     ApolloDuoVideoCoordinator *owner = DuoVideoOwner((UIView *)self);
-    if (!owner.active) { %orig; return; }
+    if (!owner.active) {
+        %orig;
+        return;
+    }
     // Keep UIVisualEffectView's internal layout, replacing Apollo's compact
     // control arrangement. Owned geometry is prepared by the coordinator.
     struct objc_super parent = {self, UIVisualEffectView.class};
