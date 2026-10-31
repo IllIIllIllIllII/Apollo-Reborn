@@ -216,7 +216,8 @@ void ApolloProfileRowWrapperFocusRowView(UIView *rowView) {
 // The arrow keys treat a two-row cell as one stop. Arriving, start on the half
 // that faces the direction of travel; leaving, step to the other half first.
 - (BOOL)shouldUpdateFocusInContext:(UIFocusUpdateContext *)context {
-    if (!%orig) return NO;
+    BOOL allowsFocus = %orig;
+    if (!allowsFocus) return NO;
     UITableViewCell *cell = (UITableViewCell *)self;
     id node = [cell respondsToSelector:@selector(node)] ? [cell node] : nil;
     NSArray<ASDisplayNode *> *children = ApolloProfileRowChildren(node);
