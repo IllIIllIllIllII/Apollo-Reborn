@@ -27,9 +27,9 @@ begin = actions.index('static const NSUInteger kApolloActionMenuNativeElementsOf
 end = actions.index('#pragma mark - Per-controller slot memoization', begin)
 context += '\n#define dlsym FixtureDlsym\n' + actions[begin:end] + '\n#undef dlsym\n'
 begin = actions.index('@interface ApolloActionMenuSlotState :')
-end = actions.index('// Drop native actions past', begin)
+end = actions.index('// Apollo\'s own actionsDescription Swift string', begin)
 context += '\n' + actions[begin:end]
-for name in ['static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(', 'void ApolloActionMenuPrepareController(', 'void ApolloActionMenuPrepareControllerForDirectAction(']:
+for name in ['static ApolloActionMenuSlotState *ApolloActionMenuSlotsForController(', 'void ApolloActionMenuPrepareController(']:
     context += '\n' + function(actions, name)
 capture = 'static BOOL sApolloNativeCapturingController;\nstatic id sApolloNativeCapturedController;\n'
 for name in ['id ApolloNativeActionMenuCaptureController(', 'static NSInteger ApolloNativeActionMenuRowForActionKind(',
