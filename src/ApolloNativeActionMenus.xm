@@ -886,8 +886,6 @@ void ApolloNativeActionMenuInvokeAction(id controller, uint16_t kind) {
 static BOOL ApolloNativeActionMenuPerformPendingDirectAction(id actionController) {
     if (sApolloNativeCapturingController &&
         [actionController isKindOfClass:ApolloClassActionController]) {
-        // The originating More handler disarms its context before deferred building.
-        ApolloActionMenuCaptureContextForController(actionController);
         sApolloNativeCapturedController = actionController;
         return YES;
     }
