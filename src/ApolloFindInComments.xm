@@ -565,14 +565,14 @@ extern "C" NSDictionary *ApolloPaneSimFind(UIViewController *controller, NSStrin
 
 - (void)nextResultButtonTappedWithSender:(id)sender {
     FICRunSelection((UIViewController *)self, ^{
-            %orig;
-        });
+        %orig;
+    });
 }
 
 - (void)previousResultButtonTappedWithSender:(id)sender {
     FICRunSelection((UIViewController *)self, ^{
-            %orig;
-        });
+        %orig;
+    });
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
