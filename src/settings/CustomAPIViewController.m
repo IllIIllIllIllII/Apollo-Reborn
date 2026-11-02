@@ -2243,6 +2243,17 @@ typedef NS_ENUM(NSInteger, Tag) {
              ApolloSupportsNativeTabBarScrollBehavior() && ApolloTabBarHideBarsEnabled());
     };
 
+    // Read live by ApolloSearchNativeBar.xm: open screens pick it up on their next layout.
+    ApolloSettingsRow *pullDownToSearch =
+        [ApolloSettingsRow switchRowWithID:@"interface.pullDownToSearch"
+                                     title:@"Pull Down to Search"
+                                      isOn:^BOOL { return sPullDownToSearch; }
+                                  onToggle:^(UISwitch *sender) {
+            sPullDownToSearch = sender.isOn;
+            [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:UDKeyPullDownToSearch];
+        }];
+    pullDownToSearch.visible = ^BOOL { return IsLiquidGlass(); };
+
     // A single picker keeps the gesture models mutually exclusive and explicit.
     ApolloSettingsRow *tabBarScrollBehavior =
         [ApolloSettingsRow customRowWithID:@"interface.tabBarScrollBehavior"
@@ -2309,7 +2320,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
-                                                      hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
+                                                      hideBarsOnScroll, hideStyle, hideTopBarToo, pullDownToSearch, tabBarScrollBehavior,
                                                       iPadTabBarBottom, tabBarSwipeNavigation,
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
                                                           return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];

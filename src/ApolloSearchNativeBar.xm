@@ -26,6 +26,10 @@
 // attach parks the bar off-screen because these screens have no large title).
 // It also COMPRESSES with the drag the way Settings does, which needs UIKit to
 // own the feed's top inset — see "Continuous collapse" below.
+// Pull Down to Search (sPullDownToSearch) opens each screen
+// with the bar already scrolled away and skips the reveals that code-driven
+// trips to the top (status bar, Posts tab, title tap) would otherwise run, so
+// only a pull at the top brings the bar out.
 // The old "Keep Search Bar In Place" toggle is retired: the in-place
 // ACTIVATION it used to opt into is simply how glass search works now.
 //
@@ -1143,9 +1147,11 @@ static void NSBAttachNativeSearch(UIViewController *vc) {
 
     // Attach laid-out-visible; the scroll-away policy flips it after the first
     // appearance (plain YES here parks the bar off-screen — no large title).
+    // Pull Down to Search attaches it parked instead, so a push never shows
+    // it; NSBTuckBarUnlessPulled scrolls away one laid out anyway.
     navItem.searchController = sc;
     ApolloPaneApplySearchPlacement(vc);
-    navItem.hidesSearchBarWhenScrolling = NO;
+    navItem.hidesSearchBarWhenScrolling = sPullDownToSearch;
 
     // Point UIKit's bar collapse tracking at the actual feed table — automatic
     // detection lands on Apollo's full-screen intercepting scroll view, which
@@ -1257,6 +1263,13 @@ static CGFloat NSBNavBottomForTable(UIScrollView *table, UIViewController *vc) {
 // at its revealed top (ApolloNativeFeedSearchWillMoveBetweenColumns). One-shot,
 // consumed by ApolloNativeFeedSearchFinishColumnMove.
 @property (nonatomic) BOOL columnMoveRevealed;
+// Pull Down to Search: the user has touched the list since their own scroll
+// last took the bar away, so a revealed bar is theirs (NSBTuckBarUnlessPulled).
+// Set when a drag begins, cleared in NSBScheduleRevealCheck. Also set when a tuck fails,
+// so a bar UIKit won't collapse is left alone instead of retried every pass.
+@property (nonatomic) BOOL userOwnsBar;
+// A tuck is waiting for a transition to finish (one completion per transition).
+@property (nonatomic, weak) id tuckTransition;
 @end
 @implementation ApolloNativeSearchRestingState
 @end
@@ -1526,8 +1539,81 @@ static void NSBEnsureBarRevealedAtTop(UIViewController *vc, UIScrollView *table)
     state.revealInFlight = NO;
 }
 
+// Pull Down to Search: a bar the user didn't pull open is scrolled away. UIKit
+// brings the bar out without a pull whenever it lays it out afresh: a screen's
+// first appearance, a Duo fold or column move, a rotation. Each of those runs
+// the reveal check (layout and offset writes drive it), and so does this: a
+// bar revealed at the top rest that the user doesn't own is scrolled away by
+// moving the offset down by the bar's height with the scroll-away policy on.
+// UIKit's collapse tracking shrinks the palette and the list lands on the
+// collapsed rest exactly as if the user had scrolled the bar away, so a pull
+// at the top brings it back (NSBPaletteSnap).
+static void NSBTuckBarUnlessPulled(UIViewController *vc, UIScrollView *sv) {
+    if (!sPullDownToSearch || !vc || !sv) return;
+    ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    UINavigationItem *navItem = vc.navigationItem;
+    UISearchController *sc = navItem.searchController;
+    if (!sc || sc.active) return;
+    CGFloat currentBar = CGRectGetHeight(sc.searchBar.bounds);
+    if (currentBar <= 1.0) return;
+    if (state.userOwnsBar || state.revealInFlight || NSBUserIsScrolling(sv)) return;
+    // Wait out a transition (a push, a sheet presenting over the feed as it
+    // appears) and ask again once it has finished.
+    UINavigationController *nav = vc.navigationController;
+    id<UIViewControllerTransitionCoordinator> coordinator = vc.transitionCoordinator ?: nav.transitionCoordinator;
+    if (coordinator) {
+        if (state.tuckTransition == coordinator) return;
+        state.tuckTransition = coordinator;
+        __weak UIScrollView *weakTable = sv;
+        [coordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context) {
+            NSBScheduleRevealCheck(weakTable);
+        }];
+        return;
+    }
+    // NSBHasSettledFeedGeometry minus visibleViewController: a sheet over the
+    // screen (What's New at launch) leaves the list laid out underneath.
+    BOOL settled = state.visible && sv.window && sv.window == vc.viewIfLoaded.window &&
+                   nav.topViewController == vc && !ApolloDuoSplitIsResizing();
+    if (!settled) return;
+    UIRefreshControl *rc = [sv respondsToSelector:@selector(refreshControl)]
+        ? [(UITableView *)sv refreshControl] : nil;
+    if (rc.isRefreshing) return;
+    if (fabs(sv.contentOffset.y + sv.adjustedContentInset.top) > 2.0) return;   // not resting at the top
+    // Room to scroll the bar away, or the list can't hold the collapsed rest.
+    CGFloat scrollable = sv.contentSize.height + sv.adjustedContentInset.top +
+                         sv.adjustedContentInset.bottom - CGRectGetHeight(sv.bounds);
+    if (scrollable < currentBar) return;   // wait for the posts
+    UIView *navigationView = nav.view;
+    CGFloat y = sv.contentOffset.y;
+    state.revealInFlight = YES;   // keeps the geometry hooks' reveal checks out of it
+    [UIView performWithoutAnimation:^{
+        navItem.hidesSearchBarWhenScrolling = YES;
+        [sv setContentOffset:CGPointMake(sv.contentOffset.x, y + currentBar) animated:NO];
+        [navigationView layoutIfNeeded];
+        // UIKit shifts the offset by the bar's height again as the palette
+        // collapses (measured: -170 -> -116 written, -62 after the layout,
+        // with the rest at -116), so land the list on the collapsed rest.
+        if (fabs(sv.contentOffset.y + sv.adjustedContentInset.top) > 0.5) {
+            [sv setContentOffset:CGPointMake(sv.contentOffset.x, -sv.adjustedContentInset.top) animated:NO];
+            [navigationView layoutIfNeeded];
+        }
+    }];
+    state.revealInFlight = NO;
+    if (CGRectGetHeight(sc.searchBar.bounds) > 1.0) {
+        state.userOwnsBar = YES;   // UIKit kept it out: don't retry on every layout pass
+        ApolloLog(@"[NativeSearch] Pull Down to Search: bar did not collapse, leaving it (bar=%.1f)",
+                  CGRectGetHeight(sc.searchBar.bounds));
+        return;
+    }
+    ApolloLog(@"[NativeSearch] Pull Down to Search: tucked the bar away (bar=%.1f -> %.1f, y=%.1f adjTop=%.1f)",
+              currentBar, CGRectGetHeight(sc.searchBar.bounds), sv.contentOffset.y, sv.adjustedContentInset.top);
+}
+
 void ApolloNativeFeedSearchWillScrollToTop(UIScrollView *scrollView) {
     if (!ApolloNativeFeedSearchEnabled() || !scrollView) return;
+    // Pull Down to Search: the jump lands at the collapsed rest and
+    // the bar stays away until the user pulls at the top.
+    if (sPullDownToSearch) return;
     if (NSBUserIsScrolling(scrollView)) return;
     NSBArmReveal(scrollView, "scroll-to-top jump");
 }
@@ -1623,6 +1709,15 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
     if (objc_getAssociatedObject(table, kNSBFeedTableKey) == nil) return;
     UIViewController *vc = NSBFeedVCForView(table);
     ApolloNativeSearchRestingState *state = NSBRestingStateForVC(vc);
+    // Pull Down to Search: the user's own scroll has taken the bar away (the
+    // list is past its top, so this isn't the start of a pull), so a bar that
+    // comes back later without a pull is no longer theirs. Checked before the
+    // scrolling bail below, which is where those frames return.
+    if (sPullDownToSearch && state.userOwnsBar && NSBUserIsScrolling(table) &&
+        table.contentOffset.y + table.adjustedContentInset.top > 1.0 &&
+        CGRectGetHeight(vc.navigationItem.searchController.searchBar.bounds) <= 1.0) {
+        state.userOwnsBar = NO;
+    }
     if (!state.visible || state.revealCheckPending || state.revealInFlight) return;
     // The user has the list: wherever their gesture leaves the palette is
     // where it stays (NSBArmReveal). A live drag reveals on its own anyway.
@@ -1659,6 +1754,7 @@ static void NSBScheduleRevealCheck(UIScrollView *table) {
         }
         NSBApplyScrollAwayPolicy(strongVC, sv);
         NSBEnsureBarRevealedAtTop(strongVC, sv);
+        NSBTuckBarUnlessPulled(strongVC, sv);
     });
 }
 
@@ -1862,6 +1958,7 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     appearedState.visible = YES;
     // The transition is over: release the re-appearance hold (viewWillAppear)
     // so the policy application scheduled below puts scroll-away back on.
+    BOOL heldRevealed = appearedState.reappearanceHold;
     appearedState.reappearanceHold = NO;
     // ...and the appearance a replayed viewWillAppear: could belong to.
     appearedState.notesTransition = nil;
@@ -1870,7 +1967,11 @@ static void NSBViewWillDisappear(UIViewController *vc) {
     // Cancellation sends didAppear from inside completeTransition:, before
     // UIKit finishes restoring the palette. Read its geometry next turn.
     UIScrollView *appearedTable = NSBTableForVC((UIViewController *)self);
-    if (!appearedState.keepCollapsedOnAppear) NSBArmReveal(appearedTable, "appeared");
+    // Pull Down to Search: an appearance reveals the bar only when
+    // the screen left with it pulled open (the re-appearance hold above).
+    BOOL revealOnAppear = !appearedState.keepCollapsedOnAppear &&
+                          (!sPullDownToSearch || heldRevealed);
+    if (revealOnAppear) NSBArmReveal(appearedTable, "appeared");
     // A Duo column move the split did not finish repairs here
     // (ApolloNativeFeedSearchFinishColumnMove).
     ApolloNativeFeedSearchFinishColumnMove((UIViewController *)self);
@@ -2074,6 +2175,7 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
     UIViewController *vc = NSBFeedVCForView((UIView *)self);
     ApolloNativeSearchRestingState *state = vc ? NSBRestingStateForVC(vc) : nil;
     if (state) {
+        state.userOwnsBar = YES;   // Pull Down to Search: the bar is the user's from here
         UINavigationItem *navItem = vc.navigationItem;
         UISearchController *sc = navItem.searchController;
         BOOL atRest = fabs(table.contentOffset.y + table.adjustedContentInset.top) < 2.0;
@@ -2350,7 +2452,9 @@ static void *NSBCommentJumpTableForController(UIViewController *vc) {
     // clamp lands a couple of points shy of the rest — a content correction,
     // not a request for the top (#1138's second symptom). Never for a gesture
     // in flight: UIKit routes its own palette settle through here too.
-    if (ApolloNativeFeedSearchEnabled() && animated &&
+    // (Not under Pull Down to Search: code reaching the top leaves
+    // the bar where it is.)
+    if (ApolloNativeFeedSearchEnabled() && animated && !sPullDownToSearch &&
         objc_getAssociatedObject(self, kNSBFeedTableKey) != nil &&
         !NSBUserIsScrolling((UIScrollView *)self) &&
         fabs(offset.y + self.adjustedContentInset.top) < 0.5) {

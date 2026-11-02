@@ -74,6 +74,7 @@ BOOL sCommunityHighlightsWeb = NO;
 NSString *const ApolloTabBarScrollBehaviorChangedNotification = @"ApolloTabBarScrollBehaviorChangedNotification";
 BOOL sClassicTabBarScrollBehavior = NO;
 BOOL sHideTopBarOnScroll = NO;
+BOOL sPullDownToSearch = NO;
 ApolloTabBarHideStyle sTabBarHideStyle = ApolloTabBarHideStyleLeft;
 BOOL sLiquidGlassEnabled = YES; // set once by ApolloCommon +load, before Logos constructors
 BOOL sIPadTabBarBottom = NO;   // opt-in (default OFF via registerDefaults, UDKeyIPadTabBarBottom); iPad-gated in the module

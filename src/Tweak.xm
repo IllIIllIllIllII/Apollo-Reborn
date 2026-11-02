@@ -3742,6 +3742,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyCommunityHighlightsWeb: @NO,
                                     UDKeyClassicTabBarScrollBehavior: @NO,
                                     UDKeyHideTopBarOnScroll: @NO,
+                                    UDKeyPullDownToSearch: @NO,
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
@@ -4051,6 +4052,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sCommunityHighlightsWeb = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyCommunityHighlightsWeb];
     sClassicTabBarScrollBehavior = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyClassicTabBarScrollBehavior];
     sHideTopBarOnScroll = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyHideTopBarOnScroll];
+    sPullDownToSearch = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPullDownToSearch];
     NSInteger storedTabBarHideStyle =
         [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyTabBarCollapseSide];
     if (storedTabBarHideStyle < ApolloTabBarHideStyleLeft ||

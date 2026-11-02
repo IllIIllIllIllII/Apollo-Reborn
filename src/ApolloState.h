@@ -197,6 +197,8 @@ extern "C" {
 // Opt-in top navigation bar movement, following the bottom tab bar's scroll
 // behavior while Hide Bars on Scroll is enabled. Default NO.
 extern BOOL sHideTopBarOnScroll;
+// Liquid Glass search bars stay hidden until pulled down at the top. Default NO.
+extern BOOL sPullDownToSearch;
 // Experimental Duo landscape feed layout: 0 = Original (default),
 // 2 = Focused feed; value 1 is retired. Read live by ApolloMediaHinge.
 extern NSInteger sDuoLandscapeFeedLayout;

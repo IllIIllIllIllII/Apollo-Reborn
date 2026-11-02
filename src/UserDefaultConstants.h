@@ -332,6 +332,10 @@ static NSString *const UDKeyNativeHideBarsOnScroll = @"HideBarsOnScroll";
 // Liquid Glass only. Also hides/reveals the top navigation bar with the bottom
 // tab bar while Hide Bars on Scroll is enabled. Default NO; remembered when off.
 static NSString *const UDKeyHideTopBarOnScroll = @"HideTopBarOnScroll";
+// Liquid Glass only. Feed, subreddit and comments search bars open tucked away
+// and appear only when pulled down at the top; scroll-to-top taps keep them
+// hidden. Default NO (the bar shows at the top).
+static NSString *const UDKeyPullDownToSearch = @"PullDownToSearch";
 // Liquid Glass "Hide Bars on Scroll" presentation: 0 = collapsed pill on the
 // Left (system default), 1 = collapsed pill on the Right, 2 = fade the full tab
 // bar out, 3 = slide/fade down, 4 = minimize into a centered pill naming the
