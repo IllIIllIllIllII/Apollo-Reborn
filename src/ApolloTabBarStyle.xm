@@ -530,9 +530,26 @@ static void ApolloTabBarRefreshGlassTreatment(void) {
     }
 }
 
+// The Duo side rail's tab platter sits outside UITabBar, so the bar's own
+// layout never reaches it; its buttons only take a changed appearance color
+// on a layout of the platter itself, so give it one right away.
+static void ApolloTabBarLayOutGlassPlatters(void) {
+    if (!IsLiquidGlass() || !ApolloClassUITabBarItemPlatterView) return;
+    NSMutableArray<UIView *> *platters = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloTabBarCollectViews(window, ApolloClassUITabBarItemPlatterView, platters);
+    for (UIView *platter in platters) {
+        NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+        ApolloTabBadgeCollectButtons(platter, buttons);
+        for (UIView *button in buttons) [button setNeedsLayout];
+        [platter setNeedsLayout];
+        [platter layoutIfNeeded];
+    }
+}
+
 static void ApolloTabBarRefreshIconTint(void) {
     NSArray<UITabBar *> *tabBars = ApolloTabBarAllTabBars();
     for (UITabBar *tabBar in tabBars) ApolloTabBarApplyIconTint(tabBar);
+    ApolloTabBarLayOutGlassPlatters();
     // The tab buttons pick the appearance color up on the layout just asked for.
     dispatch_async(dispatch_get_main_queue(), ^{ ApolloTabBarRefreshGlassTreatment(); });
     TabBarStyleLog(@"icon tint %@ on %lu tab bar(s)",
@@ -586,6 +603,18 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
 %end
 
 %hook UIImageView
+
+// A rebuilt tab icon can get its treatment before its tint, and nothing lays
+// it out again until the next tab switch; clamp once the tint becomes ours.
+- (void)tintColorDidChange {
+    %orig;
+    if (!sApolloTabBarClampingTreatment && ApolloClassUITabButton &&
+        [self.superview isKindOfClass:ApolloClassUITabButton] &&
+        self.image.renderingMode == UIImageRenderingModeAlwaysTemplate &&
+        ApolloTabBarIconViewIsTinted(self)) {
+        ApolloTabBarClampGlassTreatment(self, YES);
+    }
+}
 
 // The re-derivation UIKit runs when a tab button's tint changes.
 - (void)_applyMonochromaticInputsWithPreferredTreatment:(int64_t)treatment suppressTreatment:(BOOL)suppress {
@@ -665,5 +694,16 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
             if (sTintInactiveTabIcons) ApolloTabBarRefreshIconTint();
         });
     }];
+    if (IsLiquidGlass()) {
+        // Control Center and Notification Center take the scene inactive and
+        // back without a layout; the glass bar re-derives its treatment on the
+        // way, so re-clamp once the app is active again.
+        for (NSNotificationName name in @[ UIApplicationDidBecomeActiveNotification, UISceneDidActivateNotification ]) {
+            [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue
+                            usingBlock:^(__unused NSNotification *note) {
+                if (sTintInactiveTabIcons) dispatch_async(dispatch_get_main_queue(), ^{ ApolloTabBarRefreshGlassTreatment(); });
+            }];
+        }
+    }
     TabBarStyleLog(@"module loaded (%@)", IsLiquidGlass() ? @"Liquid Glass" : @"classic");
 }
