@@ -1,7 +1,8 @@
 // ApolloTabBarStyle — Inbox badge style and the classic inactive tab icon tint.
 //
 // UIKit keeps owning badge and icon geometry, tab transitions, and
-// accessibility; nothing here walks the tab bar on layout.
+// accessibility. The only layout-time work is placing the unread dot, which
+// looks up the tab icons under the badge's own tab platter or bar.
 //
 // Inbox badge. ApolloChatsFilter keeps Apollo's real value and routes every
 // Inbox badge write through ApolloInboxBadgeDisplayValue; dot mode displays
@@ -12,11 +13,13 @@
 //   - setBadgeColor: (UIKit re-sends red on every tab switch) swaps in the
 //     accent and the matching black/white text;
 //   - traitCollectionDidChange: re-resolves both, as the badge caches them;
-//   - an empty badge is drawn as a dot instead of a blank pill: the glass
-//     badge is sized down in sizeThatFits: (it stays anchored at the icon's
-//     corner); the classic badge's shape is a stretched image, so it keeps
-//     UIKit's frame and is masked to a circle at its center.
-// Apollo badges only the Inbox tab, so every badge in a tab bar is styled.
+//   - an empty badge is drawn as a dot, centered on its tab icon's top-right
+//     corner in setFrame:. The glass badge is sized down in sizeThatFits:;
+//     the classic badge's shape is a stretched image, so it keeps UIKit's
+//     size and is masked to a circle at its center.
+// Apollo badges only the Inbox tab, so every tab badge is styled. On the Duo
+// side rail the glass tab platter is hosted outside UITabBar, so a badge
+// counts as a tab badge when it sits in either.
 //
 // Inactive icon tint (classic). Apollo supplies its tab icons pre-colored
 // (AlwaysOriginal: grey unselected, accent selected), so UIKit's tint
@@ -29,6 +32,7 @@
 
 #import <objc/runtime.h>
 
+#import "ApolloClasses.h"
 #import "ApolloCommon.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
@@ -75,11 +79,80 @@ static char kApolloTabBadgeUIKitFillKey;
 static char kApolloTabBadgeUIKitInkKey;
 static BOOL sApolloTabBadgeApplying;
 
-static BOOL ApolloTabBadgeIsInTabBar(UIView *badge) {
+// The view the badge's tab buttons live under: the glass tab platter (inside
+// UITabBar, or hosted beside it on the Duo side rail), else the classic UITabBar.
+static UIView *ApolloTabBadgeHost(UIView *badge) {
+    Class platterClass = ApolloClassUITabBarItemPlatterView;
     for (UIView *view = badge.superview; view; view = view.superview) {
-        if ([view isKindOfClass:UITabBar.class]) return YES;
+        if (platterClass && [view isKindOfClass:platterClass]) return view;
+        if ([view isKindOfClass:UITabBar.class]) return view;
     }
-    return NO;
+    return nil;
+}
+
+static BOOL ApolloTabBadgeIsInTabBar(UIView *badge) {
+    return ApolloTabBadgeHost(badge) != nil;
+}
+
+static UIImageView *ApolloTabBadgeButtonIcon(UIView *view) {
+    for (UIView *subview in view.subviews) {
+        if ([subview isKindOfClass:UIImageView.class] && ((UIImageView *)subview).image) return (UIImageView *)subview;
+        UIImageView *nested = ApolloTabBadgeButtonIcon(subview);
+        if (nested) return nested;
+    }
+    return nil;
+}
+
+static void ApolloTabBadgeCollectButtons(UIView *view, NSMutableArray<UIView *> *buttons) {
+    if ((ApolloClassUITabButton && [view isKindOfClass:ApolloClassUITabButton]) ||
+        (ApolloClassUITabBarButton && [view isKindOfClass:ApolloClassUITabBarButton])) {
+        [buttons addObject:view];
+        return;
+    }
+    for (UIView *subview in view.subviews) ApolloTabBadgeCollectButtons(subview, buttons);
+}
+
+// The top-right corner of the tab icon nearest to `reference`, both in
+// `space` coordinates. NO when the host has no icons yet.
+static BOOL ApolloTabBadgeIconCorner(UIView *badge, UIView *space, CGPoint reference, CGPoint *outCorner) {
+    UIView *host = ApolloTabBadgeHost(badge);
+    if (!host || !space) return NO;
+    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    ApolloTabBadgeCollectButtons(host, buttons);
+
+    BOOL found = NO;
+    CGFloat best = CGFLOAT_MAX;
+    for (UIView *button in buttons) {
+        UIImageView *icon = ApolloTabBadgeButtonIcon(button);
+        if (!icon) continue;
+        CGRect frame = [icon convertRect:icon.bounds toView:space];
+        CGPoint corner = CGPointMake(CGRectGetMaxX(frame), CGRectGetMinY(frame));
+        CGFloat distance = hypot(corner.x - reference.x, corner.y - reference.y);
+        if (distance < best) {
+            best = distance;
+            *outCorner = corner;
+            found = YES;
+        }
+    }
+    return found;
+}
+
+static BOOL ApolloTabBadgeShowsDot(ApolloTabBadgeView *badge) {
+    return badge.text.length == 0 && ApolloTabBadgeIsInTabBar(badge);
+}
+
+// UIKit's proposed frame, moved so the dot is centered on the icon's corner.
+// A glass dot never rises above UIKit's top: ApolloLiquidGlass.xm keeps glass
+// badges at y >= 6 so the scaled selected-tab copy doesn't clip them.
+static CGRect ApolloTabBadgeDotFrame(ApolloTabBadgeView *badge, CGRect proposed, BOOL glass) {
+    if (!ApolloTabBadgeShowsDot(badge) || !badge.superview) return proposed;
+    CGPoint corner;
+    CGPoint reference = CGPointMake(CGRectGetMidX(proposed), CGRectGetMidY(proposed));
+    if (!ApolloTabBadgeIconCorner(badge, badge.superview, reference, &corner)) return proposed;
+    CGSize size = proposed.size;
+    CGFloat y = corner.y - size.height / 2.0;
+    if (glass) y = MAX(y, CGRectGetMinY(proposed));
+    return CGRectMake(corner.x - size.width / 2.0, y, size.width, size.height);
 }
 
 static UIColor *ApolloTabBadgeAccent(UITraitCollection *traits) {
@@ -144,38 +217,41 @@ static void ApolloTabBadgeRecordInk(ApolloTabBadgeView *badge, id inkOrAttribute
     if (sInboxBadgeUseThemeAccent) ApolloTabBadgeApply(badge);
 }
 
+// The classic dot: a circle mask at the center of UIKit's badge, which
+// setFrame: has centered on the icon's corner.
 static void ApolloTabBadgeUpdateClassicDotMask(ApolloTabBadgeView *badge) {
-    if (badge.text.length > 0 || !ApolloTabBadgeIsInTabBar(badge)) {
+    if (!ApolloTabBadgeShowsDot(badge)) {
         if (badge.maskView) badge.maskView = nil;
         return;
     }
+    CGFloat half = kApolloTabBadgeDotSize / 2.0;
     UIView *mask = badge.maskView ?: [[UIView alloc] init];
     mask.backgroundColor = UIColor.blackColor;
-    mask.layer.cornerRadius = kApolloTabBadgeDotSize / 2.0;
-    mask.frame = CGRectMake(CGRectGetMidX(badge.bounds) - kApolloTabBadgeDotSize / 2.0,
-                            CGRectGetMidY(badge.bounds) - kApolloTabBadgeDotSize / 2.0,
+    mask.layer.cornerRadius = half;
+    mask.frame = CGRectMake(CGRectGetMidX(badge.bounds) - half, CGRectGetMidY(badge.bounds) - half,
                             kApolloTabBadgeDotSize, kApolloTabBadgeDotSize);
     if (badge.maskView != mask) badge.maskView = mask;
 }
 
 static CGSize ApolloTabBadgeFittedSize(ApolloTabBadgeView *badge, CGSize fitted) {
-    if (badge.text.length == 0 && ApolloTabBadgeIsInTabBar(badge)) {
+    if (ApolloTabBadgeShowsDot(badge)) {
         return CGSizeMake(kApolloTabBadgeDotSize, kApolloTabBadgeDotSize);
     }
     return fitted;
 }
 
+// Walks whole windows: the Duo side rail's badges are outside UITabBar.
 static void ApolloTabBadgeRefreshAll(void) {
-    Class badgeClass = NSClassFromString(IsLiquidGlass() ? @"_UIBarBadgeView" : @"_UIBadgeView");
+    Class badgeClass = IsLiquidGlass() ? ApolloClassUIBarBadgeView : ApolloClassUIBadgeView;
     if (!badgeClass) return;
-    for (UITabBar *tabBar in ApolloTabBarAllTabBars()) {
-        NSMutableArray<ApolloTabBadgeView *> *badges = [NSMutableArray array];
-        ApolloTabBarCollectViews(tabBar, badgeClass, badges);
-        for (ApolloTabBadgeView *badge in badges) {
-            ApolloTabBadgeApply(badge);
-            [badge invalidateIntrinsicContentSize];
-            [badge.superview setNeedsLayout];
-        }
+    NSMutableArray<ApolloTabBadgeView *> *badges = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloTabBarCollectViews(window, badgeClass, badges);
+    for (ApolloTabBadgeView *badge in badges) {
+        if (!ApolloTabBadgeIsInTabBar(badge)) continue;
+        ApolloTabBadgeApply(badge);
+        [badge invalidateIntrinsicContentSize];
+        [badge setNeedsLayout];
+        [badge.superview setNeedsLayout];
     }
 }
 
@@ -196,6 +272,10 @@ static void ApolloTabBadgeRefreshAll(void) {
 - (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
     %orig;
     if (sInboxBadgeUseThemeAccent) ApolloTabBadgeApply((ApolloTabBadgeView *)self);
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloTabBadgeDotFrame((ApolloTabBadgeView *)self, frame, NO));
 }
 
 // The mask view sits outside the hierarchy, so sizing it here drives no layout.
@@ -229,6 +309,10 @@ static void ApolloTabBadgeRefreshAll(void) {
 
 - (CGSize)sizeThatFits:(CGSize)size {
     return ApolloTabBadgeFittedSize((ApolloTabBadgeView *)self, %orig);
+}
+
+- (void)setFrame:(CGRect)frame {
+    %orig(ApolloTabBadgeDotFrame((ApolloTabBadgeView *)self, frame, YES));
 }
 
 %end
@@ -435,8 +519,8 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
 %ctor {
     if (ApolloTabBarIconTintAvailable()) {
         %init(ApolloTabBarIconTintClassic);
-        if (NSClassFromString(@"_UIBadgeView")) %init(ApolloTabBadgeClassic);
-    } else if (NSClassFromString(@"_UIBarBadgeView")) {
+        if (ApolloClassUIBadgeView) %init(ApolloTabBadgeClassic);
+    } else if (ApolloClassUIBarBadgeView) {
         %init(ApolloTabBadgeGlass);
     }
 
