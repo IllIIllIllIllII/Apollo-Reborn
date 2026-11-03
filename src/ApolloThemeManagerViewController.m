@@ -368,7 +368,6 @@ typedef void (^ApolloThemeFontSelectionHandler)(ApolloThemeFont font);
 //              5 Generate | 6 Preview | 7 Share | 8 Apply | 9 Delete
 //              5 Generate | 6 Preview | 7 Apply | 8 Delete
 enum { HSCurrent, HSCreate, HSBrowse, HSMyThemes, HSImported, HSOptions, HSCount };
-// Options rows. The tab icon tint row exists only on the classic tab bar.
 enum { HSOptionsLightDark, HSOptionsCommentsTheme, HSOptionsTabIconTint };
 enum { ESName, ESVariant, ESColors, ESAdvanced, ESFont, ESGenerate, ESPreview, ESShare, ESApply, ESDelete, ESCount };
 
@@ -878,7 +877,7 @@ static NSString *SpacedThemeName(NSString *raw) {
         case HSBrowse:   return 2;
         case HSMyThemes: return MAX((NSInteger)[self myThemes].count, 1);
         case HSImported: return (NSInteger)[self importedThemes].count; // section exists only with content
-        case HSOptions:  return ApolloTabBarIconTintAvailable() ? 3 : 2;
+        case HSOptions:  return 3;
     }
     return 0;
 }

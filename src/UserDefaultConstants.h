@@ -280,8 +280,8 @@ static NSString *const UDKeyInboxBadgeShowUnreadCount = @"InboxBadgeShowUnreadCo
 // OFF (default): UIKit's red badge. ON: the theme accent, with black/white text.
 static NSString *const UDKeyInboxBadgeUseThemeAccent = @"InboxBadgeUseThemeAccent";
 static NSString *const ApolloInboxBadgeChangedNotification = @"ApolloInboxBadgeChangedNotification";
-// Classic tab bar only: unselected icons use a muted shade of the theme accent
-// instead of UIKit's grey. Default OFF. Theme Manager -> Options.
+// Unselected tab bar icons use a muted shade of the theme accent instead of
+// UIKit's gray. Default OFF. Theme Manager -> Options.
 static NSString *const UDKeyTintInactiveTabIcons = @"ApolloTintedTabIcons";
 // When ON (default), profile pages show Reborn's detailed profile — the banner,
 // large avatar/snoovatar, display name, bio, and the Social Links band. When OFF,

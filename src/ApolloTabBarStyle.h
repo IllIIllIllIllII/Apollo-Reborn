@@ -11,9 +11,10 @@ extern "C" {
 // value, which the tab bar's badge view then draws as a dot.
 NSString *_Nullable ApolloInboxBadgeDisplayValue(NSString *_Nullable value);
 
-// The inactive icon tint exists only on the classic tab bar.
-BOOL ApolloTabBarIconTintAvailable(void);
 void ApolloTabBarIconTintSetEnabled(BOOL enabled);
+// YES for the inactive icon tint's own color, which ApolloLiquidGlass.xm's
+// appearance scrub must keep.
+BOOL ApolloTabBarIconTintOwnsColor(UIColor *_Nullable color);
 
 #ifdef __cplusplus
 }
