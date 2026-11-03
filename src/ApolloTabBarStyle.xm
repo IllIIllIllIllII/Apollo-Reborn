@@ -21,15 +21,25 @@
 // side rail the glass tab platter is hosted outside UITabBar, so a badge
 // counts as a tab badge when it sits in either.
 //
-// Inactive icon tint (classic). Apollo supplies its tab icons pre-colored
-// (AlwaysOriginal: grey unselected, accent selected), so UIKit's tint
-// properties never reach them. With the tint on, unselected images are
-// templated and the tab bar appearances' normal-state iconColor carries the
-// muted accent; selected images, titles, and the profile avatar icon are
-// untouched. Turning it off restores Apollo's images and clears the color.
+// Inactive icon tint. The tab bar appearances' normal-state iconColor
+// carries a muted shade of the accent; selected icons, titles, and the
+// profile avatar icon are untouched, and turning it off clears the color.
+//   - Classic: Apollo supplies its tab icons pre-colored (AlwaysOriginal:
+//     gray unselected, accent selected), so UIKit's tint never reaches them.
+//     Unselected images are templated while the tint is on and restored
+//     when it is turned off.
+//   - Liquid Glass: ApolloLiquidGlass.xm already templates the images and
+//     keeps the appearance adaptive, so it leaves this color alone. The
+//     floating bar then draws unselected icons through a "monochromatic
+//     treatment" that ignores the tint, so tinted icons keep it suppressed
+//     (as the avatar icon does) and are re-clamped after a tab button's
+//     layout, since rebuilds re-apply it without the hooked setters. The
+//     Duo side rail hosts the same tab buttons in a SwiftUI toolbar and
+//     follows along.
 
 #import "ApolloTabBarStyle.h"
 
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 #import "ApolloClasses.h"
@@ -319,7 +329,7 @@ static void ApolloTabBadgeRefreshAll(void) {
 
 %end
 
-#pragma mark - Inactive icon tint (classic)
+#pragma mark - Inactive icon tint
 
 static CGFloat ApolloTabBarLinearComponent(CGFloat value) {
     return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4);
@@ -384,7 +394,7 @@ static void ApolloTabBarMarkOurs(id object) {
 
 // nil when the tint is off or the accent is achromatic in both appearances.
 static UIColor *ApolloTabBarCurrentIconTint(void) {
-    if (!sTintInactiveTabIcons || !ApolloTabBarIconTintAvailable()) return nil;
+    if (!sTintInactiveTabIcons) return nil;
     if (sApolloTabBarIconTint) return sApolloTabBarIconTint;
 
     UITraitCollection *light = [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight];
@@ -427,7 +437,7 @@ static NSArray<UITabBarItemAppearance *> *ApolloTabBarItemAppearances(UITabBarAp
 // Returns the appearance unchanged when it already matches, so re-assigning
 // it from our own refresh is a no-op.
 static UITabBarAppearance *ApolloTabBarAppearanceWithIconTint(UITabBarAppearance *appearance) {
-    if (!appearance || !ApolloTabBarIconTintAvailable()) return appearance;
+    if (!appearance) return appearance;
 
     UIColor *tint = ApolloTabBarCurrentIconTint();
     BOOL stale = NO;
@@ -447,7 +457,8 @@ static UITabBarAppearance *ApolloTabBarAppearanceWithIconTint(UITabBarAppearance
 
 static void ApolloTabBarApplyIconTint(UITabBar *tabBar) {
     UIColor *tint = ApolloTabBarCurrentIconTint();
-    for (UITabBarItem *item in tabBar.items) {
+    // Liquid Glass already templates its tab images (ApolloLiquidGlass.xm).
+    for (UITabBarItem *item in IsLiquidGlass() ? @[] : tabBar.items) {
         UIImage *current = item.image;
         UIImage *original = objc_getAssociatedObject(item, &kApolloTabBarOriginalIconKey);
         if (tint && !ApolloTabBarIsOurs(current)) item.image = current;   // templated by the hook
@@ -466,16 +477,70 @@ static void ApolloTabBarApplyIconTint(UITabBar *tabBar) {
     [tabBar setNeedsLayout];
 }
 
+// Liquid Glass renders unselected icons through a "monochromatic treatment"
+// that replaces the image view's tint with black/white, so the appearance's
+// iconColor reaches the icons but never shows. While an icon carries our
+// tint, the treatment is kept off (the avatar icon does the same in
+// ApolloUserAvatars.xm); turning the tint off lets UIKit put it back.
+static BOOL sApolloTabBarClampingTreatment;
+
+static BOOL ApolloTabBarIconViewIsTinted(UIImageView *imageView) {
+    return sTintInactiveTabIcons && IsLiquidGlass() && ApolloTabBarIsOurs(imageView.tintColor);
+}
+
+// UIKit derives the treatment from inputs (a preferred treatment and a
+// suppress flag) whenever the host's tint changes, so the suppress input is
+// what sticks; the two output setters cover builds without it.
+static void ApolloTabBarClampGlassTreatment(UIImageView *imageView, BOOL tinted) {
+    SEL suppressSel = @selector(_setSuppressMonochromaticTreatment:);
+    SEL enableSel = @selector(_setEnableMonochromaticTreatment:);
+    SEL modeSel = @selector(_setMonochromaticTreatment:);
+    if (![imageView respondsToSelector:modeSel]) return;
+    sApolloTabBarClampingTreatment = YES;
+    if ([imageView respondsToSelector:suppressSel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(imageView, suppressSel, tinted);
+    // 2 is the treatment UIKit applies to unselected tab icons.
+    ((void (*)(id, SEL, int64_t))objc_msgSend)(imageView, modeSel, tinted ? 0 : 2);
+    if ([imageView respondsToSelector:enableSel]) ((void (*)(id, SEL, BOOL))objc_msgSend)(imageView, enableSel, !tinted);
+    sApolloTabBarClampingTreatment = NO;
+}
+
+// Keeps a tab button's tinted icons clear of the treatment; icons UIKit
+// colors itself (the selected copy, the avatar) are left as they are.
+static void ApolloTabBarClampTintedButtonIcons(UIView *button) {
+    for (UIView *subview in button.subviews) {
+        if (![subview isKindOfClass:UIImageView.class]) continue;
+        UIImageView *icon = (UIImageView *)subview;
+        if (icon.image.renderingMode == UIImageRenderingModeAlwaysTemplate && ApolloTabBarIconViewIsTinted(icon)) {
+            ApolloTabBarClampGlassTreatment(icon, YES);
+        }
+    }
+}
+
+static void ApolloTabBarRefreshGlassTreatment(void) {
+    if (!IsLiquidGlass()) return;
+    NSMutableArray<UIView *> *buttons = [NSMutableArray array];
+    for (UIWindow *window in ApolloAllWindows()) ApolloTabBadgeCollectButtons(window, buttons);
+    for (UIView *button in buttons) {
+        NSMutableArray<UIImageView *> *icons = [NSMutableArray array];
+        ApolloTabBarCollectViews(button, UIImageView.class, icons);
+        for (UIImageView *icon in icons) {
+            if (icon.image.renderingMode != UIImageRenderingModeAlwaysTemplate) continue;   // avatar
+            ApolloTabBarClampGlassTreatment(icon, ApolloTabBarIconViewIsTinted(icon));
+        }
+    }
+}
+
 static void ApolloTabBarRefreshIconTint(void) {
-    if (!ApolloTabBarIconTintAvailable()) return;
     NSArray<UITabBar *> *tabBars = ApolloTabBarAllTabBars();
     for (UITabBar *tabBar in tabBars) ApolloTabBarApplyIconTint(tabBar);
+    // The tab buttons pick the appearance color up on the layout just asked for.
+    dispatch_async(dispatch_get_main_queue(), ^{ ApolloTabBarRefreshGlassTreatment(); });
     TabBarStyleLog(@"icon tint %@ on %lu tab bar(s)",
                    ApolloTabBarCurrentIconTint() ? @"applied" : @"cleared", (unsigned long)tabBars.count);
 }
 
-BOOL ApolloTabBarIconTintAvailable(void) {
-    return !IsLiquidGlass();
+BOOL ApolloTabBarIconTintOwnsColor(UIColor *color) {
+    return ApolloTabBarIsOurs(color);
 }
 
 void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
@@ -485,7 +550,7 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
     ApolloTabBarRefreshIconTint();
 }
 
-%group ApolloTabBarIconTintClassic
+%group ApolloTabBarIconTemplatesClassic
 
 %hook UITabBarItem
 
@@ -494,6 +559,61 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
 }
 
 %end
+
+%end
+
+%group ApolloTabBarIconTintGlass
+
+%hook UITabBar
+
+// An appearance change re-applies the treatment without the setters below.
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    %orig;
+    if (sTintInactiveTabIcons) dispatch_async(dispatch_get_main_queue(), ^{ ApolloTabBarRefreshGlassTreatment(); });
+}
+
+%end
+
+// A rebuilt tab button (Icon-Only toggles, item changes) re-applies the
+// treatment to its icons without the setters below, so clamp after its layout.
+%hook _UITabButton
+
+- (void)layoutSubviews {
+    %orig;
+    if (sTintInactiveTabIcons) ApolloTabBarClampTintedButtonIcons((UIView *)self);
+}
+
+%end
+
+%hook UIImageView
+
+// The re-derivation UIKit runs when a tab button's tint changes.
+- (void)_applyMonochromaticInputsWithPreferredTreatment:(int64_t)treatment suppressTreatment:(BOOL)suppress {
+    if (!sApolloTabBarClampingTreatment && ApolloTabBarIconViewIsTinted(self)) suppress = YES;
+    %orig(treatment, suppress);
+}
+
+- (void)_setEnableMonochromaticTreatment:(BOOL)enable {
+    if (enable && !sApolloTabBarClampingTreatment && ApolloTabBarIconViewIsTinted(self)) {
+        %orig(NO);
+        return;
+    }
+    %orig(enable);
+}
+
+- (void)_setMonochromaticTreatment:(int64_t)treatment {
+    if (treatment != 0 && !sApolloTabBarClampingTreatment && ApolloTabBarIconViewIsTinted(self)) {
+        %orig(0);
+        return;
+    }
+    %orig(treatment);
+}
+
+%end
+
+%end
+
+%group ApolloTabBarIconTint
 
 %hook UITabBar
 
@@ -517,11 +637,13 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
 #pragma mark - Setup
 
 %ctor {
-    if (ApolloTabBarIconTintAvailable()) {
-        %init(ApolloTabBarIconTintClassic);
+    %init(ApolloTabBarIconTint);
+    if (!IsLiquidGlass()) {
+        %init(ApolloTabBarIconTemplatesClassic);
         if (ApolloClassUIBadgeView) %init(ApolloTabBadgeClassic);
-    } else if (ApolloClassUIBarBadgeView) {
-        %init(ApolloTabBadgeGlass);
+    } else {
+        %init(ApolloTabBarIconTintGlass);
+        if (ApolloClassUIBarBadgeView) %init(ApolloTabBadgeGlass);
     }
 
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
@@ -543,5 +665,5 @@ void ApolloTabBarIconTintSetEnabled(BOOL enabled) {
             if (sTintInactiveTabIcons) ApolloTabBarRefreshIconTint();
         });
     }];
-    TabBarStyleLog(@"module loaded (icon tint %@)", ApolloTabBarIconTintAvailable() ? @"available" : @"unavailable");
+    TabBarStyleLog(@"module loaded (%@)", IsLiquidGlass() ? @"Liquid Glass" : @"classic");
 }
