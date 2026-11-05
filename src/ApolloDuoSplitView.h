@@ -39,6 +39,12 @@ BOOL ApolloDuoSplitReturnFromVisitedProfile(UINavigationController *navigation);
 /// the normal open.
 BOOL ApolloDuoSplitCanRestoreClosedThread(UINavigationController *nav);
 BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav);
+/// Forward drags: the closed thread's picture slides in with the finger.
+/// NO from Begin when there is no picture to show; restore on release then.
+BOOL ApolloDuoSplitBeginRestoreDrag(UINavigationController *nav);
+CGFloat ApolloDuoSplitRestoreDragTravel(UINavigationController *nav);
+void ApolloDuoSplitMoveRestoreDrag(UINavigationController *nav, CGFloat shown);
+void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL restore, CGFloat shown, CGFloat velocity);
 /// For ApolloForwardSwipeExpiry: the feed's closed thread counted as a forward
 /// page (a token for it, nil without one) and its forget.
 id ApolloDuoSplitClosedThreadToken(UINavigationController *nav);

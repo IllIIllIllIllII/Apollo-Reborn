@@ -306,6 +306,10 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 @property(nonatomic, strong) UIView *postsTransitionSnapshot;
 // The feed's trailing edge, stretched across the gap a thread drag opens.
 @property(nonatomic, strong) UIView *threadDragFiller;
+// The thread pane as a Back drag found it, kept for a later forward drag.
+@property(nonatomic, strong) UIView *threadDragPicture;
+// A forward drag's picture of the closed thread, sliding in.
+@property(nonatomic, strong) UIView *restoreDragPicture;
 @property(nonatomic, weak) UINavigationController *searchNavigation;
 @property(nonatomic) NSUInteger listAnimationGeneration;
 @property(nonatomic, strong) UIButton *splitButton;
@@ -1695,6 +1699,11 @@ static NSArray *ApolloDuoClosedThreadPages(NSArray *paneStack) {
 // pages strongly (no stack holds them any more) and its feed page weakly.
 @interface ApolloDuoPostsClosedThread : NSObject
 @property(nonatomic, copy) NSArray<UIViewController *> *pages;
+// The thread pane as it looked when it closed, and where, so a forward drag
+// can slide it back in under the finger before the real pages return.
+@property(nonatomic, strong) UIView *picture;
+@property(nonatomic) CGRect pictureFrame;
+@property(nonatomic) CGSize surfaceSize;
 @property(nonatomic, weak) UIViewController *feedPage;
 @property(nonatomic, copy) NSString *feedIdentity;
 @property(nonatomic, copy) NSString *account;
@@ -1754,7 +1763,8 @@ static void ApolloDuoPostsReviewClosedThread(ApolloDuoSplitState *state, ApolloD
     if (reason) ApolloDuoPostsForgetClosedThread(state, reason);
 }
 
-static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages) {
+static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArray<UIViewController *> *pages,
+                                               UIView *picture, CGRect pictureFrame) {
     UIViewController *feedPage = state.feed.topViewController;
     if (!pages.count || !feedPage) return;
     ApolloDuoSplitState *previous = sDuoPostsClosedThreadState;
@@ -1764,6 +1774,9 @@ static void ApolloDuoPostsRememberClosedThread(ApolloDuoSplitState *state, NSArr
     closed.feedPage = feedPage;
     closed.feedIdentity = ApolloDuoPostsFeedIdentity(feedPage);
     closed.account = ApolloDuoPostsAccountIdentity();
+    closed.picture = picture;
+    closed.pictureFrame = pictureFrame;
+    closed.surfaceSize = state.host.view.bounds.size;
     state.closedThread = closed;
     sDuoPostsClosedThreadState = state;
     ApolloLog(@"[DuoSplit] remembered the closed thread (%lu page(s)) for a forward swipe", (unsigned long)pages.count);
@@ -2462,13 +2475,25 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
     }
     UIViewController *backstop = state.secondary.viewControllers.firstObject;
     NSArray<UIViewController *> *closedPages = ApolloDuoClosedThreadPages(state.secondary.viewControllers);
+    // The pane's picture for a later forward drag: from the start of a Back
+    // drag (the pane is shifted by now), else taken here before it closes.
+    UIView *closedPicture = nil;
+    CGRect closedPictureFrame = CGRectNull;
+    if (!pages.count && surface.window) {
+        [surface layoutIfNeeded];
+        closedPictureFrame = ApolloDuoPostsDetailPane(state);
+        closedPicture = dragOffset > 0 ? state.host.threadDragPicture
+            : (!CGRectIsNull(closedPictureFrame) && !CGRectIsEmpty(closedPictureFrame)
+               ? [surface resizableSnapshotViewFromRect:closedPictureFrame afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil);
+    }
+    state.host.threadDragPicture = nil;
     NSArray<UIViewController *> *stack = [@[backstop] arrayByAddingObjectsFromArray:pages];
     [state.host.postsTransitionSnapshot removeFromSuperview];
     state.host.postsTransitionSnapshot = nil;
     [state.secondary.view.layer removeAnimationForKey:@"ApolloDuoSlide"];
     // The snapshot below is taken from the last rendered frame, so it already
     // shows the dragged pane; the live pane goes back to its place under it.
-    dragOffset = !entering && animate ? MAX(0, dragOffset) : 0;
+    dragOffset = animate ? MAX(0, dragOffset) : 0;
     if (!dragOffset) {
         ApolloDuoSetThreadDragOffset(state.secondary.viewIfLoaded, 0);
         ApolloDuoRemoveThreadDragFiller(state.host.threadDragFiller, 0);
@@ -2508,7 +2533,7 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
         [state.secondary setViewControllers:stack animated:NO];
         state.changing = NO;
         // Off the pane now: what a forward swipe brings back.
-        if (!entering) ApolloDuoPostsRememberClosedThread(state, closedPages);
+        if (!entering) ApolloDuoPostsRememberClosedThread(state, closedPages, closedPicture, closedPictureFrame);
         ApolloDuoPostsSyncColumns(state);
         [surface layoutIfNeeded];
         ApolloNativeFeedSearchFinishColumnMove(state.feed.topViewController);
@@ -2547,7 +2572,11 @@ static void ApolloDuoPostsSetDetailPagesFromDrag(ApolloDuoSplitState *state, NSA
         // remain visible throughout the first push.
         CGRect incomingPane = ApolloDuoPostsDetailPane(state);
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(incomingPane);
-        if (!CGRectIsNull(incomingPane) && travel > 0)
+        // A forward drag already brought the thread dragOffset short of its
+        // place; finish on the drawer's spring from the finger's speed.
+        if (!CGRectIsNull(incomingPane) && travel > 0 && dragOffset > 0)
+            ApolloDuoSlideDrawer(state.secondary.view, MIN(dragOffset, travel), 0, dragVelocity, YES, nil);
+        else if (!CGRectIsNull(incomingPane) && travel > 0)
             ApolloDuoSlideView(state.secondary.view, travel, 0, 0.32, nil);
     } else if (snapshot) {
         CGFloat travel = CGRectGetMaxX(surface.bounds) - CGRectGetMinX(pane);
@@ -2596,6 +2625,74 @@ BOOL ApolloDuoSplitRestoreClosedThread(UINavigationController *nav) {
     ApolloDuoPostsSetDetailPages(state, pages, YES);
     ApolloDuoPostsSyncColumns(state);
     return YES;
+}
+
+#pragma mark - Forward drags
+
+// A forward drag on the full-width feed slides the closed thread's picture in
+// from the trailing edge under the finger. Nothing is laid out until release:
+// a completed drag reopens the real pages from where the picture is (the
+// split's own open, continuing the motion), an early one slides it back out.
+// Without a picture (Reduce Motion, a resize since) the drag still restores
+// on release, without following the finger.
+static CGFloat ApolloDuoRestoreTravel(ApolloDuoSplitState *state) {
+    ApolloDuoPostsClosedThread *closed = state.closedThread;
+    if (!closed.picture || CGRectIsNull(closed.pictureFrame)
+        || !CGSizeEqualToSize(closed.surfaceSize, state.host.view.bounds.size)) return 0;
+    return MAX(0, CGRectGetMaxX(state.host.view.bounds) - CGRectGetMinX(closed.pictureFrame));
+}
+
+CGFloat ApolloDuoSplitRestoreDragTravel(UINavigationController *nav) {
+    return ApolloDuoRestoreTravel(ApolloDuoSplitStateForNavigation(nav, NO));
+}
+
+BOOL ApolloDuoSplitBeginRestoreDrag(UINavigationController *nav) {
+    if (!ApolloDuoSplitCanRestoreClosedThread(nav)) return NO;
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    CGFloat travel = ApolloDuoRestoreTravel(state);
+    if (travel <= 0 || UIAccessibilityIsReduceMotionEnabled()) return NO;
+    UIView *picture = state.closedThread.picture;
+    [picture.layer removeAllAnimations];
+    picture.frame = state.closedThread.pictureFrame;
+    picture.transform = CGAffineTransformMakeTranslation(travel, 0);
+    picture.userInteractionEnabled = NO;
+    [state.host.view insertSubview:picture belowSubview:state.host.listDismiss];
+    state.host.restoreDragPicture = picture;
+    ApolloLog(@"[DuoDrag] forward drag began travel=%.0f", travel);
+    return YES;
+}
+
+// `shown` is how far the thread has come in, 0 to travel.
+void ApolloDuoSplitMoveRestoreDrag(UINavigationController *nav, CGFloat shown) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    UIView *picture = state.host.restoreDragPicture;
+    CGFloat travel = ApolloDuoRestoreTravel(state);
+    if (!picture || travel <= 0) return;
+    picture.transform = CGAffineTransformMakeTranslation(travel - ApolloDuoDragClamp(shown, travel), 0);
+}
+
+void ApolloDuoSplitEndRestoreDrag(UINavigationController *nav, BOOL restore, CGFloat shown, CGFloat velocity) {
+    ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+    UIView *picture = state.host.restoreDragPicture;
+    state.host.restoreDragPicture = nil;
+    CGFloat travel = ApolloDuoRestoreTravel(state);
+    ApolloLog(@"[DuoDrag] forward drag ended restore=%d shown=%.0f velocity=%.0f", restore, shown, velocity);
+    if (restore && ApolloDuoSplitCanRestoreClosedThread(nav)) {
+        NSArray<UIViewController *> *pages = state.closedThread.pages;
+        state.closedThread = nil;
+        if (sDuoPostsClosedThreadState == state) sDuoPostsClosedThreadState = nil;
+        // The real pane takes over exactly where the picture is.
+        CGFloat remaining = travel > 0 ? MAX(1, travel - ApolloDuoDragClamp(shown, travel)) : 0;
+        ApolloDuoPostsSetDetailPagesFromDrag(state, pages, YES, remaining, -velocity);
+        ApolloDuoPostsSyncColumns(state);
+        [picture removeFromSuperview];
+        return;
+    }
+    if (!picture) return;
+    CGFloat from = (picture.layer.presentationLayer ?: picture.layer).transform.m41;
+    ApolloDuoSlideDrawer(picture, from, travel, velocity, picture.window != nil, ^{
+        if (!state.host.restoreDragPicture || state.host.restoreDragPicture != picture) [picture removeFromSuperview];
+    });
 }
 
 // The feed's scroll expiry (Forget Forward Swipe After Scrolling) asks about
@@ -2650,6 +2747,14 @@ CGFloat ApolloDuoSplitBeginThreadDrag(UINavigationController *nav) {
     if (!ApolloDuoSplitCanDragThreadClosed(nav)) return -1;
     UIView *view = nav.view;
     CGFloat offset = MAX(0, ApolloDuoThreadDragOffset(view));
+    {
+        // The pane as it stands, for a forward drag after the close.
+        ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
+        UIView *surface = state.host.view;
+        CGRect pane = ApolloDuoPostsDetailPane(state);
+        state.host.threadDragPicture = offset < 1 && surface.window && !CGRectIsNull(pane) && !CGRectIsEmpty(pane)
+            ? [surface resizableSnapshotViewFromRect:pane afterScreenUpdates:NO withCapInsets:UIEdgeInsetsZero] : nil;
+    }
     ApolloDuoSetThreadDragOffset(view, offset);
     // The feed follows the thread's edge. Re-laying out the real feed every
     // frame would re-measure every row; the close widens the real feed under
@@ -2718,6 +2823,7 @@ void ApolloDuoSplitEndThreadDrag(UINavigationController *nav, BOOL close, CGFloa
         ApolloDuoPostsSetDetailPagesFromDrag(state, @[], YES, offset, velocity);
         return;
     }
+    state.host.threadDragPicture = nil;
     if (!view) return;
     CGFloat from = ApolloDuoThreadDragOffset(view);
     BOOL animated = view.window != nil && !UIAccessibilityIsReduceMotionEnabled();
