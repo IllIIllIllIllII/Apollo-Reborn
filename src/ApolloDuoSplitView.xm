@@ -1545,8 +1545,12 @@ BOOL ApolloDuoSplitDismissPostsList(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
     if (!state.split || !state.feed || state.changing || !state.host.listVisible) return NO;
     // A pinned drawer has no feed behind it; the tab reselect does nothing.
-    if (state.host.listPinned) return YES;
+    if (state.host.listPinned) {
+        ApolloLog(@"[PostsTab] Kept the pinned subreddit list open");
+        return YES;
+    }
     [state.host setListVisible:NO animated:!UIAccessibilityIsReduceMotionEnabled()];
+    ApolloLog(@"[PostsTab] Closed subreddit list");
     return YES;
 }
 
