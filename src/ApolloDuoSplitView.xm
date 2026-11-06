@@ -624,9 +624,22 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     }
     ApolloLog(@"[DuoSplit] revealing %lu restored feed controls", (unsigned long)buttons.count);
 }
+// Drawer drags that close the list (named ApolloReborn.Duo.ListClose…)
+// can't take a pinned drawer, so it never stops partway off screen.
+static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
+    for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+        if ([gesture.name hasPrefix:@"ApolloReborn.Duo.ListClose"] && gesture.enabled != enabled)
+            gesture.enabled = enabled;
+    }
+}
+- (void)updateListCloseDrags {
+    ApolloDuoEnableListCloseDrags(self.listDismiss, !self.listPinned);
+    ApolloDuoEnableListCloseDrags(self.listContainer, !self.listPinned);
+}
 - (void)setListPinned:(BOOL)listPinned {
     if (_listPinned == listPinned) return;
     _listPinned = listPinned;
+    [self updateListCloseDrags];
     if (!self.pinnedPrompt || self.pinnedPrompt.hidden == !listPinned) return;
     if (listPinned) {
         self.pinnedPrompt.hidden = NO;
@@ -645,7 +658,9 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
 }
 - (void)setListVisible:(BOOL)visible animated:(BOOL)animated velocity:(CGFloat)velocity {
     if (!self.subredditList) return;
-    if (!visible && self.listPinned) return;
+    // A pinned drawer only settles open, so a drag already under way springs back.
+    if (!visible && self.listPinned) visible = YES;
+    [self updateListCloseDrags];
     if (!visible) [self endListEditing];
     if (self.listVisible == visible) return;
     [self.view layoutIfNeeded];
