@@ -385,7 +385,8 @@ static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 static NSString *const UDKeyDuoDividerFeedShare = @"DuoDividerFeedShare";
 
-// Experimental large post cards on Duo's opened landscape display:
+// Experimental large post cards on Duo's opened display, portrait and
+// landscape (the key predates portrait support):
 // 0 = Original (default), 2 = Focused feed; value 1 is retired.
 static NSString *const UDKeyDuoLandscapeFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard

@@ -28,8 +28,11 @@ void ApolloNativeFeedSearchWillScrollToTop(UIScrollView *scrollView);
 
 // Host-owned Duo controls use UIKit's native navigation layout above Search.
 // Pass nil controls to remove this host's items when changing owner or folding.
+// layoutLeading places Layout right after List (opened portrait) instead of at
+// the trailing edge (opened landscape).
 void ApolloNativeFeedSearchSetDuoControls(UIViewController *vc, UIBarButtonItem *list,
-                                        UIBarButtonItem *split, UIBarButtonItem *layout);
+                                        UIBarButtonItem *split, UIBarButtonItem *layout,
+                                        BOOL layoutLeading);
 
 // A Find in Comments search the ••• menu opened with the bar turned off in
 // Settings has been dismissed: take the bar off the thread again.

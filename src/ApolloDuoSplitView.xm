@@ -1096,16 +1096,18 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         // Carry the same control into full-width comments, just like List and
         // Split. Replacing it with the thread's standalone item makes its
         // glass and glyph disappear/reappear during the native push and Back.
-        self.feedLayoutButton.hidden = portrait || !supportsLayout;
+        // Portrait has no Split, so Layout sits beside List instead of
+        // crowding Apollo's trailing actions.
+        self.feedLayoutButton.hidden = !supportsLayout;
         [self applyFeedLayoutAvailability];
         if (self.feedControlsOwner != owner) {
-            ApolloNativeFeedSearchSetDuoControls(self.feedControlsOwner, nil, nil, nil);
+            ApolloNativeFeedSearchSetDuoControls(self.feedControlsOwner, nil, nil, nil, NO);
             self.feedControlsOwner = owner;
         }
         ApolloNativeFeedSearchSetDuoControls(owner,
             self.listButton.hidden ? nil : self.listBarItem,
             self.splitButton.hidden ? nil : self.splitBarItem,
-            self.feedLayoutButton.hidden ? nil : self.feedLayoutBarItem);
+            self.feedLayoutButton.hidden ? nil : self.feedLayoutBarItem, portrait);
     }
     if (!self.accountHeader) return;
     UISplitViewControllerDisplayMode displayMode = self.accountDisplayMode
@@ -2186,7 +2188,7 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled) {
     UIWindow *window = controller.viewIfLoaded.window;
     if (!window || !enabled || sDuoFeedLayoutChanging || ApolloDuoSplitIsResizing()
-        || !ApolloDuoSplitIsUnfolded() || ApolloDuoSplitIsUnfoldedPortrait()) return;
+        || !ApolloDuoSplitIsUnfolded()) return;
     [window layoutIfNeeded];
     BOOL animate = !UIAccessibilityIsReduceMotionEnabled();
     NSMutableArray<ApolloDuoLayoutTransition *> *transitions = [NSMutableArray array];
@@ -2261,7 +2263,7 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
             }];
             [transition.cover removeFromSuperview];
             if (animate && CGSizeEqualToSize(transition.size, surface.bounds.size)
-                && ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsUnfoldedPortrait())
+                && ApolloDuoSplitIsUnfolded())
                 ApolloDuoPostsAnimateGeometry(transition.geometry, surface, surface, 0.32);
         }
         sDuoFeedLayoutChanging = NO;
@@ -3766,7 +3768,7 @@ static void ApolloDuoSplitClose(ApolloDuoSplitState *state, BOOL preserveDetail)
     ApolloDuoSearchRestoreBackItem(state);
     NSArray *detail = [state.secondary.viewControllers copy];
     if (state.feed) {
-        ApolloNativeFeedSearchSetDuoControls(state.host.feedControlsOwner, nil, nil, nil);
+        ApolloNativeFeedSearchSetDuoControls(state.host.feedControlsOwner, nil, nil, nil, NO);
         state.host.feedControlsOwner = nil;
         ApolloDuoPostsStopGeometry(state.feed.viewIfLoaded);
         ApolloDuoPostsStopGeometry(state.secondary.viewIfLoaded);
