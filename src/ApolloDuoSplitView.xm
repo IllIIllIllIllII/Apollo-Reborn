@@ -485,9 +485,8 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
         self.listGlass.effect = effect;
         self.listStyleApplied = YES;
     }
-    NSString *panelTitle = self.listUsesGlass ? @"" : @"Subreddits";
-    if (![self.listNavigationBar.topItem.title isEqualToString:panelTitle])
-        self.listNavigationBar.topItem.title = panelTitle;
+    if (![self.listNavigationBar.topItem.title isEqualToString:@"Subreddits"])
+        self.listNavigationBar.topItem.title = @"Subreddits";
     self.listGlass.backgroundColor = self.listUsesGlass ? UIColor.clearColor
         : (ApolloThemeSubredditListBackgroundColor() ?: UIColor.systemBackgroundColor);
     // Re-vend only on an explicit style change, never on scroll/layout.
