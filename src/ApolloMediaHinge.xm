@@ -160,18 +160,23 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     UIWindow *window = table.window;
     UIViewController *owner = ApolloDuoMediaTableController(table);
     BOOL comments = [owner isKindOfClass:NSClassFromString(@"Apollo.CommentsViewController")];
-    if (window && ApolloDuoSplitIsUnfolded() && !ApolloDuoSplitIsUnfoldedPortrait()
-        && CGRectGetWidth(window.bounds) > CGRectGetHeight(window.bounds)) {
+    if (window && ApolloDuoSplitIsUnfolded()) {
         // The requested limit is the full display height, not the currently
         // unobscured table area. Do not subtract the navigation/search bar or
         // home-indicator insets, which vary as the feed scrolls.
-        height = floor(CGRectGetHeight(window.bounds));
-        if (!isfinite(height) || height < 100.0) height = 0.0;
-        if (height > 0.0 && sDuoLandscapeFeedLayout == 2) {
-            // Focused narrows the post column only. Media keeps the same
-            // display-height cap as Original, so a tall image fills the column
-            // instead of shrinking; wide media is already limited by its width.
+        CGFloat displayHeight = floor(CGRectGetHeight(window.bounds));
+        if (!isfinite(displayHeight) || displayHeight < 100.0) displayHeight = 0.0;
+        BOOL landscape = !ApolloDuoSplitIsUnfoldedPortrait()
+            && CGRectGetWidth(window.bounds) > CGRectGetHeight(window.bounds);
+        // Original keeps native media in portrait; landscape caps it at the
+        // display height so one preview can't span several screens.
+        if (landscape) height = displayHeight;
+        if (displayHeight > 0.0 && sDuoLandscapeFeedLayout == 2) {
+            // Focused narrows the post column only, in either pose. Media keeps
+            // the display-height cap, so a tall image fills the column instead
+            // of shrinking; wide media is already limited by its width.
             layout = sDuoLandscapeFeedLayout;
+            height = displayHeight;
             centerOffset = ApolloDuoFeedCenterOffset(table, window, owner);
         }
     }
