@@ -46,6 +46,8 @@ static Class sApolloDuoCommentsViewControllerClass;
 @property (nonatomic) BOOL unfolded;
 @property (nonatomic) BOOL unfoldedPortrait;
 @property (nonatomic) NSInteger feedMode;
+// Published while its page sat in a navigation stack.
+@property (nonatomic) BOOL stacked;
 @end
 @implementation ApolloDuoFeedGeometry
 @end
@@ -183,6 +185,19 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
     CGFloat centerOffset = 0.0;
     NSInteger layout = 0;
     UIViewController *owner = ApolloDuoMediaTableController(table);
+    // An interactive Back detaches the page from its stack and parks it at the
+    // transition's start frame, a screen width away. Measured there, Focused
+    // pins the column to the page's edge for the whole drag and snaps it back
+    // on a cancel. Keep what the page published in place until it returns.
+    if (previous.stacked && !owner.navigationController) {
+        // Every cell layout lands here mid-drag; log once per page.
+        static __weak id sLastKeptNode;
+        if (sLastKeptNode != node) {
+            sLastKeptNode = node;
+            ApolloLog(@"[DuoFeed] kept %@ geometry while it is off its navigation stack", NSStringFromClass(owner.class));
+        }
+        return NO;
+    }
     BOOL comments = [owner isKindOfClass:sApolloDuoCommentsViewControllerClass];
     if (window && unfolded) {
         // The requested limit is the full display height, not the currently
@@ -203,10 +218,11 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
             centerOffset = ApolloDuoFeedCenterOffset(table, window, owner);
         }
     }
+    BOOL stacked = owner.navigationController != nil;
     BOOL changed = !previous || fabs(previous.height - height) > 0.5
         || fabs(previous.width - width) > 0.5
         || fabs(previous.centerOffset - centerOffset) > 0.5 || previous.layout != layout
-        || previous.comments != comments;
+        || previous.comments != comments || previous.stacked != stacked;
     if (changed) {
         ApolloDuoFeedGeometry *geometry = [ApolloDuoFeedGeometry new];
         geometry.height = height;
@@ -214,6 +230,7 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
         geometry.centerOffset = centerOffset;
         geometry.layout = layout;
         geometry.comments = comments;
+        geometry.stacked = stacked;
         objc_setAssociatedObject(node, &kApolloDuoFeedGeometryKey, geometry, OBJC_ASSOCIATION_RETAIN);
         previous = geometry;
     }
