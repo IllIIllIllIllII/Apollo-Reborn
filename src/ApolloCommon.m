@@ -2017,6 +2017,27 @@ void ApolloRequestFullFrameRate(CAAnimation *animation) {
     }
 }
 
+// +[UIView _modifyAnimationsWithPreferredFrameRateRange:updateReason:animations:]
+// (UIKitCore, iOS 15+) tags the animations created inside the current
+// animation block with a frame-rate range. 0x100021 is the update reason
+// UIKit's own -_modifyAnimationsWithPreferredFrameRateRange:reason:animations:
+// passes for it (iOS 27.1 simulator runtime). Outside an animation block it
+// just runs the block.
+void ApolloAnimateAtFullFrameRate(void (^changes)(void)) {
+    if (!changes) return;
+    if (@available(iOS 15.0, *)) {
+        float maximum = ApolloMaximumFrameRate();
+        SEL selector = @selector(_modifyAnimationsWithPreferredFrameRateRange:updateReason:animations:);
+        if (maximum > 60 && [UIView respondsToSelector:selector]) {
+            CAFrameRateRange range = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
+            ((void (*)(Class, SEL, CAFrameRateRange, uint32_t, void (^)(void)))objc_msgSend)(
+                UIView.class, selector, range, 0x100021, changes);
+            return;
+        }
+    }
+    changes();
+}
+
 void ApolloDisplayLinkRequestFullFrameRate(CADisplayLink *link) {
     if (!link) return;
     if (@available(iOS 15.0, *)) {

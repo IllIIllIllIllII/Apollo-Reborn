@@ -343,21 +343,25 @@ static UIViewPropertyAnimator *ApolloNavBuildAnimator(id animatorObject,
     }
 
     [animator addAnimations:^{
-        if (reduceMotion) {
-            if (push) toView.alpha = toAlpha;
-            else fromView.alpha = 0.0;
-        } else if (push) {
-            toView.frame = toRest;
-            shadow.frame = toRest;
-            fromView.frame = CGRectOffset(fromRest, -parallax, 0.0);
-            dim.alpha = 1.0;
-        } else {
-            fromView.frame = CGRectOffset(fromRest, width, 0.0);
-            shadow.frame = CGRectOffset(fromRest, width, 0.0);
-            shadow.alpha = 0.0;
-            toView.frame = toRest;
-            dim.alpha = 0.0;
-        }
+        // UIViewPropertyAnimator takes no frame-rate range; tag the page slide
+        // the way UIKit tags its own transitions so it can run at ProMotion rates.
+        ApolloAnimateAtFullFrameRate(^{
+            if (reduceMotion) {
+                if (push) toView.alpha = toAlpha;
+                else fromView.alpha = 0.0;
+            } else if (push) {
+                toView.frame = toRest;
+                shadow.frame = toRest;
+                fromView.frame = CGRectOffset(fromRest, -parallax, 0.0);
+                dim.alpha = 1.0;
+            } else {
+                fromView.frame = CGRectOffset(fromRest, width, 0.0);
+                shadow.frame = CGRectOffset(fromRest, width, 0.0);
+                shadow.alpha = 0.0;
+                toView.frame = toRest;
+                dim.alpha = 0.0;
+            }
+        });
     }];
     [animator addCompletion:^(UIViewAnimatingPosition position) {
         [shadow removeFromSuperview];

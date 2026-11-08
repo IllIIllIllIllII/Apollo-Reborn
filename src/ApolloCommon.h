@@ -346,6 +346,11 @@ BOOL ApolloColorIsLight(UIColor *color);
 // tweak draws itself; no-ops on 60 Hz displays and before iOS 15.
 void ApolloRequestFullFrameRate(CAAnimation *animation);
 void ApolloDisplayLinkRequestFullFrameRate(CADisplayLink *link);
+// For UIKit animation blocks (UIView animations, UIViewPropertyAnimator), which
+// take no frame-rate range: call inside the animation block to run `changes`
+// with UIKit's own high-frame-rate request. Runs `changes` directly when the
+// private UIKit method is missing or the display is 60 Hz.
+void ApolloAnimateAtFullFrameRate(void (^changes)(void));
 
 // Maps a legacy ApolloLinkPreviewCardColor preset enum value to its UIColor.
 // Retained only to migrate a pre-existing preset selection into the new
