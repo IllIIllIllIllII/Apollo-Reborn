@@ -553,6 +553,7 @@ void ApolloSubredditListParkSectionHeaders(UITableView *tableView, NSDictionary<
         park.additive = YES;
         park.fromValue = park.toValue = @(value);
         park.duration = 1.0; // only has to outlive one main-queue turn; step 3 drops it
+        ApolloRequestFullFrameRate(park);
         [header.layer addAnimation:park forKey:kApolloListHeaderParkKey];
     }];
 }

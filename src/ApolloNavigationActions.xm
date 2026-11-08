@@ -589,7 +589,9 @@ UIView *ApolloNavigationActionsMenuSourceView(UIView *action) {
             animation.fillMode = kCAFillModeForwards;
             animation.removedOnCompletion = NO;
         }
+        ApolloRequestFullFrameRate(motion);
         [layer addAnimation:motion forKey:self.iconMotionKey];
+        ApolloRequestFullFrameRate(opacity);
         [layer addAnimation:opacity forKey:self.iconOpacityKey];
     }
     for (CALayer *layer in self.animatedIconLayers) {

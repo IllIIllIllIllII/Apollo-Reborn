@@ -286,6 +286,7 @@ static void ApolloTopBarCopyAnimationToHeader(ApolloTopBarScrollState *state,
     }
     animation.delegate = nil; // Only the bar owns completion/interaction cleanup.
     animation.beginTime = [view.layer convertTime:source.beginTime fromLayer:state.bar.layer];
+    ApolloRequestFullFrameRate(animation);
     [view.layer addAnimation:animation forKey:ApolloTopBarScrollAnimationKey];
 }
 
@@ -378,6 +379,7 @@ static void ApolloTopBarAnimate(ApolloTopBarScrollState *state, CGFloat from, CG
     animation.removedOnCompletion = !state.hidden;
     animation.delegate = state;
     [animation setValue:@(state.generation) forKey:ApolloTopBarScrollGenerationKey];
+    ApolloRequestFullFrameRate(animation);
     [state.bar.layer addAnimation:animation forKey:ApolloTopBarScrollAnimationKey];
     for (ApolloTopBarHeaderPart *part in state.headerParts) ApolloTopBarCopyAnimationToHeader(state, part);
 }

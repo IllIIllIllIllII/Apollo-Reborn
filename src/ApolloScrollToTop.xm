@@ -390,6 +390,7 @@ static BOOL ApolloScrollReturnUsesDuoChrome(void) {
         return;
     }
     self.jumpLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepTopJump:)];
+    ApolloDisplayLinkRequestFullFrameRate(self.jumpLink);
     [self.jumpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 // Shared entry for status/title and Posts-tab jumps. Capture before revealing
@@ -435,6 +436,7 @@ static BOOL ApolloScrollReturnUsesDuoChrome(void) {
         [self clearAnimated:NO];
     } else {
         self.jumpLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepTopJump:)];
+        ApolloDisplayLinkRequestFullFrameRate(self.jumpLink);
         [self.jumpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
     ApolloLog(@"[ScrollReturn] Restored saved position");

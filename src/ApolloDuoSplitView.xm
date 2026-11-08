@@ -220,6 +220,7 @@ static void ApolloDuoSlideView(UIView *view, CGFloat from, CGFloat to, NSTimeInt
     delegate.started = CACurrentMediaTime();
     slide.delegate = delegate;
     ApolloLog(@"[DuoSplit] slide from=%.1f to=%.1f duration=%.2f", from, to, duration);
+    ApolloRequestFullFrameRate(slide);
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
@@ -250,6 +251,7 @@ static void ApolloDuoSlideDrawer(UIView *view, CGFloat from, CGFloat to, CGFloat
     slide.delegate = delegate;
     ApolloLog(@"[DuoSplit] drawer from=%.1f to=%.1f velocity=%.0f duration=%.2f",
               from, to, velocity, slide.duration);
+    ApolloRequestFullFrameRate(slide);
     [view.layer addAnimation:slide forKey:@"ApolloDuoSlide"];
 }
 
@@ -742,6 +744,7 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
         // Explicit endpoints survive the nonanimated containment transaction.
         // Model alpha/transform stay final, so interruption or folding cannot
         // leave a retained control faded out or scaled down.
+        ApolloRequestFullFrameRate(reveal);
         [button.layer addAnimation:reveal forKey:@"ApolloDuoControlsReveal"];
     }
     ApolloLog(@"[DuoSplit] revealing %lu restored feed controls", (unsigned long)buttons.count);
@@ -2318,6 +2321,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
             fade.values = @[@0, @0, @(layer.opacity)];
             fade.keyTimes = @[@0, @0.2, @1];
             fade.duration = duration;
+            ApolloRequestFullFrameRate(fade);
             [layer addAnimation:fade forKey:@"ApolloDuoPostsGeometry"];
             [faded addObject:view];
             count++;
@@ -2354,6 +2358,7 @@ static void ApolloDuoAnimateRetainedGeometry(NSArray<ApolloDuoPostsGeometry *> *
         resize.animations = animations;
         resize.duration = duration;
         resize.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        ApolloRequestFullFrameRate(resize);
         [layer addAnimation:resize forKey:@"ApolloDuoPostsGeometry"];
         count++;
     }

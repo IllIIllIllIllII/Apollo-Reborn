@@ -340,6 +340,13 @@ NSString *ApolloHexStringFromColor(UIColor *color);
 // the link-preview card text against an arbitrary user-picked card color.
 BOOL ApolloColorIsLight(UIColor *color);
 
+// ProMotion. The app opts in (CADisableMinimumFrameDurationOnPhone), but an
+// explicit Core Animation animation or a display link without a frame-rate
+// range may run at 60 Hz. These ask for the display's full rate for motion the
+// tweak draws itself; no-ops on 60 Hz displays and before iOS 15.
+void ApolloRequestFullFrameRate(CAAnimation *animation);
+void ApolloDisplayLinkRequestFullFrameRate(CADisplayLink *link);
+
 // Maps a legacy ApolloLinkPreviewCardColor preset enum value to its UIColor.
 // Retained only to migrate a pre-existing preset selection into the new
 // free-form hex color the first time a user runs a build with the picker.
