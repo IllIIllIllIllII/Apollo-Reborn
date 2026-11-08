@@ -1617,6 +1617,7 @@ static BOOL ApolloGalleryTileAutoplayEnabledForKind(ApolloGalleryMediaKind kind)
         self.tileSizeSettlementTo = position;
         self.tileSizeSettlementStart = CACurrentMediaTime();
         self.tileSizeSettlement = [CADisplayLink displayLinkWithTarget:self selector:@selector(apollo_tickTileSizeSettlement:)];
+        ApolloDisplayLinkRequestFullFrameRate(self.tileSizeSettlement);
         [self.tileSizeSettlement addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     } else {
         self.pinchPosition = position;

@@ -531,6 +531,7 @@ static void animateCancelOut(void) {
         fade.toValue = @0.0;
         fade.duration = 0.22;
         fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        ApolloRequestFullFrameRate(fade);
         [cancel.layer addAnimation:fade forKey:@"sipXFade"];
         return;
     }
@@ -545,6 +546,7 @@ static void animateCancelOut(void) {
     slide.toValue = @(dist);
     slide.duration = 0.24;
     slide.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+    ApolloRequestFullFrameRate(slide);
     [cancel.layer addAnimation:slide forKey:@"sipXOut"];
 }
 
@@ -575,6 +577,7 @@ static void recenterCancelButton(void) {
             slide.toValue = @0.0;
             slide.duration = 0.32;
             slide.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+            ApolloRequestFullFrameRate(slide);
             [cancel.layer addAnimation:slide forKey:@"sipXIn"];
         }
     }
@@ -1193,6 +1196,7 @@ static void ApolloFeedSearchArm(UIViewController *owner) {
                 fade.fromValue = @0.0;
                 fade.toValue = @1.0;
                 fade.duration = 0.2;
+                ApolloRequestFullFrameRate(fade);
                 [cl addAnimation:fade forKey:@"sipCancelFade"];
             }
         }

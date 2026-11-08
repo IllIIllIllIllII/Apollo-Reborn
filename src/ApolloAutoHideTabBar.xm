@@ -1123,6 +1123,7 @@ static void ApolloScheduleMinimizePresentationRevalidation(UITabBarController *t
     ApolloTabBarRevealDisplayLinkProxy *proxy = [ApolloTabBarRevealDisplayLinkProxy new];
     proxy.animator = self;
     self.displayLink = [CADisplayLink displayLinkWithTarget:proxy selector:@selector(tick:)];
+    ApolloDisplayLinkRequestFullFrameRate(self.displayLink);
     [self.displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
@@ -1909,6 +1910,7 @@ static void ApolloShowTabBar(UITabBarController *tbc, BOOL animated) {
         slideUp.toValue = @0;
         slideUp.duration = 0.25;
         slideUp.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        ApolloRequestFullFrameRate(slideUp);
         [tabBar.layer addAnimation:slideUp forKey:ApolloTabBarSlideUpAnimationKey];
     }
 
@@ -2084,6 +2086,7 @@ static void ApolloHideTabBar(UITabBarController *tbc, BOOL animated) {
             [tbc.view layoutIfNeeded];
         } completion:nil];
     }];
+    ApolloRequestFullFrameRate(slide);
     [tabBar.layer addAnimation:slide forKey:ApolloTabBarSlideDownAnimationKey];
     [CATransaction commit];
 }

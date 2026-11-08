@@ -364,6 +364,7 @@ static NSString *ApolloReturnItemID(id node) {
         return;
     }
     self.jumpLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepTopJump:)];
+    ApolloDisplayLinkRequestFullFrameRate(self.jumpLink);
     [self.jumpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 // Shared entry for status/title and Posts-tab jumps. Capture before revealing
@@ -409,6 +410,7 @@ static NSString *ApolloReturnItemID(id node) {
         [self clearAnimated:NO];
     } else {
         self.jumpLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(stepTopJump:)];
+        ApolloDisplayLinkRequestFullFrameRate(self.jumpLink);
         [self.jumpLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
     }
     ApolloLog(@"[ScrollReturn] Restored saved position");

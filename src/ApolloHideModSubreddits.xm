@@ -380,7 +380,9 @@ static void ApolloHideModAnimateControl(UIButton *button, UITableView *table, BO
             if (!appearing) [CATransaction setCompletionBlock:^{ [button removeFromSuperview]; }];
             button.layer.position = end;
             button.alpha = appearing ? 1.0 : 0.0;
+            ApolloRequestFullFrameRate(move);
             [button.layer addAnimation:move forKey:@"position"];
+            if (fade) ApolloRequestFullFrameRate(fade);
             if (fade) [button.layer addAnimation:fade forKey:@"opacity"];
             [CATransaction commit];
             return;

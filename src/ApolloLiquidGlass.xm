@@ -1731,6 +1731,7 @@ BOOL ApolloNavigationTitleContainsNativeSearchSurface(UIView *view) {
         resize.toValue = [NSValue valueWithCGRect:oldGlass.bounds];
         resize.duration = 0.25;
         resize.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+        ApolloRequestFullFrameRate(resize);
         [oldGlass.layer addAnimation:resize forKey:@"bounds"];
     }
 
@@ -1823,6 +1824,7 @@ static void ApolloAnimateTitleActionsTranslation(UIView *titleControl, CGPoint s
         motion.toValue = @0;
         motion.additive = YES;
         motion.beginTime = 0;
+        ApolloRequestFullFrameRate(motion);
         [layer addAnimation:motion forKey:keys[axis]];
     }
 }

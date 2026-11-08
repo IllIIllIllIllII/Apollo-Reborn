@@ -1999,6 +1999,28 @@ BOOL ApolloColorIsLight(UIColor *color) {
     return luminance >= 0.6;
 }
 
+static float ApolloMaximumFrameRate(void) {
+    return (float)UIScreen.mainScreen.maximumFramesPerSecond;
+}
+
+void ApolloRequestFullFrameRate(CAAnimation *animation) {
+    if (!animation) return;
+    if (@available(iOS 15.0, *)) {
+        float maximum = ApolloMaximumFrameRate();
+        if (maximum <= 60) return;
+        animation.preferredFrameRateRange = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
+    }
+}
+
+void ApolloDisplayLinkRequestFullFrameRate(CADisplayLink *link) {
+    if (!link) return;
+    if (@available(iOS 15.0, *)) {
+        float maximum = ApolloMaximumFrameRate();
+        if (maximum <= 60) return;
+        link.preferredFrameRateRange = CAFrameRateRangeMake(MIN(80.0f, maximum), maximum, maximum);
+    }
+}
+
 UIColor *ApolloLinkPreviewPresetColor(NSInteger preset) {
     switch (preset) {
         case ApolloLinkPreviewCardColorGray:     return [UIColor colorWithWhite:0.56 alpha:1.0];
