@@ -671,6 +671,10 @@ static const NSTimeInterval kPiPControlsAutoHideDelay = 3.0;
 // of the floating card (no window, card, gestures or geometry).
 @property (nonatomic, assign) BOOL accessoryMode;
 @property (nonatomic, strong) ApolloPiPAccessoryView *accessoryView;
+// The comments list the video sits in, captured at takeover while the video's
+// row is still on screen. Far down the thread Texture detaches that row's view,
+// so it can't be found from the video any more when the strip is tapped.
+@property (nonatomic, weak) UIScrollView *commentsScrollView;
 @property (nonatomic, strong) ApolloPiPOverlayView *controlsOverlay;
 @property (nonatomic, strong) UIButton *playPauseButton;
 @property (nonatomic, strong) UIButton *muteButton;
@@ -1133,6 +1137,13 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     // viewer's PiP button keeps the floating card), and only where the strip
     // can be seen right now.
     self.accessoryMode = richMediaNode && sPiPInTabBar && ApolloTabAccessoryIsAvailable();
+    self.commentsScrollView = nil;
+    for (UIView *ancestor = videoView.superview; ancestor; ancestor = ancestor.superview) {
+        if ([ancestor isKindOfClass:UITableView.class] || [ancestor isKindOfClass:UICollectionView.class]) {
+            self.commentsScrollView = (UIScrollView *)ancestor;
+            break;
+        }
+    }
     if (self.accessoryMode) {
         [self buildAccessoryIfNeeded];
         self.playerView = self.accessoryView.playerView;
@@ -1527,9 +1538,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 // comes back into view and Apollo's visibility event restores it inline.
 - (void)scrollBackToVideo {
     if (!self.active || self.restoring) return;
-    UIView *view = PiPViewForNode(self.videoNode);
-    while (view && ![view isKindOfClass:UIScrollView.class]) view = view.superview;
-    UIScrollView *scrollView = (UIScrollView *)view;
+    UIScrollView *scrollView = self.commentsScrollView;
     if (!scrollView.window) {
         ApolloLog(@"[PiP] Tab bar player tapped but its comments page is not on screen");
         return;
