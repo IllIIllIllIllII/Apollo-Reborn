@@ -1,6 +1,10 @@
 #import "ApolloTabAccessory.h"
+#import "ApolloAutoHideTabBar.h"
 #import "ApolloCommon.h"
+#import "ApolloCompactTabBarView.h"
+#import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
+#import <objc/runtime.h>
 
 // MARK: - Slot
 
@@ -45,6 +49,8 @@ static void ApolloTabAccessoryApply(void) {
         if (current == top.contentView) return;
         UITabAccessory *accessory = top ? [[UITabAccessory alloc] initWithContentView:top.contentView] : nil;
         [host setBottomAccessory:accessory animated:YES];
+        // A strip added while the bar is hidden starts in the bar's place.
+        if (accessory) [UIView performWithoutAnimation:^{ ApolloTabAccessoryFollowTabBar(host); }];
         ApolloLog(@"[TabAccessory] showing owner=%ld (stack=%lu)", (long)top.owner,
                   (unsigned long)sApolloTabAccessoryEntries.count);
     }
@@ -72,6 +78,118 @@ void ApolloTabAccessoryHide(ApolloTabAccessoryOwner owner) {
         removed = YES;
     }
     if (removed) ApolloTabAccessoryApply();
+}
+
+// MARK: - Following the tab bar
+
+static char kApolloTabAccessoryMovedKey;
+
+static UIView *ApolloTabAccessoryContainer(UITabBarController *host) {
+    if (@available(iOS 26.0, *)) return host.bottomAccessory.contentView.superview;
+    return nil;
+}
+
+// The bar's glass in `view`'s space, from frames only: Down renders the bar
+// shifted through its layer's sublayerTransform, which a converted rect would
+// include, and the strip belongs where the bar sits at rest.
+static CGRect ApolloTabAccessoryRestingBarRect(UITabBar *tabBar, UIView *view) {
+    UIView *platter = ApolloExpandedTabBarPlatter(tabBar);
+    if (!platter || ![platter isDescendantOfView:tabBar]) return CGRectNull;
+    CGRect rect = platter.frame;
+    for (UIView *ancestor = platter.superview; ancestor && ancestor != tabBar; ancestor = ancestor.superview) {
+        rect.origin.x += ancestor.frame.origin.x - ancestor.bounds.origin.x;
+        rect.origin.y += ancestor.frame.origin.y - ancestor.bounds.origin.y;
+    }
+    return [tabBar convertRect:rect toView:view];
+}
+
+// Idempotent: the offset is measured from the center UIKit set, which a
+// transform never changes, so repeated layout passes don't add up.
+static void ApolloTabAccessoryPlace(UITabBarController *host) {
+    UIView *container = ApolloTabAccessoryContainer(host);
+    UIView *space = container.superview;
+    UITabBar *tabBar = host.tabBar;
+    if (!container || !space || !tabBar) return;
+
+    CGPoint center = container.center;
+    CGSize size = container.bounds.size;
+    CGFloat dx = 0.0, dy = 0.0;
+    if (ApolloTabBarScrollHidesBarAway(host)) {
+        // Fade/Down: take the hidden bar's place, centered on its glass, as
+        // UIKit does for a hidden tab bar. Only when the bar is below the
+        // strip (iPad's bar sits at the top).
+        CGRect bar = ApolloTabAccessoryRestingBarRect(tabBar, space);
+        if (!CGRectIsNull(bar) && CGRectGetMidY(bar) > center.y) dy = CGRectGetMidY(bar) - center.y;
+    } else if (sTabBarHideStyle == ApolloTabBarHideStyleRight) {
+        BOOL isInline = NO;
+        if (@available(iOS 26.0, *)) {
+            isInline = host.bottomAccessory.contentView.traitCollection.tabAccessoryEnvironment ==
+                UITabAccessoryEnvironmentInline;
+        }
+        // UIKit lays the inline strip out beside a leading pill; Right mirrors
+        // that pill to the trailing edge, so mirror the strip the same way.
+        if (isInline && space.bounds.size.width > 0.0) dx = space.bounds.size.width - 2.0 * center.x;
+    }
+
+    BOOL moved = fabs(dx) > 0.5 || fabs(dy) > 0.5;
+    BOOL wasMoved = [objc_getAssociatedObject(container, &kApolloTabAccessoryMovedKey) boolValue];
+    if (!moved && !wasMoved) return; // leave UIKit's own transforms alone
+    CGAffineTransform transform = moved ? CGAffineTransformMakeTranslation(dx, dy) : CGAffineTransformIdentity;
+    if (!CGAffineTransformEqualToTransform(container.transform, transform)) {
+        container.transform = transform;
+        ApolloLog(@"[TabAccessory] following tab bar dx=%.1f dy=%.1f size=%@", dx, dy, NSStringFromCGSize(size));
+    }
+    objc_setAssociatedObject(container, &kApolloTabAccessoryMovedKey, moved ? @YES : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void ApolloTabAccessoryFollowTabBar(UITabBarController *tabBarController) {
+    UITabBarController *host = sApolloTabAccessoryHost;
+    if (!host || host != tabBarController) return;
+    UIView *container = ApolloTabAccessoryContainer(host);
+    if (!container) return;
+    // Minimize resizes the bar's real glass; UIKit places the strip above it
+    // on its next layout pass. Run that pass now so the strip moves in step.
+    UIView *group = container.superview.superview ?: container.superview;
+    [group setNeedsLayout];
+    [group layoutIfNeeded];
+    ApolloTabAccessoryPlace(host);
+}
+
+// UIKit moves the strip on its own (a new strip, rotation, the inline morph,
+// its group layout), sometimes outside any layout pass we could follow; re-place
+// it whenever UIKit sets its center or size. Only the strip's transform is
+// written here, which never calls back into these setters.
+%group ApolloTabAccessoryContainerHooks
+%hook ApolloUITabAccessoryContainer
+- (void)setCenter:(CGPoint)center {
+    %orig;
+    UITabBarController *host = sApolloTabAccessoryHost;
+    if (host && sApolloTabAccessoryEntries.count && ApolloTabAccessoryContainer(host) == (UIView *)self) {
+        ApolloTabAccessoryPlace(host);
+    }
+}
+- (void)setBounds:(CGRect)bounds {
+    %orig;
+    UITabBarController *host = sApolloTabAccessoryHost;
+    if (host && sApolloTabAccessoryEntries.count && ApolloTabAccessoryContainer(host) == (UIView *)self) {
+        ApolloTabAccessoryPlace(host);
+    }
+}
+%end
+%end
+
+%ctor {
+    if (@available(iOS 26.0, *)) {
+        // Swift class in UIKitCore; objc_getClass resolves the dotted name.
+        Class container = objc_getClass("UIKit._UITabAccessoryContainer");
+        if (!container) {
+            ApolloLog(@"[TabAccessory] _UITabAccessoryContainer missing; the strip won't follow hide styles");
+            return;
+        }
+        %init(ApolloTabAccessoryContainerHooks, ApolloUITabAccessoryContainer = container);
+        ApolloLog(@"[TabAccessory] container hook installed");
+    }
 }
 
 // MARK: - Progress ring

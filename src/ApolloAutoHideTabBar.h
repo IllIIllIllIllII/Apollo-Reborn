@@ -11,6 +11,10 @@ void ApolloTabBarCancelScrollToTopReveal(UITabBarController *controller);
 // Reconcile native bottom-bar policy once after the Duo bar changes placement.
 void ApolloScheduleDuoBarPolicyUpdate(UITabBarController *controller);
 
+// YES while Fade or Down has the bottom tab bar hidden or is animating it
+// away (the target, not the current frame). The tab bar accessory follows it.
+BOOL ApolloTabBarScrollHidesBarAway(UITabBarController *controller);
+
 
 // Simulator builds expose bounded probes so the allocation-free
 // tab-navigation fast paths can be verified

@@ -34,6 +34,14 @@ BOOL ApolloTabAccessoryShow(ApolloTabAccessoryOwner owner, UIView *contentView);
 // Removes `owner`'s view. The next owner down, if any, shows again.
 void ApolloTabAccessoryHide(ApolloTabAccessoryOwner owner);
 
+// Moves the strip with the tab bar's hide-on-scroll presentation. UIKit only
+// knows about its own minimize, so for Reborn's styles the strip is placed
+// here: Fade/Down slide it into the hidden bar's place, Right puts the inline
+// strip beside the mirrored pill, and Minimize lets UIKit re-place it above
+// the pill. ApolloAutoHideTabBar.xm calls this inside its animations so the
+// strip moves in step with the bar.
+void ApolloTabAccessoryFollowTabBar(UITabBarController *tabBarController);
+
 __END_DECLS
 
 // Accessory content for a running job: a progress ring, a title and detail

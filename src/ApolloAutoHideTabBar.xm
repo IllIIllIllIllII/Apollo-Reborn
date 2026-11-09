@@ -16,6 +16,7 @@
 #import "ApolloUserAvatars.h"
 #import "UserDefaultConstants.h"
 #import "ApolloClasses.h"
+#import "ApolloTabAccessory.h"
 #import "ApolloSwiftRuntime.h"
 
 // MARK: - Tab Bar Auto-Hide Reveal Fix
@@ -674,6 +675,7 @@ static void ApolloReleaseMinimizePresentation(UITabBarController *tbc, NSString 
         [state.compactPill removeFromSuperview];
         state.compactPill = nil;
         ApolloCommitTabBarPresentation(tbc.tabBar, 1.0, CATransform3DIdentity, NO);
+        ApolloTabAccessoryFollowTabBar(tbc);
     }];
     ApolloRefreshProfileTabAvatarAfterPresentation();
     ApolloLog(@"[AutoHideTabBarFix] Released Minimize native presentation reason=%@", reason);
@@ -773,6 +775,7 @@ static void ApolloSetMinimizePresentation(UITabBarController *tbc, BOOL compact,
                 current.compactPill = nil;
                 ApolloRefreshProfileTabAvatarAfterPresentation();
             }
+            ApolloTabAccessoryFollowTabBar(strongTBC);
         }];
     };
     if (!canAnimate) {
@@ -785,6 +788,9 @@ static void ApolloSetMinimizePresentation(UITabBarController *tbc, BOOL compact,
     animator.update = ^(CGFloat expansionProgress) {
         [pill applyNativeFrame:ApolloMinimizeInterpolatedFrame(expanded, target, expansionProgress)
             expansionProgress:expansionProgress];
+        // UIKit places the accessory strip above the bar's glass, which the
+        // pill just resized; re-place it every frame so the two never overlap.
+        ApolloTabAccessoryFollowTabBar(weakTBC);
         // At 95% the native items have their final positions and opacity.
         // Give them taps during the glass settling tail instead of letting
         // the transparent pill intercept a tap meant to select another tab.
@@ -904,6 +910,7 @@ static void ApolloSetTabBarPresentationHidden(UITabBarController *tbc,
         state.presentationAnimationActive = NO;
         ApolloCommitTabBarPresentation(tabBar, targetAlpha,
                                        targetSublayerTransform, hidden);
+        ApolloTabAccessoryFollowTabBar(tbc);
         return;
     }
 
@@ -917,6 +924,8 @@ static void ApolloSetTabBarPresentationHidden(UITabBarController *tbc,
         tabBar.alpha = targetAlpha;
         tabBar.transform = CGAffineTransformIdentity;
         tabBar.layer.sublayerTransform = targetSublayerTransform;
+        // The accessory strip moves into (or back out of) the bar's place.
+        ApolloTabAccessoryFollowTabBar(weakTBC);
     };
     void (^completion)(BOOL) = ^(__unused BOOL finished) {
         UITabBarController *strongTBC = weakTBC;
@@ -957,6 +966,13 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
                                       reason ?: @"external tab-bar restore");
 }
 
+BOOL ApolloTabBarScrollHidesBarAway(UITabBarController *controller) {
+    ApolloTabBarRuntimeState *state = ApolloRuntimeState(controller, NO);
+    return state.hasPresentationTarget && state.presentationTargetHidden &&
+        (state.presentationStyle == ApolloTabBarHideStyleFade ||
+         state.presentationStyle == ApolloTabBarHideStyleDown);
+}
+
 // Down's slide distance depends on the bar's height. Recompute its hidden
 // transform after rotation/layout without resizing UIKit's tab-bar frame.
 static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
@@ -974,6 +990,7 @@ static void ApolloRevalidateHiddenDownPresentation(UITabBarController *tbc) {
 
     [UIView performWithoutAnimation:^{
         ApolloCommitTabBarPresentation(tabBar, 0.0, target, YES);
+        ApolloTabAccessoryFollowTabBar(tbc);
     }];
     ApolloLog(@"[AutoHideTabBarFix] Revalidated hidden Down presentation after layout");
 }
