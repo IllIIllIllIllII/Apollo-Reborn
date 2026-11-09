@@ -1,6 +1,7 @@
 #import "PictureInPictureViewController.h"
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
+#import "ApolloTabAccessory.h"
 
 extern NSString *const ApolloPictureInPictureChangedNotification;
 NSString *const ApolloPictureInPictureChangedNotification = @"ApolloPictureInPictureChangedNotification";
@@ -23,6 +24,7 @@ typedef NS_ENUM(NSInteger, PictureInPictureSection) {
 // hidden state — via miniplayerRows/miniplayerRowAtIndex:.
 typedef NS_ENUM(NSInteger, PictureInPictureMiniplayerRow) {
     PictureInPictureMiniplayerRowToggle = 0,
+    PictureInPictureMiniplayerRowTabBar,
     PictureInPictureMiniplayerRowStartPosition,
     PictureInPictureMiniplayerRowStartHidden,
 };
@@ -127,9 +129,10 @@ typedef NS_ENUM(NSInteger, PictureInPictureSharedRow) {
 // only for fixed-corner Default Positions; Last Position remembers its own
 // hidden state, so the row is omitted there.
 - (NSArray<NSNumber *> *)miniplayerRows {
-    NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObjects:
-        @(PictureInPictureMiniplayerRowToggle),
-        @(PictureInPictureMiniplayerRowStartPosition), nil];
+    NSMutableArray<NSNumber *> *rows = [NSMutableArray arrayWithObject:@(PictureInPictureMiniplayerRowToggle)];
+    // Show in Tab Bar exists only where UIKit has the tab bar accessory.
+    if (ApolloTabAccessoryIsSupported()) [rows addObject:@(PictureInPictureMiniplayerRowTabBar)];
+    [rows addObject:@(PictureInPictureMiniplayerRowStartPosition)];
     if (sPiPStartPosition != ApolloPiPStartPositionLastPosition) {
         [rows addObject:@(PictureInPictureMiniplayerRowStartHidden)];
     }
@@ -335,6 +338,12 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
                                           on:sPiPEnabled
                                      enabled:YES
                                       action:@selector(miniPlayerChanged:)];
+            case PictureInPictureMiniplayerRowTabBar:
+                return [self switchCellLabel:@"Show in Tab Bar"
+                                 description:@"Plays in a strip above the tab bar instead of a floating window. Tap it to go back to the video."
+                                          on:sPiPInTabBar
+                                     enabled:sPiPEnabled
+                                      action:@selector(tabBarChanged:)];
             case PictureInPictureMiniplayerRowStartPosition:
                 return [self valueCellLabel:@"Default Position"
                                      detail:[self startPositionText]
@@ -439,6 +448,12 @@ static void PiPSetSheetActionIcon(UIAlertAction *action, NSArray<NSString *> *sy
     NSMutableIndexSet *sections = [NSMutableIndexSet indexSetWithIndex:PictureInPictureSectionControls];
     [sections addIndex:PictureInPictureSectionShared];
     [self.tableView reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)tabBarChanged:(UISwitch *)sw {
+    sPiPInTabBar = sw.on;
+    [[NSUserDefaults standardUserDefaults] setBool:sw.on forKey:UDKeyPictureInPictureInTabBar];
+    [self postChange];
 }
 
 - (void)startHiddenChanged:(UISwitch *)sw {

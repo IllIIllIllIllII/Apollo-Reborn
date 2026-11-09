@@ -591,6 +591,11 @@ static NSString *const UDKeyPictureInPictureStartHidden = @"PictureInPictureStar
 static NSString *const UDKeyPictureInPictureSkipButtons = @"PictureInPictureSkipButtons";
 static NSString *const UDKeyPictureInPictureSkipSeconds = @"PictureInPictureSkipSeconds";
 static NSString *const UDKeyPictureInPictureProgressBar = @"PictureInPictureProgressBar";
+// iOS 26 + Liquid Glass. When ON, the in-app mini player shows a comments
+// video in the tab bar's bottom accessory instead of a floating window (it
+// falls back to the window where the strip can't show). Default NO. See
+// ApolloPictureInPicture.xm.
+static NSString *const UDKeyPictureInPictureInTabBar = @"PictureInPictureInTabBar";
 // 0–3 = fixed corner (TL/TR/BL/BR), 4 = remember last position (ApolloPiPStartPosition).
 static NSString *const UDKeyPictureInPictureStartPosition = @"PictureInPictureStartPosition";
 // Internal (no settings UI): persisted floating-card geometry. The resting

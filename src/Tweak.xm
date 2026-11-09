@@ -3800,6 +3800,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyPictureInPictureSkipButtons: @NO,
                                     UDKeyPictureInPictureSkipSeconds: @10,
                                     UDKeyPictureInPictureProgressBar: @NO,
+                                    UDKeyPictureInPictureInTabBar: @NO,
                                     UDKeyTagFilterEnabled: @NO,
                                     UDKeyNSFWBlurOverride: @0,
                                     UDKeyTagFilterMode: @"blur",
@@ -4284,6 +4285,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
         [standardDefaults setInteger:sPiPSkipSeconds forKey:UDKeyPictureInPictureSkipSeconds];
     }
     sPiPProgressBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureProgressBar];
+    sPiPInTabBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyPictureInPictureInTabBar];
 
     // Tag filter feature hydration.
     sNSFWBlurOverride = [[NSUserDefaults standardUserDefaults] integerForKey:UDKeyNSFWBlurOverride];

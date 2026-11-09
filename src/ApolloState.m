@@ -200,6 +200,7 @@ BOOL sPiPStartHidden = NO;
 BOOL sPiPSkipButtons = NO;
 NSInteger sPiPSkipSeconds = 10;
 BOOL sPiPProgressBar = NO;
+BOOL sPiPInTabBar = NO;
 
 NSInteger sNSFWBlurOverride = 0;
 BOOL sTagFilterEnabled = NO;

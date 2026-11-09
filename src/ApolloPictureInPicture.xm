@@ -12,6 +12,7 @@
 #import "ApolloState.h"
 #import "UserDefaultConstants.h"
 #import "settings/ApolloSettingsRouter.h"
+#import "ApolloTabAccessory.h"
 
 // =============================================================================
 // MARK: - Overview
@@ -480,6 +481,128 @@ static BOOL PiPPlayerParkedAtExactEnd(AVPlayer *player) {
 }
 @end
 
+// Tab bar accessory presentation (Show in Tab Bar): a small video, the post
+// title and the controls in the glass strip above the tab bar. Inline (beside
+// a minimized tab bar) it keeps the video, title and play/pause.
+@interface ApolloPiPAccessoryView : UIView
+@property (nonatomic, strong, readonly) ApolloPiPPlayerView *playerView;
+@property (nonatomic, strong, readonly) UILabel *titleLabel;
+@property (nonatomic, strong, readonly) UIButton *muteButton;
+@property (nonatomic, strong, readonly) UIButton *playPauseButton;
+@property (nonatomic, strong, readonly) UIButton *closeButton;
+@property (nonatomic, assign) BOOL showsMute;
+@property (nonatomic, copy) void (^onOpen)(void);
+- (void)updatePlaying:(BOOL)playing muted:(BOOL)muted;
+@end
+
+@implementation ApolloPiPAccessoryView {
+    BOOL _inline;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (!self) return nil;
+
+    _playerView = [[ApolloPiPPlayerView alloc] initWithFrame:CGRectZero];
+    _playerView.playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    _playerView.backgroundColor = UIColor.blackColor;
+    _playerView.layer.cornerRadius = 8.0;
+    _playerView.layer.masksToBounds = YES;
+    _playerView.userInteractionEnabled = NO;
+    _playerView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    _titleLabel = [UILabel new];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    _titleLabel.textColor = UIColor.labelColor;
+    _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    [_titleLabel setContentCompressionResistancePriority:UILayoutPriorityDefaultLow
+                                                 forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIButton *(^makeButton)(NSString *, NSString *) = ^UIButton *(NSString *symbol, NSString *label) {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIImageSymbolConfiguration *config =
+            [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
+        [button setImage:[UIImage systemImageNamed:symbol withConfiguration:config] forState:UIControlStateNormal];
+        button.tintColor = UIColor.labelColor;
+        button.accessibilityLabel = label;
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        [button.widthAnchor constraintEqualToConstant:36.0].active = YES;
+        [button.heightAnchor constraintEqualToConstant:44.0].active = YES;
+        return button;
+    };
+    _muteButton = makeButton(@"speaker.slash.fill", @"Unmute");
+    _playPauseButton = makeButton(@"pause.fill", @"Pause");
+    _closeButton = makeButton(@"xmark", @"Close");
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[
+        _playerView, _titleLabel, _muteButton, _playPauseButton, _closeButton]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 2.0;
+    [row setCustomSpacing:10.0 afterView:_playerView];
+    [row setCustomSpacing:6.0 afterView:_titleLabel];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_playerView.heightAnchor constraintEqualToConstant:34.0],
+        [_playerView.widthAnchor constraintEqualToAnchor:_playerView.heightAnchor multiplier:16.0 / 9.0],
+        [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8.0],
+        [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-6.0],
+        [row.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+        [row.topAnchor constraintGreaterThanOrEqualToAnchor:self.topAnchor],
+        [row.bottomAnchor constraintLessThanOrEqualToAnchor:self.bottomAnchor],
+    ]];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(openTapped)];
+    [self addGestureRecognizer:tap];
+    self.accessibilityElements = @[ _titleLabel, _muteButton, _playPauseButton, _closeButton ];
+    _titleLabel.accessibilityTraits = UIAccessibilityTraitButton;
+    _titleLabel.accessibilityHint = @"Goes back to the video.";
+    _titleLabel.isAccessibilityElement = YES;
+
+    if (@available(iOS 26.0, *)) {
+        [self registerForTraitChanges:@[UITraitTabAccessoryEnvironment.class]
+                           withAction:@selector(updateEnvironment)];
+    }
+    [self updateEnvironment];
+    return self;
+}
+
+- (void)updateEnvironment {
+    BOOL isInline = NO;
+    if (@available(iOS 26.0, *)) {
+        isInline = self.traitCollection.tabAccessoryEnvironment == UITabAccessoryEnvironmentInline;
+    }
+    _inline = isInline;
+    // Beside a minimized tab bar there is room for the video, the title and
+    // play/pause; mute and close come back with the full strip.
+    _muteButton.hidden = isInline || !self.showsMute;
+    _closeButton.hidden = isInline;
+}
+
+- (void)setShowsMute:(BOOL)showsMute {
+    _showsMute = showsMute;
+    _muteButton.hidden = _inline || !showsMute;
+}
+
+- (void)updatePlaying:(BOOL)playing muted:(BOOL)muted {
+    UIImageSymbolConfiguration *config =
+        [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
+    [_playPauseButton setImage:[UIImage systemImageNamed:(playing ? @"pause.fill" : @"play.fill") withConfiguration:config]
+                      forState:UIControlStateNormal];
+    _playPauseButton.accessibilityLabel = playing ? @"Pause" : @"Play";
+    [_muteButton setImage:[UIImage systemImageNamed:(muted ? @"speaker.slash.fill" : @"speaker.wave.2.fill") withConfiguration:config]
+                 forState:UIControlStateNormal];
+    _muteButton.accessibilityLabel = muted ? @"Unmute" : @"Mute";
+}
+
+- (void)openTapped {
+    if (self.onOpen) self.onOpen();
+}
+
+@end
+
 // =============================================================================
 // MARK: - Controller
 // =============================================================================
@@ -540,7 +663,14 @@ static const NSTimeInterval kPiPControlsAutoHideDelay = 3.0;
 @property (nonatomic, strong) ApolloPiPWindow *window;
 @property (nonatomic, strong) ApolloPiPRootViewController *rootViewController;
 @property (nonatomic, strong) UIView *card;
+// The layer the session renders into: the floating card's (cardPlayerView)
+// or, in tab bar mode, the accessory's. Chosen per takeover.
 @property (nonatomic, strong) ApolloPiPPlayerView *playerView;
+@property (nonatomic, strong) ApolloPiPPlayerView *cardPlayerView;
+// Show in Tab Bar: this session is presented in the tab bar accessory instead
+// of the floating card (no window, card, gestures or geometry).
+@property (nonatomic, assign) BOOL accessoryMode;
+@property (nonatomic, strong) ApolloPiPAccessoryView *accessoryView;
 @property (nonatomic, strong) ApolloPiPOverlayView *controlsOverlay;
 @property (nonatomic, strong) UIButton *playPauseButton;
 @property (nonatomic, strong) UIButton *muteButton;
@@ -661,6 +791,9 @@ static BOOL sPiPSessionHandbackInProgress = NO;
             // The mini-player and native PiP are independently togglable.
             if (!sPiPEnabled && strongSelf.active) {
                 ApolloLog(@"[PiP] Mini-player disabled in settings — closing active PiP");
+                [strongSelf teardownKeepPlaying:NO];
+            } else if (!sPiPInTabBar && strongSelf.active && strongSelf.accessoryMode) {
+                ApolloLog(@"[PiP] Show in Tab Bar turned off — closing the tab bar player");
                 [strongSelf teardownKeepPlaying:NO];
             }
             if (!sPiPNativeEnabled) {
@@ -996,8 +1129,19 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     ApolloLog(@"[PiP] Taking over player %p (muted=%d, aspect=%.2f)",
               player, player.muted, self.aspectRatio);
 
-    [self ensureWindowForAnchorView:videoView];
-    [self buildCardIfNeeded];
+    // Show in Tab Bar applies to comments-page takeovers only (the fullscreen
+    // viewer's PiP button keeps the floating card), and only where the strip
+    // can be seen right now.
+    self.accessoryMode = richMediaNode && sPiPInTabBar && ApolloTabAccessoryIsAvailable();
+    if (self.accessoryMode) {
+        [self buildAccessoryIfNeeded];
+        self.playerView = self.accessoryView.playerView;
+    } else {
+        [self ensureWindowForAnchorView:videoView];
+        [self buildCardIfNeeded];
+        self.playerView = self.cardPlayerView;
+    }
+    ApolloLog(@"[PiP] Presenting in %@", self.accessoryMode ? @"tab bar accessory" : @"floating card");
 
     self.cardRevealed = NO;
     self.stashedSide = 0;
@@ -1008,6 +1152,18 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     self.playerView.playerLayer.player = player;
 
     [self installPlayerObservers];
+
+    // The accessory's layer isn't in a window until the strip shows, so it
+    // can't report readyForDisplay first; show the strip now. The video is
+    // still on screen inline at this point, so nothing flashes.
+    if (self.accessoryMode) {
+        [self revealCard];
+        if (sPiPNativeEnabled && self.active) {
+            [self disarmInlineNativePiPIfIdle];
+            [self setupNativePiP];
+        }
+        return;
+    }
 
     // Reveal happens on the new layer's readyForDisplay (KVO) so there is no
     // black flash — the inline layer keeps rendering until then because we
@@ -1043,7 +1199,8 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     // inline video frozen on its last frame.
     PiPRewindIfStoppedAtEnd(self.player);
 
-    if (!self.cardRevealed) {
+    // The accessory leaves with UIKit's own animation when it is removed.
+    if (!self.cardRevealed || self.accessoryMode) {
         [self teardownKeepPlaying:YES];
         return;
     }
@@ -1108,6 +1265,10 @@ static BOOL sPiPSessionHandbackInProgress = NO;
     self.stashedSide = 0;
     self.stashHandle.hidden = YES;
     self.window.hidden = YES;
+    if (self.accessoryMode) {
+        self.accessoryMode = NO;
+        ApolloTabAccessoryHide(ApolloTabAccessoryOwnerVideo);
+    }
 
     self.active = NO;
     self.restoring = NO;
@@ -1336,15 +1497,61 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 
     self.card = card;
     self.playerView = playerView;
+    self.cardPlayerView = playerView;
     self.controlsOverlay = overlay;
 
     [self.rootViewController.view addSubview:card];
     self.window.interactiveView = card;
 }
 
+- (void)buildAccessoryIfNeeded {
+    if (self.accessoryView) return;
+    ApolloPiPAccessoryView *view = [ApolloPiPAccessoryView new];
+    [view.playPauseButton addTarget:self action:@selector(playPauseTapped) forControlEvents:UIControlEventTouchUpInside];
+    [view.muteButton addTarget:self action:@selector(muteTapped) forControlEvents:UIControlEventTouchUpInside];
+    [view.closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+    __weak __typeof(self) weakSelf = self;
+    view.onOpen = ^{ [weakSelf scrollBackToVideo]; };
+    self.accessoryView = view;
+}
+
+- (void)syncAccessoryControls {
+    ApolloPiPAccessoryView *view = self.accessoryView;
+    id title = self.link ? ApolloSendObject(self.link, @selector(title)) : nil;
+    view.titleLabel.text = [title isKindOfClass:NSString.class] ? title : @"Video";
+    view.showsMute = !self.cardIsGifContent;
+    [view updatePlaying:self.player.rate != 0 muted:self.player.muted];
+}
+
+// Tapping the strip scrolls the comments back to the top, where the video
+// comes back into view and Apollo's visibility event restores it inline.
+- (void)scrollBackToVideo {
+    if (!self.active || self.restoring) return;
+    UIView *view = PiPViewForNode(self.videoNode);
+    while (view && ![view isKindOfClass:UIScrollView.class]) view = view.superview;
+    UIScrollView *scrollView = (UIScrollView *)view;
+    if (!scrollView.window) {
+        ApolloLog(@"[PiP] Tab bar player tapped but its comments page is not on screen");
+        return;
+    }
+    ApolloLog(@"[PiP] Tab bar player tapped — scrolling back to the video");
+    [scrollView setContentOffset:CGPointMake(scrollView.contentOffset.x, -scrollView.adjustedContentInset.top)
+                        animated:YES];
+}
+
 - (void)revealCard {
     if (!self.active || self.cardRevealed) return;
     self.cardRevealed = YES;
+
+    if (self.accessoryMode) {
+        [self syncAccessoryControls];
+        if (!ApolloTabAccessoryShow(ApolloTabAccessoryOwnerVideo, self.accessoryView)) {
+            // Something now covers the tab bar (it was clear at takeover).
+            ApolloLog(@"[PiP] Tab bar accessory unavailable at reveal — closing");
+            [self teardownKeepPlaying:NO];
+        }
+        return;
+    }
 
     // Simple pop-in at the default position — the inline video keeps rendering,
     // so the card just materializes. It may start hidden (tucked off an edge)
@@ -2165,7 +2372,7 @@ static BOOL sPiPSessionHandbackInProgress = NO;
 
 - (void)closeTapped {
     if (self.restoring) return;
-    if (!self.cardRevealed) {
+    if (!self.cardRevealed || self.accessoryMode) {
         [self teardownKeepPlaying:NO];
         return;
     }
@@ -2253,7 +2460,8 @@ static BOOL sPiPSessionHandbackInProgress = NO;
                         change:(NSDictionary *)change context:(void *)context {
     if (context == kPiPRateContext || context == kPiPMutedContext) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.active && !self.controlsOverlay.hidden) [self syncControlIcons];
+            if (self.active && self.accessoryMode) [self syncAccessoryControls];
+            else if (self.active && !self.controlsOverlay.hidden) [self syncControlIcons];
         });
         return;
     }

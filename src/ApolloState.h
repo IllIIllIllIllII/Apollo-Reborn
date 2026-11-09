@@ -717,6 +717,9 @@ extern BOOL sPiPStartHidden;
 extern BOOL sPiPSkipButtons;
 extern NSInteger sPiPSkipSeconds;
 extern BOOL sPiPProgressBar;
+// iOS 26 + Liquid Glass: comments mini player in the tab bar accessory
+// instead of the floating window. Default OFF (UDKeyPictureInPictureInTabBar).
+extern BOOL sPiPInTabBar;
 
 // Native NSFW media blur override: 0 follow Reddit setting, 1 always, 2 never.
 extern NSInteger sNSFWBlurOverride;
