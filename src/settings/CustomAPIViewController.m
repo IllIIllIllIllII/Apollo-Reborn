@@ -40,6 +40,7 @@
 #import "ApolloScrollToTop.h"
 #import "ApolloSessionRestoration.h"
 #import "ApolloTabBarHideStyle.h"
+#import "ApolloTabAccessory.h"
 #import "ApolloDuoRail.h"
 #import "ApolloDuoCompatibility.h"
 #import "ApolloDuoSplitView.h"
@@ -2391,9 +2392,24 @@ typedef NS_ENUM(NSInteger, Tag) {
         return IsLiquidGlass() && ApolloInterfaceSupportsBarScrollSettings();
     };
 
+    ApolloSettingsRow *saveProgressInTabBar =
+        [ApolloSettingsRow switchRowWithID:@"interface.saveProgressInTabBar"
+                                     title:@"Save Progress in Tab Bar"
+                                      isOn:^BOOL { return sSaveProgressInTabBar; }
+                                  onToggle:^(UISwitch *sender) {
+            sSaveProgressInTabBar = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeySaveProgressInTabBar];
+            // A save already running finishes without the strip.
+            if (!sender.isOn) ApolloTabAccessoryHide(ApolloTabAccessoryOwnerSaveProgress);
+        }];
+    saveProgressInTabBar.visible = ^BOOL { return ApolloTabAccessoryIsSupported(); };
+
     NSString *footer = IsLiquidGlass()
         ? @"Swipe across the tab bar to navigate between screens."
         : nil;
+    if (ApolloTabAccessoryIsSupported()) {
+        footer = [footer stringByAppendingString:@"\n\nSave Progress in Tab Bar shows Save All Media's progress above the tab bar, so you can keep browsing while it saves."];
+    }
     if (ApolloDuoUsesAdaptiveBars()) {
         NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, Scroll Behavior, and Swipe Tab Bar to Navigate apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose.";
         footer = footer.length > 0
@@ -2404,7 +2420,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
                                                       hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
-                                                      iPadTabBarBottom, tabBarSwipeNavigation,
+                                                      iPadTabBarBottom, tabBarSwipeNavigation, saveProgressInTabBar,
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
                                                           return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
                                                       }] ]];

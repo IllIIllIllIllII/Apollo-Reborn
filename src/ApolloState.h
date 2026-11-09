@@ -219,6 +219,8 @@ void ApolloRestoreHideOnScrollPresentation(UITabBarController *tabBarController,
 // bottom (classic) instead of the top-center pill. Opt-in; default OFF via
 // registerDefaults. Temporary stopgap for issue #387. See ApolloIPadTabBarBottom.xm.
 extern BOOL sIPadTabBarBottom;
+// iOS 26 + Liquid Glass. Default ON (UDKeySaveProgressInTabBar). See ApolloTabAccessory.m.
+extern BOOL sSaveProgressInTabBar;
 typedef NS_ENUM(NSInteger, ApolloSettingsIconAppearance) {
     ApolloSettingsIconAppearanceSystem = 0,
     ApolloSettingsIconAppearanceLight,

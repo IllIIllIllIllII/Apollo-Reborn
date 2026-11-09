@@ -350,6 +350,11 @@ static NSString *const UDKeyKeepSearchBarInPlace = @"KeepSearchBarInPlace";
 // real iPad build lands. Opt-in; default OFF via registerDefaults. See ApolloIPadTabBarBottom.xm.
 static NSString *const UDKeyIPadTabBarBottom = @"IPadTabBarBottom";
 static NSString *const ApolloIPadTabBarBottomChangedNotification = @"ApolloIPadTabBarBottomChangedNotification";
+// iOS 26 + Liquid Glass. When ON, Save All Media shows its progress in the tab
+// bar's bottom accessory (the glass strip above the tab bar) while you keep
+// browsing, instead of a centered progress panel. Default ON via registerDefaults.
+// See ApolloTabAccessory.m and ApolloSaveAllMedia.xm.
+static NSString *const UDKeySaveProgressInTabBar = @"SaveProgressInTabBar";
 // True Black Keyboard mode: 0 Off (default), 1 Dark Only, 2 Light Only, 3 Always.
 static NSString *const UDKeyTrueBlackKeyboardMode = @"TrueBlackKeyboardMode";
 // Spelling of interface text: 0 American (default, Apollo's own), 1 British. See ApolloSpelling.xm.

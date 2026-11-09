@@ -3745,6 +3745,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyTabBarCollapseSide: @0,
                                     UDKeyKeepSearchBarInPlace: @NO,
                                     UDKeyIPadTabBarBottom: @NO,
+                                    UDKeySaveProgressInTabBar: @YES,
                                     UDKeySettingsIconAppearance: @(ApolloSettingsIconAppearanceLight),
                                     UDKeyTabBarSwipeNavigation: @NO,
                                     UDKeyDuoUnfoldedFeedLayout: @0,
@@ -4066,6 +4067,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sTabBarHideStyle = (ApolloTabBarHideStyle)storedTabBarHideStyle;
     sKeepSearchBarInPlace = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyKeepSearchBarInPlace];
     sIPadTabBarBottom = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeyIPadTabBarBottom];
+    sSaveProgressInTabBar = [[NSUserDefaults standardUserDefaults] boolForKey:UDKeySaveProgressInTabBar];
     NSInteger settingsIconAppearance = [standardDefaults integerForKey:UDKeySettingsIconAppearance];
     sSettingsIconAppearance = settingsIconAppearance >= ApolloSettingsIconAppearanceSystem && settingsIconAppearance <= ApolloSettingsIconAppearanceDark
         ? (ApolloSettingsIconAppearance)settingsIconAppearance : ApolloSettingsIconAppearanceLight;

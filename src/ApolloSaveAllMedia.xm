@@ -2,6 +2,8 @@
 #import "ApolloCommon.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloGalleryVideoExport.h"
+#import "ApolloState.h"
+#import "ApolloTabAccessory.h"
 #import "ApolloToast.h"
 #import "ApolloThemeRuntime.h"
 
@@ -204,6 +206,8 @@ static BOOL ApolloSaveAllShowNativeSuccess(NSUInteger count) {
 @property (nonatomic, copy) NSArray<ApolloSaveAllMediaItem *> *items;
 @property (nonatomic, weak) UIViewController *presenter;
 @property (nonatomic, strong) ApolloSaveAllMediaProgressController *progressController;
+// Set instead of progressController when the tab bar accessory shows progress.
+@property (nonatomic, strong) ApolloTabAccessoryProgressView *progressAccessory;
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, strong) NSURLSessionDownloadTask *downloadTask;
 @property (nonatomic, strong) NSURL *directoryURL;
@@ -305,9 +309,26 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
         return;
     }
 
+    __weak ApolloSaveAllMediaJob *weakSelf = self;
+    // With the tab bar accessory the save runs while the user keeps browsing.
+    // It falls back to the centered panel where the strip can't be seen.
+    if (sSaveProgressInTabBar && ApolloTabAccessoryIsAvailable()) {
+        ApolloTabAccessoryProgressView *accessory = [ApolloTabAccessoryProgressView new];
+        accessory.title = @"Saving All Media";
+        accessory.stopAccessibilityLabel = @"Stop Saving";
+        accessory.stopHandler = ^{ [weakSelf cancel]; };
+        self.progressAccessory = accessory;
+        [self updateProgressAccessory];
+        if (ApolloTabAccessoryShow(ApolloTabAccessoryOwnerSaveProgress, accessory)) {
+            UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, @"Saving All Media");
+            [self saveNextItem];
+            return;
+        }
+        self.progressAccessory = nil;
+    }
+
     self.progressController = [ApolloSaveAllMediaProgressController new];
     self.progressController.total = self.items.count;
-    __weak ApolloSaveAllMediaJob *weakSelf = self;
     self.progressController.cancellation = ^{ [weakSelf cancel]; };
     // Batch completion can dismiss the panel. Begin after presentation so a
     // fast first request cannot race that transition.
@@ -317,11 +338,22 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
 - (void)updateProgress:(__unused NSString *)stage {
     if (self.cancelled || self.finished) return;
     [self.progressController updateCompleted:self.nextIndex];
+    [self updateProgressAccessory];
+}
+
+- (void)updateProgressAccessory {
+    ApolloTabAccessoryProgressView *accessory = self.progressAccessory;
+    if (!accessory) return;
+    NSUInteger total = self.items.count;
+    NSUInteger count = MIN(self.nextIndex, total);
+    accessory.detail = [NSString stringWithFormat:@"%lu of %lu", (unsigned long)count, (unsigned long)total];
+    accessory.progress = total ? (double)count / (double)total : 0;
 }
 
 - (void)cancel {
     if (self.cancelled || self.finished) return;
     self.cancelled = YES;
+    [self.progressAccessory showStoppingWithTitle:@"Stopping…"];
     if (self.downloadTask) {
         [self.downloadTask cancel];
     } else if (self.savingVideo) {
@@ -438,6 +470,7 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
     else self.failedCount++;
     self.nextIndex++;
     [self.progressController updateCompleted:self.nextIndex];
+    [self updateProgressAccessory];
     // A later main-queue turn gives cancellation a chance to stop a batch of
     // cached/fast responses before the next request begins.
     dispatch_async(dispatch_get_main_queue(), ^{ [self saveNextItem]; });
@@ -472,6 +505,10 @@ static void ApolloSaveAllMediaRemoveFile(NSURL *fileURL) {
         if (allSaved && ApolloSaveAllShowNativeSuccess(total)) return;
         ApolloShowToastWithStyle(title, detail, style, nil);
     };
+    if (self.progressAccessory) {
+        self.progressAccessory = nil;
+        ApolloTabAccessoryHide(ApolloTabAccessoryOwnerSaveProgress);
+    }
     ApolloSaveAllMediaProgressController *progress = self.progressController;
     self.progressController = nil;
     if (progress.presentingViewController && !progress.isBeingDismissed) {
