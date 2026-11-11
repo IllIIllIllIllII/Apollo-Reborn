@@ -13,6 +13,14 @@
 // (ApolloComposerToolbarTint) and the ••• glass menu all keep working. The
 // capsule lives inside mainActionButtonsView, so it hides with the buttons.
 // Classic builds, and any bar whose structure doesn't match, keep the stock bar.
+//
+// The ••• menu's rows (Preview, Superscript, Quote, Spoiler, ... Text Faces)
+// become buttons in the strip too, where ••• was. They are read from the sheet
+// Apollo builds for that composer, so each composer shows its own rows. A tap
+// captures a fresh ••• sheet without showing it and runs that row, which keeps
+// Apollo's own handlers: Preview presents as usual, and rows that open a second
+// sheet (Header sizes, Text Faces) open it as a glass menu on the tapped button.
+// If any row can't be traced to one of Apollo's actions, ••• stays as it was.
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -20,6 +28,9 @@
 
 #import "ApolloCommon.h"
 #import "ApolloComposerGlassToolbar.h"
+#import "ApolloNativeActionMenus.h"
+#import "ApolloActionMenu.h"
+#import "ApolloThemeRuntime.h"
 
 static char kGlassToolbarInstalledKey;   // on the bar: @YES once the capsule is in
 static char kGlassToolbarPendingKey;     // on the bar: an install is queued
@@ -152,6 +163,138 @@ static void ApolloGlassToolbarHideHairline(UIView *bar, UIView *keep) {
     if (!found) ApolloLog(@"[ComposerGlass] no top hairline among the bar's %lu subviews", (unsigned long)bar.subviews.count);
 }
 
+#pragma mark - Inline ••• rows
+
+// Apollo's ••• control among the stack's slots, and the slot holding it.
+static UIControl *ApolloGlassToolbarMoreControl(UIView *bar, UIStackView *stack, UIView **outSlot) {
+    NSString *moreAction = NSStringFromSelector(@selector(moreButtonTapped:));
+    for (UIView *arranged in stack.arrangedSubviews) {
+        NSMutableArray<UIView *> *candidates = [NSMutableArray arrayWithObject:arranged];
+        [candidates addObjectsFromArray:arranged.subviews];
+        for (UIView *candidate in candidates) {
+            if (![candidate isKindOfClass:UIControl.class]) continue;
+            UIControl *control = (UIControl *)candidate;
+            BOOL more = [[control actionsForTarget:bar forControlEvent:UIControlEventTouchUpInside] containsObject:moreAction]
+                || [control.accessibilityLabel isEqualToString:@"More actions"];
+            if (!more) continue;
+            if (outSlot) *outSlot = arranged;
+            return control;
+        }
+    }
+    return nil;
+}
+
+// Apollo's ••• handler. Under a capture it builds the sheet without showing it.
+static void ApolloGlassToolbarRunMore(UIView *bar, id sender) {
+    SEL selector = @selector(moreButtonTapped:);
+    if ([bar respondsToSelector:selector]) ((void (*)(id, SEL, id))objc_msgSend)(bar, selector, sender);
+}
+
+// The rows of a captured ••• menu in order, inline sections flattened. Nil when
+// a row isn't one of Apollo's actions (a submenu, or a row another feature
+// adds), since only Apollo's actions can be run again from a fresh sheet.
+static NSArray<UIAction *> *ApolloGlassToolbarMenuRows(UIMenu *menu, NSString **outUnmapped) {
+    NSMutableArray<UIAction *> *rows = [NSMutableArray array];
+    NSMutableArray<UIMenuElement *> *pending = [menu.children mutableCopy] ?: [NSMutableArray array];
+    while (pending.count > 0) {
+        UIMenuElement *element = pending.firstObject;
+        [pending removeObjectAtIndex:0];
+        if ([element isKindOfClass:UIMenu.class] && (((UIMenu *)element).options & UIMenuOptionsDisplayInline)) {
+            NSArray *children = ((UIMenu *)element).children;
+            [pending replaceObjectsInRange:NSMakeRange(0, 0) withObjectsFromArray:children];
+            continue;
+        }
+        if (![element isKindOfClass:UIAction.class] || ApolloActionMenuNativeKindForElement(element) == NSNotFound) {
+            if (outUnmapped) *outUnmapped = element.title ?: NSStringFromClass(element.class);
+            return nil;
+        }
+        [rows addObject:(UIAction *)element];
+    }
+    return rows;
+}
+
+static UIAction *ApolloGlassToolbarRowOfKind(UIMenu *menu, NSUInteger kind) {
+    for (UIAction *row in ApolloGlassToolbarMenuRows(menu, NULL)) {
+        if (ApolloActionMenuNativeKindForElement(row) == kind) return row;
+    }
+    return nil;
+}
+
+// One inline button's tap: a fresh ••• sheet for the composer as it is now,
+// anchored to this button, then that row, as if picked from the menu.
+static void ApolloGlassToolbarRunInline(UIView *bar, UIButton *button, NSUInteger kind, NSString *title) {
+    if (!bar || !button.window) return;
+    id controller = ApolloNativeActionMenuCaptureController(button, ^{
+        ApolloGlassToolbarRunMore(bar, button);
+    });
+    UIMenu *menu = controller ? ApolloNativeActionMenuBuildCaptured(controller) : nil;
+    UIAction *row = ApolloGlassToolbarRowOfKind(menu, kind);
+    if (row && (row.attributes & UIMenuElementAttributesDisabled)) {
+        ApolloLog(@"[ComposerGlass] %@ is disabled right now", title);
+        return;
+    }
+    if (row && ApolloNativeActionMenuHasAction(controller, (uint16_t)kind)) {
+        ApolloLog(@"[ComposerGlass] %@ (kind %lu)", title, (unsigned long)kind);
+        ApolloNativeActionMenuInvokeAction(controller, (uint16_t)kind);
+        return;
+    }
+    // The row is gone from this sheet: show the whole menu on the button.
+    ApolloLog(@"[ComposerGlass] %@ (kind %lu) not in the ••• sheet now (sheet=%@); opening the menu",
+              title, (unsigned long)kind, controller ? @"captured" : @"none");
+    ApolloGlassToolbarRunMore(bar, button);
+}
+
+static UIButton *ApolloGlassToolbarMakeInlineButton(UIView *bar, UIAction *row) {
+    NSUInteger kind = ApolloActionMenuNativeKindForElement(row);
+    NSString *title = [row.title copy];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setImage:[row.image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate] forState:UIControlStateNormal];
+    // ApolloComposerToolbarTint keeps every icon in the bar on the accent.
+    button.tintColor = ApolloThemeAccentColor() ?: bar.tintColor;
+    button.accessibilityLabel = title;
+    button.largeContentTitle = title;
+    button.showsLargeContentViewer = YES;
+    __weak UIView *weakBar = bar;
+    __weak UIButton *weakButton = button;
+    [button addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+        ApolloGlassToolbarRunInline(weakBar, weakButton, kind, title);
+    }] forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+// Put the ••• rows in the strip where ••• was, then hide •••.
+static void ApolloGlassToolbarInlineMoreRows(UIView *bar, UIStackView *stack) {
+    UIView *moreSlot = nil;
+    UIControl *more = ApolloGlassToolbarMoreControl(bar, stack, &moreSlot);
+    if (!more || ![bar respondsToSelector:@selector(moreButtonTapped:)]) {
+        ApolloLog(@"[ComposerGlass] no ••• button found; nothing to inline");
+        return;
+    }
+    id controller = ApolloNativeActionMenuCaptureController(more, ^{
+        ApolloGlassToolbarRunMore(bar, more);
+    });
+    UIMenu *menu = controller ? ApolloNativeActionMenuBuildCaptured(controller) : nil;
+    NSString *unmapped = nil;
+    NSArray<UIAction *> *rows = menu ? ApolloGlassToolbarMenuRows(menu, &unmapped) : nil;
+    if (rows.count == 0) {
+        ApolloLog(@"[ComposerGlass] kept •••: %@", !controller ? @"its sheet wasn't captured"
+                  : !menu ? @"its sheet had no rows"
+                  : [NSString stringWithFormat:@"row \"%@\" isn't one of Apollo's actions", unmapped]);
+        return;
+    }
+    NSUInteger index = [stack.arrangedSubviews indexOfObject:moreSlot];
+    if (index == NSNotFound) index = stack.arrangedSubviews.count;
+    NSMutableArray<NSString *> *titles = [NSMutableArray array];
+    for (UIAction *row in rows) {
+        [stack insertArrangedSubview:ApolloGlassToolbarMakeInlineButton(bar, row) atIndex:index++];
+        [titles addObject:row.title ?: @"?"];
+    }
+    moreSlot.hidden = YES;
+    ApolloLog(@"[ComposerGlass] inlined %lu ••• rows: %@", (unsigned long)rows.count, [titles componentsJoinedByString:@", "]);
+}
+
+#pragma mark - Install
+
 static void ApolloGlassToolbarInstall(UIView *bar) API_AVAILABLE(ios(26.0)) {
     if (!bar.window || [objc_getAssociatedObject(bar, &kGlassToolbarInstalledKey) boolValue]) return;
 
@@ -212,6 +355,7 @@ static void ApolloGlassToolbarInstall(UIView *bar) API_AVAILABLE(ios(26.0)) {
     // a fixed gap, and room to scroll when they don't fit.
     stack.distribution = UIStackViewDistributionFillEqually;
     stack.spacing = kGlassToolbarItemSpacing;
+    ApolloGlassToolbarInlineMoreRows(bar, stack);
     NSMutableArray<NSLayoutConstraint *> *constraints = [NSMutableArray array];
     for (UIView *arranged in stack.arrangedSubviews) {
         NSLayoutConstraint *minimum = [arranged.widthAnchor constraintGreaterThanOrEqualToConstant:kGlassToolbarMinimumItemWidth];
