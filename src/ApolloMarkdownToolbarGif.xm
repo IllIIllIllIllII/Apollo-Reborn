@@ -13,6 +13,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "ApolloClasses.h"
+#import "ApolloComposerGlassToolbar.h"
 
 NSRegularExpression *ApolloNativeGiphyMarkdownTokenRegex(void) {
     static NSRegularExpression *regex;
@@ -793,6 +794,8 @@ static CGFloat ApolloMarkdownGifMeasureStackContentWidth(UIStackView *stack, CGF
 
 static void ApolloMarkdownGifApplyStackFitSpacing(UIStackView *stack, CGFloat slotWidth) {
     if (!stack || stack.arrangedSubviews.count < 9) return;
+    // In the Liquid Glass capsule the strip scrolls instead of squeezing.
+    if (ApolloComposerGlassToolbarHostsStack(stack)) return;
 
     UIView *container = stack.superview;
     while (container && container.bounds.size.width < 80.0) {
