@@ -215,6 +215,8 @@ extern NSInteger sDuoUnfoldedFeedLayout;
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
+// Classic (0) or Capsule (1) post action row; UDKeyPostActionBarStyle.
+extern NSInteger sPostActionBarStyle;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
 #ifdef __cplusplus
 }

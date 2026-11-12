@@ -86,6 +86,7 @@ BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults,
 NSInteger sDuoUnfoldedFeedLayout = 0;
 BOOL sDuoSubredditPanelGlassEnabled = NO;
 BOOL sSubredditSwitcherSheetEnabled = NO;
+NSInteger sPostActionBarStyle = 1;
 BOOL sIPadPaneLayout = NO;     // opt-in (default OFF via registerDefaults, UDKeyIPadPaneLayout); iPad-gated, relaunch to apply
 BOOL sKeepSearchBarInPlace = NO;
 NSInteger sSearchBarMode = 0;    // ApolloSearchBarModeOn (UDKeySearchBarMode)

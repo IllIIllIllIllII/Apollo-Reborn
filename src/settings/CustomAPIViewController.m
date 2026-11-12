@@ -2679,6 +2679,31 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
 
+    // Liquid Glass only. Read live: an open thread restyles on its next layout.
+    NSArray<NSString *> *postActionTitles = @[ @"Classic", @"Capsule" ];
+    void (^applyPostActions)(NSInteger) = ^(NSInteger picked) {
+        if (sPostActionBarStyle == picked) return;
+        sPostActionBarStyle = picked;
+        [NSUserDefaults.standardUserDefaults setInteger:picked forKey:UDKeyPostActionBarStyle];
+        // ApolloPostActionBar.xm restyles open threads.
+        [NSNotificationCenter.defaultCenter postNotificationName:@"ApolloPostActionBarStyleDidChange" object:nil];
+        [weakSelf reloadRowWithID:@"interface.postActions"];
+    };
+    ApolloSettingsRow *postActions = [ApolloSettingsRow customRowWithID:@"interface.postActions"
+                                                                  cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+        UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloPostActionsMenu"];
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                  reuseIdentifier:@"ApolloPostActionsMenu"];
+        NSInteger current = MAX(0, MIN(sPostActionBarStyle, (NSInteger)postActionTitles.count - 1));
+        cell.textLabel.text = @"Post Actions";
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessoryView = ApolloSettingsMenuButton(@"Post Actions", postActionTitles[current],
+                                                      postActionTitles, current, applyPostActions);
+        [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+        return cell;
+    } onSelect:nil];
+    postActions.visible = ^BOOL { return IsLiquidGlass(); };
+
     NSArray<NSString *> *trueBlackTitles = @[ @"Off", @"Dark Mode Only", @"Light Mode Only", @"Always" ];
     ApolloSettingsRow *trueBlackKeyboard =
         [ApolloSettingsRow valueRowWithID:@"interface.trueBlackKeyboard"
@@ -2726,7 +2751,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect, searchBars ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, postActions, iPadPaneLayout, scrollEdgeEffect, searchBars ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
