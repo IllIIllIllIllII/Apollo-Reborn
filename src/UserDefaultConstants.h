@@ -379,6 +379,10 @@ static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelG
 // tweak's Modern search sheet (default on Duo), NO = Apollo's Classic inline popup
 // (default elsewhere; it doesn't carry over a Duo unfold).
 static NSString *const UDKeySubredditSwitcherSheetEnabled = @"SubredditSwitcherSheetEnabled";
+// Liquid Glass only: the post's action row at the top of a thread (upvote,
+// downvote, save, reply, share). 0 = Apollo's Classic row, 1 = one glass
+// Capsule (default). Read live by ApolloPostActionBar.xm.
+static NSString *const UDKeyPostActionBarStyle = @"PostActionBarStyle";
 // iPad only. When ON, replaces each tab's single navigation stack with a
 // multi-column UISplitViewController: sidebar (the tab's own root list) →
 // content → detail. Opt-in; default OFF via registerDefaults. Installation
