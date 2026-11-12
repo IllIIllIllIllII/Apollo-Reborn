@@ -122,6 +122,13 @@ static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
 // rides the batch, and the other rows keep the animations Apollo asked for.
 // Other reloads (votes, edits) keep theirs too: only the comment whose
 // collapsed state just changed qualifies.
+//
+// Without a row animation UIKit still keeps the outgoing cell under the new
+// one until the batch ends. On a collapse the new cell is only the header,
+// so the old body stayed in view below it and the next comment rose over it
+// at the end, as if the comment folded into itself. Hide the outgoing
+// version as the reload is issued; its row reads as plain background while
+// the replies slide away and the next comment rises.
 static NSString *sCommentsToggledFullName;
 static CFTimeInterval sCommentsToggledAt;
 
@@ -131,6 +138,26 @@ static NSString *CommentsRowFullName(UITableView *tableView, NSIndexPath *indexP
     if (!ApolloClassCommentCellNode || ![node isKindOfClass:ApolloClassCommentCellNode]) return nil;
     RDKComment *comment = ApolloObjectIvar(node, "comment");
     return [comment respondsToSelector:@selector(fullName)] ? comment.fullName : nil;
+}
+
+// The outgoing cell's node is the comment's old version: the reload builds a
+// new node for the row, so hiding the old one never touches the new cell.
+// The cell itself goes back to the reuse pool and is left alone. Should
+// Apollo ever keep an old node to show again, it is shown again once the
+// batch has settled.
+static void HideOutgoingCommentRow(UITableViewCell *cell) {
+    id node = [cell respondsToSelector:@selector(node)] ? ApolloSendObject(cell, @selector(node)) : nil;
+    if (!ApolloClassCommentCellNode || ![node isKindOfClass:ApolloClassCommentCellNode]) return;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(node, @selector(setHidden:), YES);
+    // The tap left the row highlighted; its highlight would show in place
+    // of the body.
+    [cell setHighlighted:NO animated:NO];
+    [cell setSelected:NO animated:NO];
+    __weak id weakNode = node;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        id oldNode = weakNode;
+        if (oldNode) ((void (*)(id, SEL, BOOL))objc_msgSend)(oldNode, @selector(setHidden:), NO);
+    });
 }
 
 static NSIndexPath *CommentsToggledRow(UITableView *tableView, NSArray<NSIndexPath *> *indexPaths,
@@ -555,8 +582,10 @@ static void ShowCommentsCollapseCover(NSString *reason) {
               (long)toggled.row, (unsigned long)indexPaths.count);
     NSMutableArray<NSIndexPath *> *others = [indexPaths mutableCopy];
     [others removeObject:toggled];
+    UITableViewCell *outgoing = [self cellForRowAtIndexPath:toggled];
     %orig(@[toggled], UITableViewRowAnimationNone);
     if (others.count) %orig(others, animation);
+    HideOutgoingCommentRow(outgoing);
 }
 
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
