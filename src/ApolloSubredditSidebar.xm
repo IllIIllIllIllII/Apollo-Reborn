@@ -207,15 +207,15 @@ static inline ApolloSBDimension ApolloSBAutoDim(void) { return (ApolloSBDimensio
                                      spacing:(CGFloat)spacing
                               justifyContent:(NSUInteger)justifyContent
                                   alignItems:(NSUInteger)alignItems
-                                    children:(NSArray *)children;
+                                    children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 
 @interface ASInsetLayoutSpec : ASLayoutSpec
-+ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
++ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface ASRatioLayoutSpec : ASLayoutSpec
-+ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child;
++ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child NS_RETURNS_RETAINED;
 @end
 
 #pragma mark - Class accessors

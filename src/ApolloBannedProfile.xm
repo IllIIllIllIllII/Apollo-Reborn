@@ -374,7 +374,8 @@ id ApolloBannedProfileWrapLinkButtonSpecWithBannedHint(id linkButtonNode, id nat
     }
 
     NSArray *children = @[nativeSpec, textNode];
-    id stack = ((id (*)(id, SEL, unsigned char, CGFloat, unsigned char, unsigned char, id))objc_msgSend)(
+    // Texture's spec factories return +1; transfer that to ARC.
+    id stack = (__bridge_transfer id)((void *(*)(id, SEL, unsigned char, CGFloat, unsigned char, unsigned char, id))objc_msgSend)(
         stackClass,
         @selector(stackLayoutSpecWithDirection:spacing:justifyContent:alignItems:children:),
         0,
