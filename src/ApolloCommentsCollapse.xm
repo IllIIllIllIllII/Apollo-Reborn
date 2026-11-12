@@ -12,6 +12,7 @@
 @interface RDKComment : NSObject
 @property(nonatomic) BOOL stickied;
 @property(nonatomic) BOOL collapsed;
+@property(nonatomic, readonly, copy) NSString *fullName;
 @end
 
 // iOS 26 + Liquid Glass bug:
@@ -77,14 +78,10 @@ static UITableView *GetCommentsTableView(UIViewController *viewController) {
     return FindFirstTableViewInView(viewController.view);
 }
 
-// Apollo's tap handler updates CollapsedCommentsTracker directly, then Texture
-// commits the deleted child rows asynchronously through UITableView. That path
-// requests UITableViewRowAnimationAutomatic (100): on newer UIKit the outgoing
-// children can travel down while the surviving rows close the gap upwards.
-// Choose Top at the UIKit commit boundary, where Texture can no longer replace
-// the animation. A setCollapsed: hook or a flag around the tap misses this path.
-static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
-                                            UITableViewRowAnimation animation) {
+// The comments screen's own list (not the media pane's), with an update that
+// asks UIKit to pick its row animation.
+static BOOL CommentsTableUsesAutomaticAnimation(UITableView *tableView,
+                                                UITableViewRowAnimation animation) {
     // Preserve explicitly non-animated updates, including the media pane's
     // transparent rows, and any direction the caller deliberately supplied.
     if (animation != UITableViewRowAnimationAutomatic) return NO;
@@ -98,6 +95,53 @@ static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
                GetCommentsTableView(controller) == tableView;
     }
     return NO;
+}
+
+// Collapsing or expanding a comment is one UIKit batch from Texture: the
+// comment's own row reloads (expanded and collapsed are different cells) and
+// its replies are deleted or inserted, all with
+// UITableViewRowAnimationAutomatic (100).
+//
+// Apollo's tap handler updates CollapsedCommentsTracker directly, then Texture
+// commits the batch asynchronously through UITableView. Choose animations at
+// the UIKit commit boundary, where Texture can no longer replace them. A flag
+// around the tap misses this path.
+//
+// Replies: on newer UIKit the outgoing children can travel down while the
+// surviving rows close the gap upwards, so their deletion slides up (Top).
+static BOOL CommentsTableNeedsUpwardDeletion(UITableView *tableView,
+                                            UITableViewRowAnimation animation) {
+    return CommentsTableUsesAutomaticAnimation(tableView, animation);
+}
+
+// The comment itself: an automatic reload cross-fades the outgoing and
+// incoming cells, each at about half opacity while the replies move past, so
+// the comment and its replies show through each other (a ghost of the comment
+// on every collapse and expand). Reload that one row without a row animation:
+// the new cell takes the old one's place at once, its height change still
+// rides the batch, and the other rows keep the animations Apollo asked for.
+// Other reloads (votes, edits) keep theirs too: only the comment whose
+// collapsed state just changed qualifies.
+static NSString *sCommentsToggledFullName;
+static CFTimeInterval sCommentsToggledAt;
+
+static NSString *CommentsRowFullName(UITableView *tableView, NSIndexPath *indexPath) {
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    id node = [cell respondsToSelector:@selector(node)] ? ApolloSendObject(cell, @selector(node)) : nil;
+    if (!ApolloClassCommentCellNode || ![node isKindOfClass:ApolloClassCommentCellNode]) return nil;
+    RDKComment *comment = ApolloObjectIvar(node, "comment");
+    return [comment respondsToSelector:@selector(fullName)] ? comment.fullName : nil;
+}
+
+static NSIndexPath *CommentsToggledRow(UITableView *tableView, NSArray<NSIndexPath *> *indexPaths,
+                                       UITableViewRowAnimation animation) {
+    // Texture commits the batch within a frame or two of the tap.
+    if (!sCommentsToggledFullName || CACurrentMediaTime() - sCommentsToggledAt > 1.0) return nil;
+    if (!CommentsTableUsesAutomaticAnimation(tableView, animation)) return nil;
+    for (NSIndexPath *indexPath in indexPaths) {
+        if ([CommentsRowFullName(tableView, indexPath) isEqualToString:sCommentsToggledFullName]) return indexPath;
+    }
+    return nil;
 }
 
 static CGFloat GetNavigationBarBottom(UIViewController *viewController) {
@@ -499,6 +543,22 @@ static void ShowCommentsCollapseCover(NSString *reason) {
 
 %hook UITableView
 
+- (void)reloadRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
+              withRowAnimation:(UITableViewRowAnimation)animation {
+    NSIndexPath *toggled = CommentsToggledRow(self, indexPaths, animation);
+    if (!toggled) {
+        %orig(indexPaths, animation);
+        return;
+    }
+    sCommentsToggledFullName = nil;
+    ApolloLog(@"[CommentsCollapse] Reload the collapsed/expanded comment without a cross-fade (row %ld of %lu)",
+              (long)toggled.row, (unsigned long)indexPaths.count);
+    NSMutableArray<NSIndexPath *> *others = [indexPaths mutableCopy];
+    [others removeObject:toggled];
+    %orig(@[toggled], UITableViewRowAnimationNone);
+    if (others.count) %orig(others, animation);
+}
+
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths
               withRowAnimation:(UITableViewRowAnimation)animation {
     if (CommentsTableNeedsUpwardDeletion(self, animation)) {
@@ -527,6 +587,11 @@ static void ShowCommentsCollapseCover(NSString *reason) {
     BOOL wasCollapsed = [self collapsed];
     %orig;
     if (wasCollapsed != collapsed) {
+        // Its row reloads in Texture's next batch (see CommentsToggledRow).
+        if (NSThread.isMainThread) {
+            sCommentsToggledFullName = [self respondsToSelector:@selector(fullName)] ? [self.fullName copy] : nil;
+            sCommentsToggledAt = CACurrentMediaTime();
+        }
         ShowCommentsCollapseCover(collapsed ? @"collapse" : @"expand");
     }
 }
