@@ -187,6 +187,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloComposerToolbarTint.xm \
     $(SRC_DIR)/ApolloComposerGlassToolbar.xm \
     $(SRC_DIR)/ApolloComposerLayout.xm \
+    $(SRC_DIR)/ApolloPostComposerStyle.xm \
     $(SRC_DIR)/ApolloMarkdownBodyCleanup.xm \
     $(SRC_DIR)/ApolloGiphyClient.m \
     $(SRC_DIR)/GiphyPickerViewController.m \
