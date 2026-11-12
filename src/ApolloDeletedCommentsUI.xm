@@ -48,7 +48,7 @@ extern "C" ApolloDeletedCommentClassification ApolloDeletedCommentsClassificatio
 @end
 
 @interface ASInsetLayoutSpec : NSObject
-+ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
++ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child NS_RETURNS_RETAINED;
 @end
 
 // Apollo's Mantle-backed JSON factory. Hooking the completed model here lets a
@@ -4800,10 +4800,9 @@ static void ApolloDeletedCommentsAdoptRawDeletedStubIfNeeded(id cellNode) {
                 UIEdgeInsets insets = ApolloDeletedCommentsCommentUsesAuthorStatusChip(comment)
                     ? UIEdgeInsetsMake(0.0, 0.0, -14.0, 0.0)
                     : UIEdgeInsetsMake(0.0, 0.0, 8.0, 0.0);
-                return ((id (*)(Class, SEL, UIEdgeInsets, id))objc_msgSend)(insetClass,
-                                                                             @selector(insetLayoutSpecWithInsets:child:),
-                                                                             insets,
-                                                                             spec);
+                // Texture's spec factories return +1; transfer that to ARC.
+                return (__bridge_transfer id)((void *(*)(Class, SEL, UIEdgeInsets, id))objc_msgSend)(
+                    insetClass, @selector(insetLayoutSpecWithInsets:child:), insets, spec);
             } @catch (__unused NSException *e) {}
         }
     }

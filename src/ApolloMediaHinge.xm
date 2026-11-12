@@ -69,7 +69,7 @@ struct ApolloDuoMediaDimension { NSInteger unit; CGFloat value; };
 @end
 
 @interface ASWrapperLayoutSpec : ASLayoutSpec
-+ (instancetype)wrapperWithLayoutElement:(id)element;
++ (instancetype)wrapperWithLayoutElement:(id)element NS_RETURNS_RETAINED;
 @end
 
 static id ApolloDuoMediaObjectIvar(id object, const char *name) {

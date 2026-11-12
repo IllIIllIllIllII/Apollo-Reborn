@@ -42,7 +42,7 @@ typedef struct { CGSize min; CGSize max; } ApolloHiddenSizeRange;
 @end
 @interface ASStackLayoutSpec : NSObject
 + (id)stackLayoutSpecWithDirection:(unsigned char)direction spacing:(CGFloat)spacing
-                   justifyContent:(unsigned char)justify alignItems:(unsigned char)align children:(NSArray *)children;
+                   justifyContent:(unsigned char)justify alignItems:(unsigned char)align children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 @interface ASImageNode : ASDisplayNode
 @property (nonatomic, strong) UIImage *image;

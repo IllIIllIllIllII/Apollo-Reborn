@@ -123,19 +123,19 @@ struct CDStruct_90e057aa { CGSize min; CGSize max; };
                                      spacing:(CGFloat)spacing
                               justifyContent:(ApolloLinkPreviewStackJustifyContent)justifyContent
                                   alignItems:(ApolloLinkPreviewStackAlignItems)alignItems
-                                    children:(NSArray *)children;
+                                    children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 
 @interface ASInsetLayoutSpec : ASLayoutSpec
-+ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
++ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface ASRatioLayoutSpec : ASLayoutSpec
-+ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child;
++ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface ASBackgroundLayoutSpec : ASLayoutSpec
-+ (instancetype)backgroundLayoutSpecWithChild:(id)child background:(id)background;
++ (instancetype)backgroundLayoutSpecWithChild:(id)child background:(id)background NS_RETURNS_RETAINED;
 @end
 
 static char kApolloLinkPreviewNodesKey;

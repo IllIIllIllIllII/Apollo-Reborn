@@ -123,15 +123,15 @@ static const NSUInteger ApolloFeedControlEventTouchUpInside = 1 << 4;
                                      spacing:(CGFloat)spacing
                               justifyContent:(ApolloFeedStackJustify)justifyContent
                                   alignItems:(ApolloFeedStackAlign)alignItems
-                                    children:(NSArray *)children;
+                                    children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 
 @interface ASRatioLayoutSpec : ASLayoutSpec
-+ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child;
++ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface ASInsetLayoutSpec : ASLayoutSpec
-+ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
++ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child NS_RETURNS_RETAINED;
 @end
 
 // ASLayoutElementStyle subset for fixing the hero height.

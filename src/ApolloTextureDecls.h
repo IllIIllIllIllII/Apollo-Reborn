@@ -21,6 +21,13 @@
 //  `unsigned char`, so a bad value in one caller's enum can't leak into the
 //  other's.
 //
+//  Texture's layout-spec and ASLayout factory class methods return +1 objects
+//  (NS_RETURNS_RETAINED in Texture's headers; verified against Apollo's
+//  build). Any declaration of one, here or in a file's local copy, must say
+//  NS_RETURNS_RETAINED, and an objc_msgSend call must cast to a void *
+//  return and __bridge_transfer it. Otherwise ARC retains the result again
+//  and every layout pass leaks the spec together with the nodes it holds.
+//
 //  Not folded into ApolloCommon.h and not meant for blanket import — several
 //  other files (e.g. ApolloInlineImages.xm) declare their own, differently
 //  shaped local copies of these same class names, which would collide if
@@ -82,17 +89,17 @@ NS_ASSUME_NONNULL_BEGIN
                                      spacing:(CGFloat)spacing
                               justifyContent:(unsigned char)justifyContent
                                   alignItems:(unsigned char)alignItems
-                                    children:(NSArray *)children;
+                                    children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 
 @interface ASInsetLayoutSpec : ASLayoutSpec
 @property (nonatomic) UIEdgeInsets insets;
 @property (nullable, nonatomic) id child;
-+ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child;
++ (instancetype)insetLayoutSpecWithInsets:(UIEdgeInsets)insets child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface ASBackgroundLayoutSpec : ASLayoutSpec
-+ (instancetype)backgroundLayoutSpecWithChild:(id)child background:(ASDisplayNode *)background;
++ (instancetype)backgroundLayoutSpecWithChild:(id)child background:(ASDisplayNode *)background NS_RETURNS_RETAINED;
 @end
 
 NS_ASSUME_NONNULL_END

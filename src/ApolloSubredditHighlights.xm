@@ -74,7 +74,7 @@ struct ApolloHLSizeRange { CGSize min; CGSize max; };
                                      spacing:(CGFloat)spacing
                               justifyContent:(NSUInteger)justifyContent
                                   alignItems:(NSUInteger)alignItems
-                                    children:(NSArray *)children;
+                                    children:(NSArray *)children NS_RETURNS_RETAINED;
 @end
 
 #pragma mark - Tunables
@@ -3823,7 +3823,9 @@ static void ApolloHLSyncSwitchedFeed(UIViewController *vc) {
         if (s.height > 0.0) {
             Class ASLayoutCls = ApolloClassASLayout;
             if (ASLayoutCls) {
-                id zero = ((id (*)(id, SEL, id, CGSize))objc_msgSend)(ASLayoutCls, @selector(layoutWithLayoutElement:size:), self, CGSizeMake(s.width, 0.0));
+                // +[ASLayout layoutWithLayoutElement:size:] returns +1.
+                id zero = (__bridge_transfer id)((void *(*)(id, SEL, id, CGSize))objc_msgSend)(
+                    ASLayoutCls, @selector(layoutWithLayoutElement:size:), self, CGSizeMake(s.width, 0.0));
                 if (zero) return zero;
             }
         }

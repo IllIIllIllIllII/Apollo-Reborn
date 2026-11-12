@@ -47,7 +47,7 @@ struct ApolloFeedGallerySizeRange { CGSize min; CGSize max; };
 @end
 
 @interface ASRatioLayoutSpec : ASLayoutSpec
-+ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child;
++ (instancetype)ratioLayoutSpecWithRatio:(CGFloat)ratio child:(id)child NS_RETURNS_RETAINED;
 @end
 
 @interface RDKGallery : NSObject
