@@ -1840,6 +1840,9 @@ static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host) {
     if (!host.postsNavigation) return;
     if (!host.dividerGrip) {
         host.dividerGrip = [[ApolloDuoSplitDivider alloc] initWithFrame:CGRectZero];
+        // A saved width means the divider was resized before; the handle then
+        // stays hidden until the separator is held or tapped.
+        host.dividerGrip.hidesHandleAtRest = [NSUserDefaults.standardUserDefaults objectForKey:UDKeyDuoDividerFeedShare] != nil;
         __weak ApolloDuoSplitHost *weakHost = host;
         host.dividerGrip.canBegin = ^BOOL { return ApolloDuoDividerAvailable(weakHost); };
         host.dividerGrip.changeWidth = ^(CGFloat width, BOOL commit) {
@@ -1847,8 +1850,11 @@ static void ApolloDuoUpdateDivider(ApolloDuoSplitHost *host) {
             if (!strongHost) return;
             ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(strongHost.postsNavigation, NO);
             if (!state || state.host != strongHost) return;
-            if (commit) [NSUserDefaults.standardUserDefaults setDouble:width / MAX(1, strongHost.view.bounds.size.width)
-                                                                forKey:UDKeyDuoDividerFeedShare];
+            if (commit) {
+                [NSUserDefaults.standardUserDefaults setDouble:width / MAX(1, strongHost.view.bounds.size.width)
+                                                        forKey:UDKeyDuoDividerFeedShare];
+                strongHost.dividerGrip.hidesHandleAtRest = YES;
+            }
             strongHost.dividerPreviewWidth = strongHost.dividerGrip.dragging ? @(width) : nil;
             // Before this frame's layout gives the text new bounds.
             if (strongHost.dividerGrip.dragging) {

@@ -19,8 +19,6 @@ static inline double ApolloDuoDividerSnap(double x, double width, double trailin
     }
     return x;
 }
-enum { ApolloDuoDividerTicksPerWhole = 50 }; // 2 percentage points
-
 // Keep a reached edge latched until the finger moves clearly back into the
 // range, so small movements against the stop don't repeat its haptic.
 static inline int ApolloDuoDividerLimit(double x, double width, double inset, int previous) {
@@ -32,10 +30,4 @@ static inline int ApolloDuoDividerLimit(double x, double width, double inset, in
     if (previous == -1 && x < low + 6) return -1;
     if (previous == 1 && x > high - 6) return 1;
     return 0;
-}
-
-// Keep the old tick until the finger moves beyond a small hysteresis band.
-static inline int ApolloDuoDividerTick(double share, int previous) {
-    double position = share * ApolloDuoDividerTicksPerWhole;
-    return fabs(position - previous) > 0.65 ? (int)round(position) : previous;
 }

@@ -10,10 +10,6 @@ int main(void) {
     assert(ApolloDuoDividerSnap(365, 951, 84) == 365);
     assert(ApolloDuoDividerSnap(951 * .39, 951, 84) == 951 * .39);
     assert(ApolloDuoDividerSnap(951 * .6, 951, 84) == 547);
-    assert(ApolloDuoDividerTick(.41, 20) == 20);
-    assert(ApolloDuoDividerTick(.414, 20) == 21);
-    assert(ApolloDuoDividerTick(.41, 21) == 21);
-    assert(ApolloDuoDividerTick(.406, 21) == 20);
     assert(ApolloDuoDividerLimit(320, 951, 84, 0) == -1);
     assert(ApolloDuoDividerLimit(323, 951, 84, -1) == -1);
     assert(ApolloDuoDividerLimit(327, 951, 84, -1) == 0);
@@ -27,5 +23,5 @@ int main(void) {
             double snapped = ApolloDuoDividerSnap(x, w, 84);
             assert(snapped == ApolloDuoDividerClamp(snapped, w, 84));
         }
-    puts("PASS: divider bounds, snapping, free positioning and tick hysteresis");
+    puts("PASS: divider bounds, snapping, free positioning and limits");
 }

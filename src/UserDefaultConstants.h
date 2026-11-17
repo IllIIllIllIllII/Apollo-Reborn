@@ -381,7 +381,8 @@ static NSString *const UDKeyLiquidGlassEnabled = @"LiquidGlassEnabled";
 static NSString *const UDKeyTabBarSwipeNavigation = @"TabBarSwipeNavigation";
 
 // Feed column's share (0–1) of Duo's flat landscape Posts split, saved when a
-// divider drag is released. Unset or invalid means 0.5. See ApolloDuoSplitDivider.
+// divider drag is released. Unset or invalid means 0.5. Once it's set, the
+// divider's handle stays hidden at rest. See ApolloDuoSplitDivider.
 static NSString *const UDKeyDuoDividerFeedShare = @"DuoDividerFeedShare";
 // Experimental large post cards on Duo's opened display, portrait and
 // landscape. The stored key keeps its landscape-only name so saved choices
