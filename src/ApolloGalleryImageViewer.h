@@ -36,12 +36,19 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
 @property (nonatomic, weak, nullable) id<ApolloGalleryImageViewerDelegate> galleryDelegate;
+// Shown inside another screen (the Duo's post split) instead of presented:
+// no Done button, no swipe to close, no post card and no rotation offer. Set
+// before the view loads.
+@property (nonatomic) BOOL embedded;
 // Index of the picture currently on screen.
 @property (nonatomic, readonly) NSInteger currentIndex;
 
 // Called by the grid when IT loaded more, so the pager picks up the same items
 // without a second request.
 - (void)feedDidAppendItems;
+
+// Pauses the page's video, for an embedded viewer the screen around it hides.
+- (void)pausePlayback;
 
 @end
 

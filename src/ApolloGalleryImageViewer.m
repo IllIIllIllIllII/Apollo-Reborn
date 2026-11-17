@@ -678,7 +678,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
-    self.view.accessibilityViewIsModal = YES;
+    self.view.accessibilityViewIsModal = !self.embedded;
     // The viewer is a black fullscreen surface with white text and icons, but
     // the APP is usually in light mode — so the iOS 26 glass pills first
     // resolved their LIGHT variant (white frost, unreadable white-on-white
@@ -719,11 +719,15 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     longPress.delegate = self;
     [self.view addGestureRecognizer:longPress];
 
-    self.dismissPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_dismissPanned:)];
-    self.dismissPan.delegate = self;
-    [self.view addGestureRecognizer:self.dismissPan];
+    // Embedded, the screen around the viewer owns closing it.
+    if (!self.embedded) {
+        self.dismissPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_dismissPanned:)];
+        self.dismissPan.delegate = self;
+        [self.view addGestureRecognizer:self.dismissPan];
+    }
 
     [self apollo_updateChromeContent];
+    if (self.embedded) return;
 
     // Physical device orientation keeps reporting while the INTERFACE is
     // locked, which is what makes the smart-rotation offer possible.
@@ -757,6 +761,10 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
         [self apollo_requestInterfaceOrientation:UIInterfaceOrientationPortrait];
     }
     // Nothing should keep playing behind or after the viewer.
+    [self pausePlayback];
+}
+
+- (void)pausePlayback {
     for (UICollectionViewCell *cell in self.collectionView.visibleCells) {
         if ([cell isMemberOfClass:[ApolloGalleryViewerCell class]]) {
             [(ApolloGalleryViewerCell *)cell pausePlayback];
@@ -773,7 +781,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:UIDeviceOrientationDidChangeNotification
                                                   object:nil];
-    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+    // An embedded viewer never began them, and the count is shared app-wide.
+    if (!_embedded) [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
 }
 
 - (void)didReceiveMemoryWarning {
@@ -845,6 +854,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 - (void)apollo_buildChrome {
     self.doneButton = ApolloGalleryChromeButton(nil, @"Done", &_doneHost);
     [self.doneButton addTarget:self action:@selector(apollo_donePressed) forControlEvents:UIControlEventTouchUpInside];
+    self.doneHost.hidden = self.embedded;
     [self.view addSubview:self.doneHost];
 
     self.counterLabel = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -990,7 +1000,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_updateRotationOffer {
-    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled()) {
+    if (self.isDismissing || self.embedded || !ApolloGallerySmartRotationLockEnabled()) {
         [self apollo_hideRotationOffer];
         return;
     }
@@ -1168,7 +1178,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     }
     CGFloat gap = (titleSize.height > 0.0 && subtitleSize.height > 0.0) ? 3.0 : 0.0;
     CGFloat panelHeight = 20.0 + titleSize.height + gap + subtitleSize.height;
-    BOOL showsInfo = (titleSize.height + subtitleSize.height) > 0.0 && !self.infoPanelHiddenForItem;
+    // Embedded beside the post, its title and author are already on screen.
+    BOOL showsInfo = (titleSize.height + subtitleSize.height) > 0.0 && !self.infoPanelHiddenForItem && !self.embedded;
     self.infoPanel.hidden = !showsInfo;
     self.titleLabel.frame = CGRectMake(12.0, 10.0, titleSize.width, titleSize.height);
     self.subtitleLabel.frame = CGRectMake(12.0, 10.0 + titleSize.height + gap, subtitleSize.width, subtitleSize.height);
@@ -1430,6 +1441,8 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     } else {
         self.counterLabel.text = @"";
     }
+    // Embedded on one post, a lone picture needs no position.
+    self.counterPill.hidden = self.embedded && total < 2;
 
     ApolloGalleryItem *item = (index >= 0 && index < total) ? items[index] : nil;
     self.titleLabel.text = item.postTitle ?: @"";
