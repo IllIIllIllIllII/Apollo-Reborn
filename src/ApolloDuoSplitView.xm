@@ -51,6 +51,7 @@ static NSInteger ApolloDuoFeedRailSelection(UINavigationController *feed);
 static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed);
 static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
 static void ApolloDuoFeedRailRefreshSoon(ApolloDuoSplitHost *host);
+static BOOL ApolloDuoListShowsModerator(UINavigationController *list);
 static BOOL ApolloDuoPostContentCandidate(UIViewController *page);
 static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoPostContentUninstall(ApolloDuoSplitHost *host);
@@ -1025,6 +1026,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     }
     self.feedRail.bounds = CGRectMake(0, 0, ApolloDuoFeedRail.reservedWidth, self.view.bounds.size.height);
     self.feedRail.center = CGPointMake(ApolloDuoFeedRail.reservedWidth / 2, self.view.bounds.size.height / 2);
+    self.feedRail.showsModerator = ApolloDuoListShowsModerator(self.subredditList);
     [self.feedRail reloadShortcuts];
     [self refreshFeedRailSelection];
     self.feedRail.subredditsSelected = self.listVisible;
@@ -3026,7 +3028,17 @@ static NSInteger ApolloDuoFeedRailSelection(UINavigationController *feed) {
     NSString *slug = ApolloSpecialFeedSlugFromViewController(page).lowercaseString;
     if ([slug isEqualToString:@"popular"]) return 1;
     if ([slug isEqualToString:@"all"]) return 2;
+    if ([slug isEqualToString:@"mod"]) return 3;
     return -1;
+}
+
+// Moderator is a shortcut only while the subreddit list has its row: Settings
+// shows it and the account moderates.
+static BOOL ApolloDuoListShowsModerator(UINavigationController *list) {
+    NSArray<NSNumber *> *visible = ApolloFeedShortcutVisibleIndexes();
+    if (![visible containsObject:@3]) return NO;
+    UITableView *table = ApolloDuoSplitFindTable(list.viewControllers.firstObject.viewIfLoaded);
+    return table.numberOfSections > 0 && [table numberOfRowsInSection:0] >= (NSInteger)visible.count;
 }
 
 // The subreddit the feed shows (nil for Home and other multi-subreddit feeds).
@@ -3120,7 +3132,7 @@ static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *s
 // A rail shortcut: the subreddit list's own row for that feed, as the list
 // and the startup default open it.
 static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed) {
-    if (!host || feed < 0 || feed > 2) return;
+    if (!host || feed < 0 || feed > 3) return;
     if (host.listVisible && !host.listPinned) [host setListVisible:NO animated:YES];
     UINavigationController *posts = host.postsNavigation;
     if (ApolloDuoFeedRailSelection(posts) == feed && ApolloDuoFeedRailScrollShowingFeed(posts)) {

@@ -23,7 +23,7 @@ CGSize ApolloDuoLayoutSize(CGSize liveSize);
 /// (Picture in Picture or another app on top): full width, but under 600pt tall.
 BOOL ApolloDuoSplitIsShortPane(void);
 /// Sidebar & Post: whether `table` is the subreddit list in the drawer that
-/// opens beside the feed rail. The rail already holds Home, Popular, All and
+/// opens beside the feed rail. The rail already holds the feed shortcuts and
 /// the favorites, so the list leaves those rows out there.
 BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table);
 /// The Original/Focused feed layout applies: unfolded, or a short pane.

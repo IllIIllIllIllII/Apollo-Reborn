@@ -2775,7 +2775,7 @@ static void ApolloSubredditIndexHeaderLayoutSubviewsHook(id self, SEL _cmd) {
 }
 
 // --- Sidebar & Post's drawer ---------------------------------------------
-// It opens beside the Duo's feed rail, which already holds Home, Popular, All
+// It opens beside the Duo's feed rail, which already holds the feed shortcuts
 // and the favorites (ApolloDuoSplitListOmitsRailRows). Those rows and the
 // Favorites header collapse there; the rest of the list is unchanged.
 static char kApolloSubredditRailFavoritesSectionKey;
@@ -2806,15 +2806,12 @@ static NSInteger ApolloSubredditIndexRailFavoritesSection(UITableView *tableView
 static BOOL ApolloSubredditIndexRowIsOnDuoRail(UITableView *tableView, NSIndexPath *indexPath) {
     if (!ApolloDuoSplitListOmitsRailRows(tableView)) return NO;
     if (indexPath.section == 0) {
+        // Every feed shortcut the list shows is on the rail (Moderator too,
+        // when the list has its row), so all of them collapse, tiles included;
+        // only once the native rows matched the feeds they should be.
         NSArray<NSNumber *> *visible = ApolloSubredditIndexVisibleMetaFeedIndexes(tableView);
-        // Only once the native rows matched the feeds they should be.
-        if (!ApolloSubredditIndexIsMetaFeedRow(indexPath, visible.count) ||
-            !ApolloSubredditIndexMetaFeedRowsValidated(tableView, visible)) return NO;
-        // Shortcut tiles share the first row; they stay while one is Moderator,
-        // which the rail doesn't have.
-        if (ApolloMetaFeedLayoutUsesShortcuts(ApolloMetaFeedEffectiveLayout(tableView, visible)))
-            return ![visible containsObject:@3];
-        return visible[indexPath.row].integerValue <= 2;
+        return ApolloSubredditIndexIsMetaFeedRow(indexPath, visible.count) &&
+               ApolloSubredditIndexMetaFeedRowsValidated(tableView, visible);
     }
     if (ApolloSubredditIndexListIsEditing(tableView)) return NO;
     NSInteger favorites = ApolloSubredditIndexRailFavoritesSection(tableView);

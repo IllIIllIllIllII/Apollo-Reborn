@@ -78,6 +78,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic) BOOL infoRequested;
 @property(nonatomic) BOOL hasIcon;
 @property(nonatomic) BOOL avatar;
+// A feed shortcut drawn as a tile, circle or Classic icon, at the avatars' size.
+@property(nonatomic) BOOL styled;
 @property(nonatomic) BOOL chosen;
 // The highlight's top corner radius: the panel's own curve, less the inset,
 // for the button at the top of the panel; kRailSelectionRadius elsewhere.
@@ -120,13 +122,19 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
     return self;
 }
-// A feed shortcut's glyph exactly as the subreddit list draws it in the
-// Tinted icon style (Settings > Feed Shortcuts), in the rail's colors. It is
-// centered on the glyph box and overhangs it as the list's does its own.
-- (instancetype)initWithShortcutGlyph:(UIImage *)glyph title:(NSString *)title {
+// A feed shortcut as the subreddit list draws it in the chosen icon style
+// (Settings > Feed Shortcuts). Monochrome takes the rail's colors; the other
+// styles keep their own. Bare glyphs (Tinted, Monochrome) are centered on the
+// glyph box and overhang it as the list's do; tiles, circles and Classic sit
+// at the avatars' size.
+- (instancetype)initWithShortcutIcon:(UIImage *)icon style:(ApolloSubredditFeedIconStyle)style title:(NSString *)title {
     if (!(self = [self initWithTitle:title])) return nil;
-    self.icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    self.icon.contentMode = UIViewContentModeCenter;
+    BOOL monochrome = style == ApolloSubredditFeedIconStyleMonochrome;
+    BOOL bare = monochrome || style == ApolloSubredditFeedIconStyleTinted;
+    self.styled = !bare;
+    self.icon.image = [icon imageWithRenderingMode:monochrome ? UIImageRenderingModeAlwaysTemplate
+                                                              : UIImageRenderingModeAlwaysOriginal];
+    self.icon.contentMode = bare ? UIViewContentModeCenter : UIViewContentModeScaleAspectFit;
     self.label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
     return self;
 }
@@ -175,12 +183,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [self shapeSelection];
     // Icon and name sit in the middle of the highlight, the name well above
     // its rounded bottom corners and inset from its sides.
-    CGFloat iconSize = self.avatar ? kRailAvatarSize : kRailGlyphSize;
-    CGFloat iconTop = CGRectGetMinY(selection) + (self.avatar ? 5 : 8);
+    BOOL large = self.avatar || self.styled;
+    CGFloat iconSize = large ? kRailAvatarSize : kRailGlyphSize;
+    CGFloat iconTop = CGRectGetMinY(selection) + (large ? 5 : 8);
     self.icon.frame = CGRectMake((bounds.size.width - iconSize) / 2, iconTop, iconSize, iconSize);
     self.initial.frame = self.icon.frame;
     CGFloat labelInset = self.avatar ? 6 : 5;
-    self.label.frame = CGRectMake(CGRectGetMinX(selection) + labelInset, CGRectGetMaxY(self.icon.frame) + (self.avatar ? 3 : 5),
+    self.label.frame = CGRectMake(CGRectGetMinX(selection) + labelInset, CGRectGetMaxY(self.icon.frame) + (large ? 3 : 5),
                                   CGRectGetWidth(selection) - labelInset * 2, self.avatar ? 12 : 13);
 }
 // Under the panel's rounded top, the highlight's top follows it in circular
@@ -241,6 +250,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 // The hairline on the column's trailing edge, where the feed begins.
 @property(nonatomic, strong) UIView *divider;
 @property(nonatomic, copy) NSArray<NSNumber *> *shortcuts;
+@property(nonatomic) NSInteger shortcutStyle;
 @property(nonatomic, copy) NSArray<NSString *> *favoriteNames;
 @end
 
@@ -316,29 +326,33 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self reloadShortcuts]; });
         return;
     }
+    // The feed shortcuts Settings > Feed Shortcuts shows, in its icon style.
     NSMutableArray<NSNumber *> *shortcuts = [NSMutableArray array];
     for (NSNumber *index in ApolloFeedShortcutVisibleIndexes()) {
-        // Moderator stays in the subreddit list; the column keeps the three
-        // feeds everyone has.
-        if (index.integerValue <= 2) [shortcuts addObject:index];
+        if (index.integerValue <= 2 || self.showsModerator) [shortcuts addObject:index];
     }
+    NSInteger style = sSubredditFeedIconStyle;
     NSMutableArray<NSString *> *names = [NSMutableArray array];
     for (id name in [NSUserDefaults.standardUserDefaults arrayForKey:UDKeyApolloFavoriteSubreddits] ?: @[]) {
         if ([name isKindOfClass:NSString.class] && [name length]) [names addObject:name];
     }
-    BOOL shortcutsChanged = !self.feedButtons || ![shortcuts isEqualToArray:self.shortcuts ?: @[]];
+    BOOL shortcutsChanged = !self.feedButtons || ![shortcuts isEqualToArray:self.shortcuts ?: @[]]
+        || style != self.shortcutStyle;
     BOOL favoritesChanged = !self.favoriteButtons || ![names isEqualToArray:self.favoriteNames ?: @[]];
     if (!shortcutsChanged && !favoritesChanged) return;
     if (shortcutsChanged) {
         self.shortcuts = shortcuts;
+        self.shortcutStyle = style;
         for (UIView *view in self.feedButtons) [view removeFromSuperview];
         NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [NSMutableArray array];
         for (NSNumber *index in shortcuts) {
             NSString *title = ApolloFeedShortcutShortTitle(index.integerValue);
-            UIImage *glyph = ApolloFeedShortcutIconImage(index.integerValue, ApolloSubredditFeedIconStyleTinted,
-                                                         ApolloSubredditFeedLayoutRows, shortcuts.count);
-            ApolloDuoFeedRailButton *button = glyph
-                ? [[ApolloDuoFeedRailButton alloc] initWithShortcutGlyph:glyph title:title]
+            // Monochrome's shape is Tinted's, drawn here in the rail's colors.
+            ApolloSubredditFeedIconStyle drawn = style == ApolloSubredditFeedIconStyleMonochrome
+                ? ApolloSubredditFeedIconStyleTinted : (ApolloSubredditFeedIconStyle)style;
+            UIImage *icon = ApolloFeedShortcutIconImage(index.integerValue, drawn, ApolloSubredditFeedLayoutRows, shortcuts.count);
+            ApolloDuoFeedRailButton *button = icon
+                ? [[ApolloDuoFeedRailButton alloc] initWithShortcutIcon:icon style:(ApolloSubredditFeedIconStyle)style title:title]
                 : [[ApolloDuoFeedRailButton alloc] initWithGlyph:ApolloFeedShortcutTemplateGlyph(index.integerValue) title:title];
             button.tag = index.integerValue;
             [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
