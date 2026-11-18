@@ -1,11 +1,12 @@
 #import "ApolloDuoPostContent.h"
+#import "ApolloFrameRate.h"
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
 #import "ApolloGallerySource.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloCommon.h"
-#import <WebKit/WebKit.h>
+#import <SafariServices/SafariServices.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -17,7 +18,6 @@ typedef NS_ENUM(NSInteger, ApolloDuoPostContentKind) {
 
 // On an RDKLink: its ApolloDuoPostContentKind, worked out once.
 static char kApolloDuoPostContentKindKey;
-static void *kApolloDuoPostContentProgressContext = &kApolloDuoPostContentProgressContext;
 
 static id ApolloDuoPostObject(id link, SEL selector) {
     return [link respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(link, selector) : nil;
@@ -41,11 +41,45 @@ static NSURL *ApolloDuoPostWebURL(id link) {
     return url;
 }
 
+// A text post's pictures, which Reddit lists in its media_metadata, as a
+// gallery in the order its text shows them. Emotes and GIPHY embeds (ids with
+// a "|") stay in the text. nil for anything else.
+static NSDictionary *ApolloDuoPostTextPicturesAsGallery(NSDictionary *post, id link) {
+    if (!ApolloDuoPostIsSelf(link) || [post[@"is_gallery"] boolValue]) return nil;
+    NSDictionary *metadata = post[@"media_metadata"];
+    if (![metadata isKindOfClass:NSDictionary.class] || !metadata.count) return nil;
+    NSMutableArray<NSString *> *pictures = [NSMutableArray array];
+    for (id mediaID in metadata) {
+        if (![mediaID isKindOfClass:NSString.class] || ![mediaID length] || [mediaID containsString:@"|"]) continue;
+        NSDictionary *media = metadata[mediaID];
+        NSString *kind = [media isKindOfClass:NSDictionary.class] ? media[@"e"] : nil;
+        if ([kind isEqual:@"Image"] || [kind isEqual:@"AnimatedImage"]) [pictures addObject:mediaID];
+    }
+    if (!pictures.count) return nil;
+    // The text names each picture by its id (in a preview.redd.it address or a
+    // bare image reference); one it doesn't name goes last.
+    NSString *text = ApolloDuoPostObject(link, @selector(selfText));
+    if (![text isKindOfClass:NSString.class]) text = @"";
+    [pictures sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSUInteger first = [text rangeOfString:a].location, second = [text rangeOfString:b].location;
+        if (first != second) return first < second ? NSOrderedAscending : NSOrderedDescending;
+        return [a compare:b];
+    }];
+    NSMutableArray<NSDictionary *> *order = [NSMutableArray arrayWithCapacity:pictures.count];
+    for (NSString *mediaID in pictures) [order addObject:@{@"media_id": mediaID}];
+    NSMutableDictionary *gallery = [post mutableCopy];
+    gallery[@"is_gallery"] = @YES;
+    gallery[@"gallery_data"] = @{@"items": order};
+    return gallery;
+}
+
 // The post's media as Gallery View items, from the JSON Apollo parsed it from:
-// one item for an image, video or GIF, one per picture for a gallery.
+// one item for an image, video or GIF, one per picture for a gallery or a
+// text post's pictures.
 static ApolloGalleryFeed *ApolloDuoPostMediaFeed(id link) {
     NSDictionary *post = link ? ApolloGallerySourcePostForLink(link) : nil;
     if (!post) return nil;
+    post = ApolloDuoPostTextPicturesAsGallery(post, link) ?: post;
     NSString *subreddit = ApolloDuoPostObject(link, @selector(subreddit));
     ApolloGalleryFeed *feed = [[ApolloGalleryFeed alloc]
         initWithSubreddit:[subreddit isKindOfClass:NSString.class] ? subreddit : @""];
@@ -61,12 +95,15 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
     ApolloGalleryFeed *feed = ApolloDuoPostMediaFeed(link);
     ApolloDuoPostContentKind kind = feed ? ApolloDuoPostContentKindMedia
         : ApolloDuoPostWebURL(link) ? ApolloDuoPostContentKindWeb : ApolloDuoPostContentKindNone;
-    objc_setAssociatedObject(link, &kApolloDuoPostContentKindKey, @(kind), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // A post opened from a link has its JSON only once its comments load, so
+    // nothing to show isn't final until then.
+    if (kind != ApolloDuoPostContentKindNone || ApolloGallerySourcePostForLink(link))
+        objc_setAssociatedObject(link, &kApolloDuoPostContentKindKey, @(kind), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (feedOut) *feedOut = feed;
     return kind;
 }
 
-@interface ApolloDuoPostContentViewController () <WKNavigationDelegate, WKUIDelegate, UIGestureRecognizerDelegate>
+@interface ApolloDuoPostContentViewController () <SFSafariViewControllerDelegate, UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIPanGestureRecognizer *edgePan;
 @property(nonatomic, weak, readwrite) id link;
 @property(nonatomic, readwrite) BOOL showsMedia;
@@ -75,14 +112,7 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
 @property(nonatomic, strong) UIView *cover;
 @property(nonatomic, strong) ApolloGalleryImageRequest *coverRequest;
 @property(nonatomic, strong) NSURL *pageURL;
-@property(nonatomic, strong) WKWebView *webView;
-@property(nonatomic, strong) UIProgressView *progress;
-@property(nonatomic, strong) UIVisualEffectView *toolbar;
-@property(nonatomic, strong) UIStackView *toolbarButtons;
-@property(nonatomic, strong) UIButton *backButton;
-@property(nonatomic, strong) UIButton *forwardButton;
-@property(nonatomic, strong) UIButton *reloadButton;
-@property(nonatomic, strong) UIButton *shareButton;
+@property(nonatomic, strong) SFSafariViewController *safari;
 @property(nonatomic, strong) UIView *edge;
 @end
 
@@ -107,7 +137,6 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
 }
 
 - (void)dealloc {
-    if (_webView) [_webView removeObserver:self forKeyPath:@"estimatedProgress" context:kApolloDuoPostContentProgressContext];
     [_coverRequest cancel];
 }
 
@@ -123,7 +152,7 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
         else [self embedViewer];
     } else {
         self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
-        [self installWebView];
+        [self installSafari];
     }
     // Back from the leading edge, as on the page this column covers. The
     // pager's and the page's own drags wait for it to fail there.
@@ -143,24 +172,6 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
     CGFloat hairline = 1 / (self.view.window.screen.scale ?: UIScreen.mainScreen.scale);
     self.edge.frame = CGRectMake(CGRectGetMaxX(bounds) - hairline, 0, hairline, bounds.size.height);
     [self.view bringSubviewToFront:self.edge];
-    if (self.webView) {
-        UIEdgeInsets safe = self.view.safeAreaInsets;
-        CGSize toolbarSize = CGSizeMake(MIN(bounds.size.width - 32, 5 * 44 + 16), 52);
-        self.toolbar.frame = CGRectMake((bounds.size.width - toolbarSize.width) / 2,
-                                        bounds.size.height - MAX(safe.bottom, 12) - toolbarSize.height,
-                                        toolbarSize.width, toolbarSize.height);
-        self.toolbarButtons.frame = CGRectInset(self.toolbar.bounds, 8, 0);
-        self.progress.frame = CGRectMake(0, safe.top, bounds.size.width, 2);
-        CGFloat reserved = bounds.size.height - CGRectGetMinY(self.toolbar.frame) + 8;
-        UIEdgeInsets insets = self.webView.scrollView.contentInset;
-        if (fabs(insets.bottom - reserved) > 0.5) {
-            insets.bottom = reserved;
-            self.webView.scrollView.contentInset = insets;
-            UIEdgeInsets indicators = self.webView.scrollView.verticalScrollIndicatorInsets;
-            indicators.bottom = reserved;
-            self.webView.scrollView.verticalScrollIndicatorInsets = indicators;
-        }
-    }
 }
 
 #pragma mark Media
@@ -239,130 +250,32 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
 
 #pragma mark Web
 
-- (UIButton *)toolbarButton:(NSString *)symbol label:(NSString *)label action:(SEL)action {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
-    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration] forState:UIControlStateNormal];
-    button.accessibilityLabel = label;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    return button;
+// Apollo's in-app browser is Safari's own view controller; the column embeds
+// the same, with Safari's toolbar and Reader. It enters Reader by itself, as
+// Apollo's does, when Settings > General > Safari > Always Use Reader Mode is on.
+- (void)installSafari {
+    SFSafariViewControllerConfiguration *configuration = [SFSafariViewControllerConfiguration new];
+    configuration.entersReaderIfAvailable = [NSUserDefaults.standardUserDefaults boolForKey:@"AlwaysUseReaderMode"];
+    SFSafariViewController *safari = [[SFSafariViewController alloc] initWithURL:self.pageURL configuration:configuration];
+    safari.delegate = self;
+    [self addChildViewController:safari];
+    safari.view.frame = self.view.bounds;
+    safari.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view insertSubview:safari.view atIndex:0];
+    [safari didMoveToParentViewController:self];
+    self.safari = safari;
+    ApolloLog(@"[DuoPostContent] loading the post's page in Safari (reader %d)", configuration.entersReaderIfAvailable);
 }
 
-- (void)installWebView {
-    WKWebViewConfiguration *configuration = [WKWebViewConfiguration new];
-    configuration.allowsInlineMediaPlayback = YES;
-    configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeAll;
-    WKWebView *webView = [[WKWebView alloc] initWithFrame:self.view.bounds configuration:configuration];
-    webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    // The app's own Back swipe starts at this column's leading edge.
-    webView.allowsBackForwardNavigationGestures = NO;
-    webView.navigationDelegate = self;
-    webView.UIDelegate = self;
-    webView.backgroundColor = self.view.backgroundColor;
-    [webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionNew
-                 context:kApolloDuoPostContentProgressContext];
-    [self.view addSubview:webView];
-    self.webView = webView;
-
-    self.progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
-    self.progress.progressTintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
-    [self.view addSubview:self.progress];
-
-    UIVisualEffect *effect = nil;
-    if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-    else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-    self.toolbar = [[UIVisualEffectView alloc] initWithEffect:effect];
-    self.toolbar.clipsToBounds = YES;
-    self.toolbar.layer.cornerRadius = 26;
-    self.toolbar.layer.cornerCurve = kCACornerCurveContinuous;
-    self.backButton = [self toolbarButton:@"chevron.backward" label:@"Back" action:@selector(goBack)];
-    self.forwardButton = [self toolbarButton:@"chevron.forward" label:@"Forward" action:@selector(goForward)];
-    self.reloadButton = [self toolbarButton:@"arrow.clockwise" label:@"Reload" action:@selector(reloadOrStop)];
-    self.shareButton = [self toolbarButton:@"square.and.arrow.up" label:@"Share" action:@selector(share)];
-    UIButton *browser = [self toolbarButton:@"safari" label:@"Open in Browser" action:@selector(openInBrowser)];
-    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[self.backButton, self.forwardButton,
-                                                                          self.reloadButton, self.shareButton, browser]];
-    buttons.distribution = UIStackViewDistributionFillEqually;
-    [self.toolbar.contentView addSubview:buttons];
-    self.toolbarButtons = buttons;
-    self.toolbar.tintColor = ApolloThemeAccentColor() ?: self.view.tintColor;
-    [self.view addSubview:self.toolbar];
-    [self updateWebControls];
-    [webView loadRequest:[NSURLRequest requestWithURL:self.pageURL]];
-    ApolloLog(@"[DuoPostContent] loading the post's page");
-}
-
-- (void)updateWebControls {
-    self.backButton.enabled = self.webView.canGoBack;
-    self.forwardButton.enabled = self.webView.canGoForward;
-    UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
-    [self.reloadButton setImage:[UIImage systemImageNamed:self.webView.isLoading ? @"xmark" : @"arrow.clockwise"
-                                        withConfiguration:configuration] forState:UIControlStateNormal];
-    self.reloadButton.accessibilityLabel = self.webView.isLoading ? @"Stop" : @"Reload";
-}
-
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
-    if (context != kApolloDuoPostContentProgressContext) {
-        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
-        return;
-    }
-    float value = (float)self.webView.estimatedProgress;
-    self.progress.hidden = value >= 1;
-    [self.progress setProgress:value animated:value > self.progress.progress];
-}
-
-- (void)goBack { [self.webView goBack]; }
-- (void)goForward { [self.webView goForward]; }
-- (void)reloadOrStop {
-    if (self.webView.isLoading) [self.webView stopLoading];
-    else if (self.webView.URL) [self.webView reload];
-    else [self.webView loadRequest:[NSURLRequest requestWithURL:self.pageURL]];
-    [self updateWebControls];
-}
-- (NSURL *)currentURL { return self.webView.URL ?: self.pageURL; }
-- (void)share {
-    UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[[self currentURL]]
-                                                                        applicationActivities:nil];
-    sheet.popoverPresentationController.sourceView = self.shareButton;
-    sheet.popoverPresentationController.sourceRect = self.shareButton.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-- (void)openInBrowser {
-    [UIApplication.sharedApplication openURL:[self currentURL] options:@{} completionHandler:nil];
-}
-
-- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation { [self updateWebControls]; }
-- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation { [self updateWebControls]; }
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation { [self updateWebControls]; }
-- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error { [self updateWebControls]; }
-- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-    [self updateWebControls];
-}
-
-// Links meant for another app (the App Store, Mail, a phone number) leave
-// through the system; the page itself stays.
-- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action
-    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-    NSString *scheme = action.request.URL.scheme.lowercaseString;
-    if (scheme.length && ![@[@"http", @"https", @"about", @"data", @"blob"] containsObject:scheme]) {
-        if (action.navigationType == WKNavigationTypeLinkActivated)
-            [UIApplication.sharedApplication openURL:action.request.URL options:@{} completionHandler:nil];
-        decisionHandler(WKNavigationActionPolicyCancel);
-        return;
-    }
-    decisionHandler(WKNavigationActionPolicyAllow);
-}
-
-// A link that asks for a new window opens in this one.
-- (WKWebView *)webView:(WKWebView *)webView createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
-   forNavigationAction:(WKNavigationAction *)action windowFeatures:(WKWindowFeatures *)features {
-    if (!action.targetFrame.isMainFrame && action.request.URL) [webView loadRequest:action.request];
-    return nil;
+// Done leaves the post, as it leaves Apollo's in-app browser.
+- (void)safariViewControllerDidFinish:(SFSafariViewController *)controller {
+    if (self.done) self.done();
 }
 
 #pragma mark Back
 
 - (void)edgePanned:(UIPanGestureRecognizer *)pan {
+    ApolloFullFrameRateFollowGesture(pan, 0.5);
     if (self.edgeBack) self.edgeBack(pan);
 }
 
@@ -387,7 +300,15 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
 
 - (void)pausePlayback {
     [self.viewer pausePlayback];
-    if (@available(iOS 15.0, *)) [self.webView pauseAllMediaPlaybackWithCompletionHandler:nil];
+}
+
+- (void)cancelEdgeBack {
+    // Turning an active recognizer off ends it as cancelled, so the Back it
+    // drives settles before the column leaves the screen.
+    if (self.edgePan.state != UIGestureRecognizerStateBegan && self.edgePan.state != UIGestureRecognizerStateChanged) return;
+    self.edgePan.enabled = NO;
+    self.edgePan.enabled = YES;
+    ApolloLog(@"[DuoPostContent] cancelled the column's Back swipe before it left");
 }
 
 @end

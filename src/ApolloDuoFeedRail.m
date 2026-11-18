@@ -4,6 +4,7 @@
 #import "ApolloNativeSubredditIcons.h"
 #import "ApolloSubredditInfoCache.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloUserProfileCache.h"
 #import "UserDefaultConstants.h"
 #import "ApolloCommon.h"
 
@@ -12,13 +13,24 @@
 static const CGFloat kRailInset = 12;
 static const CGFloat kRailColumnWidth = 76;
 static const CGFloat kRailGap = 12;
-static const CGFloat kRailEdgePadding = 8;
 static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
 static const CGFloat kRailGlyphSize = 24;
 static const CGFloat kRailAvatarSize = 32;
+// The highlight sits this far inside the panel's sides, and 2pt inside its
+// button's top and bottom.
+static const CGFloat kRailSelectionInset = 4;
+static const CGFloat kRailSelectionRadius = 14;
+// Room under the last favorite, so its highlight clears the panel's rounded
+// bottom when the list is scrolled to the end.
+static const CGFloat kRailFavoritesBottomInset = 10;
 static const NSInteger kRailSubredditsTag = -1;
 static const NSInteger kRailFavoriteTag = -2;
+
+// "u/name" favorites are followed users.
+static NSString *ApolloDuoFeedRailUsername(NSString *favorite) {
+    return [favorite.lowercaseString hasPrefix:@"u/"] && favorite.length > 2 ? [favorite substringFromIndex:2] : nil;
+}
 
 // A glyph scaled into a square template image, so Apollo's bundled art and SF
 // Symbols share one size.
@@ -48,14 +60,18 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic) BOOL hasIcon;
 @property(nonatomic) BOOL avatar;
 @property(nonatomic) BOOL chosen;
+// The highlight's top corner radius: the panel's own curve, less the inset,
+// for the button at the top of the panel; kRailSelectionRadius elsewhere.
+@property(nonatomic) CGFloat selectionTopRadius;
 @end
 
 @implementation ApolloDuoFeedRailButton
 - (instancetype)initWithTitle:(NSString *)title {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
+    self.selectionTopRadius = kRailSelectionRadius;
     self.selection = [UIView new];
     self.selection.userInteractionEnabled = NO;
-    self.selection.layer.cornerRadius = 14;
+    self.selection.layer.cornerRadius = kRailSelectionRadius;
     self.selection.layer.cornerCurve = kCACornerCurveContinuous;
     self.selection.hidden = YES;
     [self addSubview:self.selection];
@@ -65,8 +81,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.label = [UILabel new];
     self.label.text = title;
     self.label.textAlignment = NSTextAlignmentCenter;
+    // A long name shrinks a little, then truncates, so it stays inside the
+    // highlight.
     self.label.adjustsFontSizeToFitWidth = YES;
-    self.label.minimumScaleFactor = 0.75;
+    self.label.minimumScaleFactor = 0.8;
     self.label.lineBreakMode = NSLineBreakByTruncatingTail;
     [self addSubview:self.label];
     self.isAccessibilityElement = YES;
@@ -84,23 +102,21 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     if (!(self = [self initWithTitle:subreddit])) return nil;
     self.avatar = YES;
     self.subreddit = subreddit;
-    BOOL user = [subreddit.lowercaseString hasPrefix:@"u/"];
-    self.accessibilityLabel = user ? subreddit : [@"r/" stringByAppendingString:subreddit];
+    NSString *username = ApolloDuoFeedRailUsername(subreddit);
+    self.accessibilityLabel = username ? subreddit : [@"r/" stringByAppendingString:subreddit];
     self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
     self.icon.contentMode = UIViewContentModeScaleAspectFill;
     self.icon.clipsToBounds = YES;
     self.icon.layer.cornerRadius = kRailAvatarSize / 2;
     // Until the icon loads (or for a subreddit without one), its first letter.
     self.initial = [UILabel new];
-    NSString *name = user ? [subreddit substringFromIndex:2] : subreddit;
+    NSString *name = username ?: subreddit;
     self.initial.text = name.length ? [name substringToIndex:1].uppercaseString : @"r";
     self.initial.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
     self.initial.textAlignment = NSTextAlignmentCenter;
     self.initial.clipsToBounds = YES;
     self.initial.layer.cornerRadius = kRailAvatarSize / 2;
     [self insertSubview:self.initial belowSubview:self.icon];
-    // A followed user has no subreddit info to look up.
-    self.infoRequested = user;
     [self loadIconFromURL:iconURL];
     return self;
 }
@@ -122,13 +138,23 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
-    self.selection.frame = CGRectInset(bounds, 4, 2);
+    CGRect selection = CGRectInset(bounds, kRailSelectionInset, 2);
+    self.selection.frame = selection;
+    if (@available(iOS 26.0, *)) {
+        UICornerRadius *top = [UICornerRadius fixedRadius:self.selectionTopRadius];
+        UICornerRadius *bottom = [UICornerRadius fixedRadius:kRailSelectionRadius];
+        self.selection.cornerConfiguration = [UICornerConfiguration configurationWithTopLeftRadius:top
+            topRightRadius:top bottomLeftRadius:bottom bottomRightRadius:bottom];
+    }
+    // Icon and name sit in the middle of the highlight, the name well above
+    // its rounded bottom corners and inset from its sides.
     CGFloat iconSize = self.avatar ? kRailAvatarSize : kRailGlyphSize;
-    CGFloat iconTop = self.avatar ? 7 : 11;
+    CGFloat iconTop = CGRectGetMinY(selection) + (self.avatar ? 5 : 8);
     self.icon.frame = CGRectMake((bounds.size.width - iconSize) / 2, iconTop, iconSize, iconSize);
     self.initial.frame = self.icon.frame;
-    self.label.frame = CGRectMake(6, CGRectGetMaxY(self.icon.frame) + (self.avatar ? 4 : 6),
-                                  bounds.size.width - 12, 14);
+    CGFloat labelInset = self.avatar ? 6 : 5;
+    self.label.frame = CGRectMake(CGRectGetMinX(selection) + labelInset, CGRectGetMaxY(self.icon.frame) + (self.avatar ? 3 : 5),
+                                  CGRectGetWidth(selection) - labelInset * 2, self.avatar ? 12 : 13);
 }
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
@@ -151,8 +177,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic, strong) NSArray<ApolloDuoFeedRailButton *> *favoriteButtons;
 @property(nonatomic, strong) ApolloDuoFeedRailButton *subredditsButton;
 @property(nonatomic, strong) UIScrollView *favorites;
-@property(nonatomic, strong) UIView *topSeparator;
-@property(nonatomic, strong) UIView *bottomSeparator;
+@property(nonatomic, strong) UIView *separator;
+// The hairline on the column's trailing edge, where the feed begins.
+@property(nonatomic, strong) UIView *divider;
 @property(nonatomic, copy) NSArray<NSNumber *> *shortcuts;
 @property(nonatomic, copy) NSArray<NSString *> *favoriteNames;
 @end
@@ -182,13 +209,14 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.favorites.delegate = self;
     self.favorites.showsVerticalScrollIndicator = NO;
     self.favorites.alwaysBounceVertical = NO;
+    self.favorites.contentInset = UIEdgeInsetsMake(0, 0, kRailFavoritesBottomInset, 0);
     [self.panel.contentView addSubview:self.favorites];
-    self.topSeparator = [UIView new];
-    self.bottomSeparator = [UIView new];
-    for (UIView *separator in @[self.topSeparator, self.bottomSeparator]) {
-        separator.userInteractionEnabled = NO;
-        [self.panel.contentView addSubview:separator];
-    }
+    self.separator = [UIView new];
+    self.separator.userInteractionEnabled = NO;
+    [self.panel.contentView addSubview:self.separator];
+    self.divider = [UIView new];
+    self.divider.userInteractionEnabled = NO;
+    [self addSubview:self.divider];
     UIImageSymbolConfiguration *symbol = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
     self.subredditsButton = [[ApolloDuoFeedRailButton alloc]
         initWithGlyph:[UIImage systemImageNamed:@"list.bullet" withConfiguration:symbol] title:@"Subreddits"];
@@ -246,8 +274,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         ApolloSubredditInfoCache *cache = ApolloSubredditInfoCache.sharedCache;
         NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [NSMutableArray array];
         for (NSString *name in names) {
-            BOOL user = [name.lowercaseString hasPrefix:@"u/"];
-            NSURL *iconURL = user ? nil : ([cache cachedInfoForSubreddit:name].iconURL ?: icons[name.lowercaseString]);
+            // A followed user's avatar comes from the profile cache Apollo's
+            // comment and feed avatars use.
+            NSString *username = ApolloDuoFeedRailUsername(name);
+            NSURL *iconURL = username ? [ApolloUserProfileCache.sharedCache cachedInfoForUsername:username].iconURL
+                : ([cache cachedInfoForSubreddit:name].iconURL ?: icons[name.lowercaseString]);
             ApolloDuoFeedRailButton *button = [[ApolloDuoFeedRailButton alloc] initWithSubreddit:name iconURL:iconURL];
             button.tag = kRailFavoriteTag;
             [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
@@ -266,32 +297,44 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.panel.frame = CGRectMake(kRailInset, kRailInset, kRailColumnWidth, height);
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
-    CGFloat y = kRailEdgePadding;
-    for (ApolloDuoFeedRailButton *button in self.feedButtons) {
+    self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
+    // The top button's highlight follows the panel's rounded top, the same
+    // distance inside it all the way round.
+    CGFloat panelRadius = kRailColumnWidth / 2;
+    if (@available(iOS 26.0, *)) panelRadius = MIN(panelRadius, [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft]);
+    CGFloat topRadius = MAX(kRailSelectionRadius, panelRadius - kRailSelectionInset);
+    // Home, Popular and All, then Subreddits, which opens the drawer.
+    NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [self.feedButtons mutableCopy] ?: [NSMutableArray array];
+    [buttons addObject:self.subredditsButton];
+    CGFloat y = kRailSelectionInset - 2;
+    for (ApolloDuoFeedRailButton *button in buttons) {
+        CGFloat radius = button == buttons.firstObject ? topRadius : kRailSelectionRadius;
+        if (fabs(button.selectionTopRadius - radius) > 0.5) {
+            button.selectionTopRadius = radius;
+            [button setNeedsLayout];
+        }
         button.frame = CGRectMake(0, y, kRailColumnWidth, kRailButtonHeight);
         y += kRailButtonHeight;
     }
-    self.topSeparator.frame = CGRectMake(16, y + 6, kRailColumnWidth - 32, hairline);
+    self.separator.frame = CGRectMake(16, y + 6, kRailColumnWidth - 32, hairline * 2);
     y += 12;
-    CGFloat subredditsTop = height - kRailEdgePadding - kRailButtonHeight;
-    self.subredditsButton.frame = CGRectMake(0, subredditsTop, kRailColumnWidth, kRailButtonHeight);
-    self.bottomSeparator.frame = CGRectMake(16, subredditsTop - 6, kRailColumnWidth - 32, hairline);
-    // The favorites scroll between the two separators when they don't fit.
-    self.favorites.frame = CGRectMake(0, y, kRailColumnWidth, MAX(0, subredditsTop - 12 - y));
+    // The favorites fill the rest of the panel and scroll when they don't fit.
+    self.favorites.frame = CGRectMake(0, y, kRailColumnWidth, MAX(0, height - y));
     CGFloat favoriteY = 0;
     for (ApolloDuoFeedRailButton *button in self.favoriteButtons) {
         button.frame = CGRectMake(0, favoriteY, kRailColumnWidth, kRailFavoriteHeight);
         favoriteY += kRailFavoriteHeight;
     }
     self.favorites.contentSize = CGSizeMake(kRailColumnWidth, favoriteY);
-    self.favorites.alwaysBounceVertical = favoriteY > self.favorites.bounds.size.height;
-    self.topSeparator.hidden = self.favoriteButtons.count == 0;
+    self.favorites.alwaysBounceVertical = favoriteY + kRailFavoritesBottomInset > self.favorites.bounds.size.height;
+    self.separator.hidden = self.favoriteButtons.count == 0;
     [self requestVisibleIcons];
 }
 
-// A favorite with no icon on hand asks the subreddit info cache once it is in
-// view, as the subreddit list does for its rows. The cache coalesces and keeps
-// what it learns, so this costs at most one lookup per subreddit.
+// A favorite with no icon on hand asks once it is in view, as the subreddit
+// list does for its rows: the subreddit info cache, or for a followed user
+// the profile cache. Both coalesce and keep what they learn, so this costs at
+// most one lookup per favorite.
 - (void)requestVisibleIcons {
     if (!self.window || self.hidden || self.alpha < 0.01) return;
     CGRect visible = self.favorites.bounds;
@@ -299,6 +342,14 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         if (button.hasIcon || button.infoRequested || !CGRectIntersectsRect(button.frame, visible)) continue;
         button.infoRequested = YES;
         __weak ApolloDuoFeedRailButton *weakButton = button;
+        NSString *username = ApolloDuoFeedRailUsername(button.subreddit);
+        if (username) {
+            // Completes on the main queue, from the cache first when it can.
+            [ApolloUserProfileCache.sharedCache requestInfoForUsername:username completion:^(ApolloUserProfileInfo *info) {
+                if (info.iconURL) [weakButton loadIconFromURL:info.iconURL];
+            }];
+            continue;
+        }
         [ApolloSubredditInfoCache.sharedCache requestInfoForSubreddit:button.subreddit completion:^(ApolloSubredditInfo *info) {
             if (!info.iconURL) return;
             dispatch_async(dispatch_get_main_queue(), ^{ [weakButton loadIconFromURL:info.iconURL]; });
@@ -343,9 +394,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
     UIColor *neutral = ApolloNavigationChromeColor() ?: UIColor.labelColor;
     UIColor *secondary = UIColor.secondaryLabelColor;
-    UIColor *separator = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
-    self.topSeparator.backgroundColor = separator;
-    self.bottomSeparator.backgroundColor = separator;
+    // A system color that shows on the glass panel, which washes out the
+    // separator colors (the theme's and UIKit's both nearly vanish there).
+    self.separator.backgroundColor = UIColor.tertiaryLabelColor;
+    self.divider.backgroundColor = ApolloThemeSeparatorColor() ?: UIColor.separatorColor;
+    // The column has its own plain backdrop, so the feed's rows end at the
+    // divider instead of running behind the panel.
+    self.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
     for (ApolloDuoFeedRailButton *button in self.feedButtons) {
         button.chosen = button.tag == self.selectedFeed;
         [button applyAccent:accent neutral:neutral secondary:secondary];
