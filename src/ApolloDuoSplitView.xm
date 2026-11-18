@@ -363,6 +363,8 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 @property(nonatomic, strong) UIBarButtonItem *feedLayoutBarItem;
 @property(nonatomic, weak) UIViewController *feedControlsOwner;
 @property(nonatomic) BOOL pendingFeedControlsReveal;
+// Reveal passes that found none of the controls on screen yet.
+@property(nonatomic) NSUInteger feedControlsRevealMisses;
 - (void)revealRestoredFeedControls;
 @property(nonatomic, copy) void (^togglePostsSplit)(void);
 @property(nonatomic, strong) NSMapTable *listBackgrounds;
@@ -811,13 +813,30 @@ static BOOL ApolloDuoPostsPairsThreads(ApolloDuoSplitHost *host) {
     // cannot consume the animation before the new navigation bar is visible.
     [self.view layoutIfNeeded];
     [self.feedControlsOwner.navigationController.navigationBar layoutIfNeeded];
+    NSArray<UIButton *> *controls = @[self.listButton, self.splitButton, self.feedLayoutButton];
     NSMutableArray<UIView *> *buttons = [NSMutableArray array];
-    for (UIButton *button in @[self.listButton, self.splitButton, self.feedLayoutButton]) {
+    for (UIButton *button in controls) {
         if (!button.hidden && button.window) [buttons addObject:button];
         else if (button.hidden) button.alpha = 1;
     }
-    if (!buttons.count) return;
+    if (!buttons.count) {
+        // None on screen yet: their page puts them in its bar on a later
+        // layout. Look again shortly, then show them as they are.
+        if (self.feedControlsRevealMisses++ < 3) {
+            __weak ApolloDuoSplitHost *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [weakSelf revealRestoredFeedControls];
+            });
+            return;
+        }
+    }
     self.pendingFeedControlsReveal = NO;
+    self.feedControlsRevealMisses = 0;
+    // Every control ends visible, also one its page hasn't put on screen yet:
+    // left transparent, its bar item showed an empty glass circle that still
+    // took taps. Only the ones on screen fade in.
+    for (UIButton *button in controls) button.alpha = 1;
+    if (!buttons.count) return;
     BOOL visible = self.navigationController.topViewController == self
         && self.navigationController.tabBarController.selectedViewController == self.navigationController;
     BOOL reduceMotion = UIAccessibilityIsReduceMotionEnabled();
