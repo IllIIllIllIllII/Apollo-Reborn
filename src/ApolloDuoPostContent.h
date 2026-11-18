@@ -24,9 +24,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)cancelEdgeBack;
 /// Safari's Done button: the host goes Back from the post.
 @property(nonatomic, copy, nullable) void (^done)(void);
-/// Runs for every state of a rightward drag from the column's leading 28pt,
-/// the edge it covers for the page beneath it: the host drives that page's
-/// Back with it, as the Duo's own Back swipe does.
+/// Runs for every state of a rightward swipe on the column (from its leading
+/// 28pt, the edge it covers for the page beneath it, or anywhere the content
+/// doesn't take it): the host drives that page's Back with it, as the Duo's
+/// own Back swipe does.
 @property(nonatomic, copy, nullable) void (^edgeBack)(UIPanGestureRecognizer *pan);
 @end
 

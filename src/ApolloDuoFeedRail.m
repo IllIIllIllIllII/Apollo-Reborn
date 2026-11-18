@@ -20,12 +20,26 @@ static const CGFloat kRailAvatarSize = 32;
 // The highlight sits this far inside the panel's sides, and 2pt inside its
 // button's top and bottom.
 static const CGFloat kRailSelectionInset = 4;
-static const CGFloat kRailSelectionRadius = 14;
 // Room under the last favorite, so its highlight clears the panel's rounded
 // bottom when the list is scrolled to the end.
 static const CGFloat kRailFavoritesBottomInset = 10;
 static const NSInteger kRailSubredditsTag = -1;
 static const NSInteger kRailFavoriteTag = -2;
+
+// The highlight is the tab rail's: the capsule UIKit's lens puts under the
+// selected tab, a shade darker than the glass (sampled from the rail on iOS
+// 26 and 27), with the item itself in the accent.
+static UIColor *ApolloDuoFeedRailSelectionColor(void) {
+    static UIColor *color;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        color = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+            BOOL dark = traits.userInterfaceStyle == UIUserInterfaceStyleDark;
+            return [UIColor colorWithWhite:0 alpha:dark ? 0.69 : 0.09];
+        }];
+    });
+    return color;
+}
 
 // "u/name" favorites are followed users.
 static NSString *ApolloDuoFeedRailUsername(NSString *favorite) {
@@ -60,18 +74,14 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic) BOOL hasIcon;
 @property(nonatomic) BOOL avatar;
 @property(nonatomic) BOOL chosen;
-// The highlight's top corner radius: the panel's own curve, less the inset,
-// for the button at the top of the panel; kRailSelectionRadius elsewhere.
-@property(nonatomic) CGFloat selectionTopRadius;
 @end
 
 @implementation ApolloDuoFeedRailButton
 - (instancetype)initWithTitle:(NSString *)title {
     if (!(self = [super initWithFrame:CGRectZero])) return nil;
-    self.selectionTopRadius = kRailSelectionRadius;
     self.selection = [UIView new];
     self.selection.userInteractionEnabled = NO;
-    self.selection.layer.cornerRadius = kRailSelectionRadius;
+    self.selection.backgroundColor = ApolloDuoFeedRailSelectionColor();
     self.selection.layer.cornerCurve = kCACornerCurveContinuous;
     self.selection.hidden = YES;
     [self addSubview:self.selection];
@@ -140,12 +150,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGRect bounds = self.bounds;
     CGRect selection = CGRectInset(bounds, kRailSelectionInset, 2);
     self.selection.frame = selection;
-    if (@available(iOS 26.0, *)) {
-        UICornerRadius *top = [UICornerRadius fixedRadius:self.selectionTopRadius];
-        UICornerRadius *bottom = [UICornerRadius fixedRadius:kRailSelectionRadius];
-        self.selection.cornerConfiguration = [UICornerConfiguration configurationWithTopLeftRadius:top
-            topRightRadius:top bottomLeftRadius:bottom bottomRightRadius:bottom];
-    }
+    self.selection.layer.cornerRadius = MIN(CGRectGetWidth(selection), CGRectGetHeight(selection)) / 2;
     // Icon and name sit in the middle of the highlight, the name well above
     // its rounded bottom corners and inset from its sides.
     CGFloat iconSize = self.avatar ? kRailAvatarSize : kRailGlyphSize;
@@ -160,11 +165,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [super setHighlighted:highlighted];
     self.alpha = highlighted ? 0.55 : 1;
 }
-- (void)applyAccent:(UIColor *)accent neutral:(UIColor *)neutral secondary:(UIColor *)secondary {
+- (void)applyAccent:(UIColor *)accent neutral:(UIColor *)neutral {
     self.selection.hidden = !self.chosen;
-    self.selection.backgroundColor = [accent colorWithAlphaComponent:0.16];
     self.icon.tintColor = self.chosen ? accent : neutral;
-    self.label.textColor = self.chosen ? accent : (self.avatar ? secondary : neutral);
+    self.label.textColor = self.chosen ? accent : neutral;
     self.initial.textColor = accent;
     self.initial.backgroundColor = [accent colorWithAlphaComponent:0.18];
     self.accessibilityTraits = UIAccessibilityTraitButton | (self.chosen ? UIAccessibilityTraitSelected : 0);
@@ -298,21 +302,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
-    // The top button's highlight follows the panel's rounded top, the same
-    // distance inside it all the way round.
-    CGFloat panelRadius = kRailColumnWidth / 2;
-    if (@available(iOS 26.0, *)) panelRadius = MIN(panelRadius, [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft]);
-    CGFloat topRadius = MAX(kRailSelectionRadius, panelRadius - kRailSelectionInset);
     // Home, Popular and All, then Subreddits, which opens the drawer.
     NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [self.feedButtons mutableCopy] ?: [NSMutableArray array];
     [buttons addObject:self.subredditsButton];
     CGFloat y = kRailSelectionInset - 2;
     for (ApolloDuoFeedRailButton *button in buttons) {
-        CGFloat radius = button == buttons.firstObject ? topRadius : kRailSelectionRadius;
-        if (fabs(button.selectionTopRadius - radius) > 0.5) {
-            button.selectionTopRadius = radius;
-            [button setNeedsLayout];
-        }
         button.frame = CGRectMake(0, y, kRailColumnWidth, kRailButtonHeight);
         y += kRailButtonHeight;
     }
@@ -393,7 +387,6 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 - (void)refreshColors {
     UIColor *accent = ApolloThemeAccentColor() ?: self.tintColor ?: UIColor.systemBlueColor;
     UIColor *neutral = ApolloNavigationChromeColor() ?: UIColor.labelColor;
-    UIColor *secondary = UIColor.secondaryLabelColor;
     // A system color that shows on the glass panel, which washes out the
     // separator colors (the theme's and UIKit's both nearly vanish there).
     self.separator.backgroundColor = UIColor.tertiaryLabelColor;
@@ -403,14 +396,14 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
     for (ApolloDuoFeedRailButton *button in self.feedButtons) {
         button.chosen = button.tag == self.selectedFeed;
-        [button applyAccent:accent neutral:neutral secondary:secondary];
+        [button applyAccent:accent neutral:neutral];
     }
     for (ApolloDuoFeedRailButton *button in self.favoriteButtons) {
         button.chosen = self.selectedSubreddit && [button.subreddit caseInsensitiveCompare:self.selectedSubreddit] == NSOrderedSame;
-        [button applyAccent:accent neutral:neutral secondary:secondary];
+        [button applyAccent:accent neutral:neutral];
     }
     self.subredditsButton.chosen = self.subredditsSelected;
-    [self.subredditsButton applyAccent:accent neutral:neutral secondary:secondary];
+    [self.subredditsButton applyAccent:accent neutral:neutral];
 }
 
 - (void)tintColorDidChange {

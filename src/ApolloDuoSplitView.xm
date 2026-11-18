@@ -49,6 +49,7 @@ static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed);
 static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *subreddit);
 static NSInteger ApolloDuoFeedRailSelection(UINavigationController *feed);
 static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed);
+static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
 static BOOL ApolloDuoPostContentCandidate(UIViewController *page);
 static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoPostContentUninstall(ApolloDuoSplitHost *host);
@@ -416,6 +417,16 @@ static void ApolloDuoRemoveThreadDragFiller(UIView *filler, NSTimeInterval durat
 // a pick in the rail and replaces the shown one in place. Apollo may load the
 // subreddit before it shows the page, so the pick only marks the switch.
 @property(nonatomic) CFTimeInterval feedRailSwitchDeadline;
+// The rail's last pick (a feed index, or a favorite), highlighted until the
+// feed it opens names itself: Apollo sets a page's title and type only once
+// it is set up, after the page is already shown.
+@property(nonatomic) NSInteger feedRailPickFeed;
+@property(nonatomic, copy) NSString *feedRailPickSubreddit;
+@property(nonatomic, weak) UIViewController *feedRailPickFrom;
+@property(nonatomic) CFTimeInterval feedRailPickDeadline;
+- (void)refreshFeedRailSelection;
+// Whether the drawer's list currently leaves out the rows the rail holds.
+@property(nonatomic) BOOL listOmitsRailRows;
 // Sidebar & Post with Split View on: the left column showing a post's content
 // beside its comments, the comments page it belongs to, and whether that page
 // keeps the column's width.
@@ -961,6 +972,25 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     CGSize size = self.view.bounds.size;
     return size.width > size.height;
 }
+- (void)refreshFeedRailSelection {
+    UINavigationController *feed = self.postsNavigation;
+    NSInteger selection = ApolloDuoFeedRailSelection(feed);
+    NSString *subreddit = ApolloDuoFeedRailSubreddit(feed);
+    if (self.feedRailPickDeadline > CACurrentMediaTime()) {
+        // The pick stands while the feed it left still shows, or the one it
+        // opened can't be named yet.
+        NSUInteger count = ApolloDuoFeedStackKeptCount(feed);
+        UIViewController *page = count ? feed.viewControllers[count - 1] : nil;
+        if (page == self.feedRailPickFrom || (selection < 0 && !subreddit.length)) {
+            selection = self.feedRailPickFeed;
+            subreddit = self.feedRailPickSubreddit;
+        } else {
+            self.feedRailPickDeadline = 0;
+        }
+    }
+    self.feedRail.selectedFeed = selection;
+    self.feedRail.selectedSubreddit = subreddit;
+}
 - (void)setFeedRailShown:(BOOL)shown {
     self.feedRail.alpha = shown ? 1 : 0;
     self.feedRail.transform = shown ? CGAffineTransformIdentity
@@ -983,11 +1013,19 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 - (void)layoutFeedRail:(BOOL)rail {
     if (!self.feedRail) return;
     [self layoutTrailingBackdrop:rail];
+    if (self.listOmitsRailRows != rail) {
+        // The list measures those rows again (ApolloDuoSplitListOmitsRailRows).
+        self.listOmitsRailRows = rail;
+        __weak ApolloDuoSplitHost *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController *list = weakSelf.subredditList.viewControllers.firstObject;
+            [ApolloDuoSplitFindTable(list.viewIfLoaded) reloadData];
+        });
+    }
     self.feedRail.bounds = CGRectMake(0, 0, ApolloDuoFeedRail.reservedWidth, self.view.bounds.size.height);
     self.feedRail.center = CGPointMake(ApolloDuoFeedRail.reservedWidth / 2, self.view.bounds.size.height / 2);
     [self.feedRail reloadShortcuts];
-    self.feedRail.selectedFeed = ApolloDuoFeedRailSelection(self.postsNavigation);
-    self.feedRail.selectedSubreddit = ApolloDuoFeedRailSubreddit(self.postsNavigation);
+    [self refreshFeedRailSelection];
     self.feedRail.subredditsSelected = self.listVisible;
     // A push or Back moves the rail with its own transition.
     if (self.feedRailTransitioning || self.postsNavigation.transitionCoordinator) return;
@@ -1769,8 +1807,6 @@ BOOL ApolloDuoSplitIsOwnAccountController(UIViewController *controller) {
     }
     return NO;
 }
-
-static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
 
 BOOL ApolloDuoSplitSuppressesFeedActions(UIViewController *controller) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(controller.navigationController, NO);
@@ -2585,6 +2621,12 @@ static void ApolloDuoFeedRailRelease(ApolloDuoSplitHost *host) {
     ApolloDuoSetFeedRailInset(feed, 0);
     ApolloDuoSetFeedRailTrailingInset(feed, 0);
     [host setFeedRailShown:NO];
+    if (host.listOmitsRailRows) {
+        // The list leaves with every row again.
+        host.listOmitsRailRows = NO;
+        UITableView *list = ApolloDuoSplitFindTable(host.subredditList.viewControllers.firstObject.viewIfLoaded);
+        dispatch_async(dispatch_get_main_queue(), ^{ [list reloadData]; });
+    }
 }
 
 // UIKit scrubs an interactive Back's animations only inside its own
@@ -2719,6 +2761,8 @@ static void ApolloDuoFeedRailFollowNavigation(ApolloDuoSplitHost *host) {
     BOOL contentLeaves = content && host.postContentPage && host.postContentPage == from && !push;
     if (!coordinator) {
         [host setFeedRailShown:shown];
+        __weak ApolloDuoSplitHost *weakSelectionHost = host;
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelectionHost refreshFeedRailSelection]; });
         if (contentLeaves) {
             ApolloDuoPostContentUninstall(host);
             ApolloDuoFeedRailApplyInsets(host, to, nil);
@@ -2992,6 +3036,35 @@ static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed) {
         ? ApolloNamedSubredditForPostsController(page) : nil;
 }
 
+// Highlights a pick in the rail at once (see feedRailPickFeed), then looks
+// again once the feed it opens has had time to name itself.
+static void ApolloDuoFeedRailNotePick(ApolloDuoSplitHost *host, NSInteger feed, NSString *subreddit) {
+    UINavigationController *posts = host.postsNavigation;
+    NSUInteger count = ApolloDuoFeedStackKeptCount(posts);
+    host.feedRailPickFeed = feed;
+    host.feedRailPickSubreddit = subreddit;
+    host.feedRailPickFrom = count ? posts.viewControllers[count - 1] : nil;
+    host.feedRailPickDeadline = CACurrentMediaTime() + 4.0;
+    [host refreshFeedRailSelection];
+    __weak ApolloDuoSplitHost *weakHost = host;
+    for (NSNumber *delay in @[@0.5, @1.5, @4.1]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakHost refreshFeedRailSelection];
+        });
+    }
+}
+
+BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table) {
+    if (!table || !NSThread.isMainThread) return NO;
+    UIViewController *owner = nil;
+    for (UIResponder *responder = table.nextResponder; responder; responder = responder.nextResponder) {
+        if ([responder isKindOfClass:UIViewController.class]) { owner = (id)responder; break; }
+    }
+    UINavigationController *nav = owner.navigationController;
+    ApolloDuoSplitHost *host = nav ? ApolloDuoSplitStateForNavigation(nav, NO).host : nil;
+    return host && nav == host.subredditList && host.listOmitsRailRows;
+}
+
 // Picking what already shows scrolls the feed to the top instead, or goes
 // back to it from a post the rail stays beside.
 static BOOL ApolloDuoFeedRailScrollShowingFeed(UINavigationController *posts) {
@@ -3028,8 +3101,13 @@ static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *s
     url.path = user ? [@"/user/" stringByAppendingString:[subreddit substringFromIndex:2]]
         : [@"/r/" stringByAppendingString:subreddit];
     host.feedRailSwitchDeadline = CACurrentMediaTime() + 3.0;
+    ApolloDuoFeedRailNotePick(host, -1, subreddit);
     BOOL routed = ApolloRouteURLThroughApp(url.URL);
-    if (!routed) host.feedRailSwitchDeadline = 0;
+    if (!routed) {
+        host.feedRailSwitchDeadline = 0;
+        host.feedRailPickDeadline = 0;
+        [host refreshFeedRailSelection];
+    }
     ApolloLog(@"[DuoFeedRail] opening a favorite routed=%d", routed);
 }
 
@@ -3054,6 +3132,7 @@ static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed) {
     }
     ApolloLog(@"[DuoFeedRail] opening feed %ld", (long)feed);
     host.feedRailSwitchDeadline = CACurrentMediaTime() + 3.0;
+    ApolloDuoFeedRailNotePick(host, feed, nil);
     [table.delegate tableView:table didSelectRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:0]];
 }
 
