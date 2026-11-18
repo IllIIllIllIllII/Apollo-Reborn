@@ -5,6 +5,7 @@
 #import "ApolloGalleryImageLoader.h"
 #import "ApolloGalleryImageViewer.h"
 #import "ApolloGallerySource.h"
+#import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "ApolloCommon.h"
 #import <SafariServices/SafariServices.h>
@@ -119,6 +120,18 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
     return saves.count ? saves : nil;
 }
 
+// The column's videos follow Settings > Media > Unmute Videos in Comments:
+// Always plays them with sound, Remember keeps the last choice made in a
+// column, and Default starts them muted.
+static NSString *const kApolloDuoPostContentMutedKey = @"ApolloDuoPostContentVideosMuted";
+
+static BOOL ApolloDuoPostContentStartsMuted(void) {
+    if (sUnmuteCommentsVideos == 2) return NO;
+    if (sUnmuteCommentsVideos != 1) return YES;
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:kApolloDuoPostContentMutedKey];
+    return stored ? [stored boolValue] : YES;
+}
+
 @interface ApolloDuoPostContentViewController () <SFSafariViewControllerDelegate, UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIPanGestureRecognizer *edgePan;
 @property(nonatomic, weak, readwrite) id link;
@@ -132,6 +145,11 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
 @property(nonatomic, strong) UIView *edge;
 // The feed's hold menu while it is up (ApolloFeedMediaMenu).
 @property(nonatomic, strong) id menuSession;
+// The feed card's video: its player and item (to hand the place back only to
+// the same clip) and where it was when the post opened.
+@property(nonatomic, weak) AVPlayer *feedPlayer;
+@property(nonatomic, weak) AVPlayerItem *feedPlayerItem;
+@property(nonatomic) CMTime feedPlaybackTime;
 @end
 
 @implementation ApolloDuoPostContentViewController
@@ -196,8 +214,24 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
 
 - (void)embedViewer {
     if (self.viewer || !self.feed) return;
-    ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed initialIndex:0];
+    ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed
+                                                                      initialIndex:self.startIndex];
     viewer.embedded = YES;
+    // What the feed card already shows: its pictures until the full-size ones
+    // land, and its video from where it was.
+    [self.feedImages enumerateKeysAndObjectsUsingBlock:^(NSNumber *index, UIImage *image, __unused BOOL *stop) {
+        [viewer setPlaceholderImage:image forItemAtIndex:index.integerValue];
+    }];
+    AVPlayer *feedPlayer = self.feedPlayer;
+    if (feedPlayer && feedPlayer.currentItem == self.feedPlayerItem) {
+        viewer.initialPlaybackTime = CMTIME_IS_VALID(feedPlayer.currentTime) ? feedPlayer.currentTime : self.feedPlaybackTime;
+    } else if (CMTIME_IS_VALID(self.feedPlaybackTime)) {
+        viewer.initialPlaybackTime = self.feedPlaybackTime;
+    }
+    viewer.embeddedVideosMuted = @(ApolloDuoPostContentStartsMuted());
+    viewer.embeddedMuteChanged = ^(BOOL muted) {
+        if (sUnmuteCommentsVideos == 1) [NSUserDefaults.standardUserDefaults setBool:muted forKey:kApolloDuoPostContentMutedKey];
+    };
     // Holding the media opens the feed's menu for it.
     __weak ApolloDuoPostContentViewController *weakSelf = self;
     viewer.embeddedMenu = ^UIMenu *(NSInteger index, UIView *sourceView) {
@@ -346,7 +380,21 @@ static const CGFloat kApolloDuoPostContentBackStrip = 28;
 
 #pragma mark Playback
 
+- (void)continueFromPlayer:(AVPlayer *)player {
+    self.feedPlayer = player;
+    self.feedPlayerItem = player.currentItem;
+    self.feedPlaybackTime = player.currentItem ? player.currentTime : kCMTimeInvalid;
+    if (CMTIME_IS_VALID(self.feedPlaybackTime))
+        ApolloLog(@"[DuoPostContent] continuing the card's video at %.1fs", CMTimeGetSeconds(self.feedPlaybackTime));
+}
+
 - (void)pausePlayback {
+    // The card's player picks up from here when the post closes.
+    CMTime time = self.viewer.currentPlaybackTime;
+    AVPlayer *feedPlayer = self.feedPlayer;
+    if (feedPlayer && feedPlayer.currentItem == self.feedPlayerItem && CMTIME_IS_VALID(time) && CMTimeGetSeconds(time) > 0) {
+        [feedPlayer seekToTime:time toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+    }
     [self.viewer pausePlayback];
 }
 

@@ -6,6 +6,7 @@
 #import "ApolloDuoSplitDivider.h"
 #import "ApolloDuoFeedRail.h"
 #import "ApolloDuoPostContent.h"
+#import "ApolloFeedGalleryCarousel.h"
 #import "ApolloDuoDividerGeometry.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloFrameRate.h"
@@ -2525,6 +2526,45 @@ static void ApolloDuoPostContentCollapseHeader(UIViewController *page, BOOL coll
 
 // Builds the left column for `page`, replacing any other post's. NO when the
 // post has nothing to show there.
+// The feed card a post opened from, on the feed page beneath it: its media.
+static id ApolloDuoFeedCardMedia(ApolloDuoSplitHost *host, UIViewController *page) {
+    id link = ApolloObjectIvar(page, "link");
+    NSArray<UIViewController *> *stack = host.postsNavigation.viewControllers;
+    NSUInteger index = [stack indexOfObjectIdenticalTo:page];
+    UIViewController *feedPage = index != NSNotFound && index > 0 ? stack[index - 1] : nil;
+    if (!link || !ApolloClassPostsViewController || ![feedPage isKindOfClass:ApolloClassPostsViewController]) return nil;
+    if (!ApolloClassLargePostCellNode) return nil;
+    for (UITableViewCell *cell in ApolloDuoSplitFindTable(feedPage.viewIfLoaded).visibleCells) {
+        id node = [cell respondsToSelector:@selector(node)] ? ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node)) : nil;
+        if (![node isKindOfClass:ApolloClassLargePostCellNode] || ApolloObjectIvar(node, "link") != link) continue;
+        return ApolloObjectIvar(node, "richMediaNode") ?: ApolloObjectIvar(ApolloObjectIvar(node, "crosspostNode"), "richMediaNode");
+    }
+    return nil;
+}
+
+// A new column picks up from the card the post opened from, instead of
+// loading again: the album page it was on, the pictures it shows, and its
+// video where it was.
+static void ApolloDuoPostContentTakeFeedCard(ApolloDuoSplitHost *host, UIViewController *page,
+                                             ApolloDuoPostContentViewController *content) {
+    id media = content.showsMedia ? ApolloDuoFeedCardMedia(host, page) : nil;
+    if (!media) return;
+    NSInteger albumIndex = 0;
+    NSDictionary<NSNumber *, UIImage *> *pictures =
+        ApolloFeedGalleryCarouselPictures(ApolloObjectIvar(media, "albumThumbnailsNode"), &albumIndex);
+    if (pictures) {
+        content.startIndex = albumIndex;
+        content.feedImages = pictures;
+    } else {
+        id thumbnail = ApolloObjectIvar(media, "thumbnailNode");
+        id image = [thumbnail respondsToSelector:@selector(image)] ? ((id (*)(id, SEL))objc_msgSend)(thumbnail, @selector(image)) : nil;
+        if ([image isKindOfClass:UIImage.class]) content.feedImages = @{@0: image};
+    }
+    [content continueFromPlayer:ApolloDuoPostSplitHeaderPlayer(media)];
+    ApolloLog(@"[DuoPostContent] picked up the feed card: page %ld, %lu picture(s)",
+              (long)content.startIndex, (unsigned long)content.feedImages.count);
+}
+
 static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewController *page) {
     if (host.postContent && host.postContentPage == page) return YES;
     // The column there gives way, kept for its post if that stays on the
@@ -2539,6 +2579,7 @@ static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewControll
         ApolloLog(@"[DuoPostContent] brought back the column kept for this post");
     } else {
         content = [ApolloDuoPostContentViewController contentForLink:ApolloObjectIvar(page, "link")];
+        ApolloDuoPostContentTakeFeedCard(host, page, content);
     }
     if (!content) return NO;
     host.postContent = content;

@@ -74,8 +74,8 @@ static void ApolloGalleryViewerSetVideosMuted(BOOL muted) {
 
 // Apollo parks the shared session on Ambient, which is silenced by the ringer
 // switch — so an unmuted clip would still play silently without this.
-static void ApolloGalleryViewerActivateAudioSession(void) {
-    if (ApolloGalleryViewerVideosMuted()) return;
+static void ApolloGalleryViewerActivateAudioSession(BOOL muted) {
+    if (muted) return;
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
     if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
@@ -105,6 +105,11 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
 @property (nonatomic, strong, nullable) id playerEndObserver;
 @property (nonatomic, copy, nullable) NSURL *videoURL;
 @property (nonatomic, readonly) BOOL hasVideo;
+// The viewer's own mute choice (an embedded viewer's), in place of Gallery
+// View's saved one.
+@property (nonatomic, strong, nullable) NSNumber *mutedOverride;
+// Where the next player built for this page starts (kCMTimeInvalid: the top).
+@property (nonatomic) CMTime startTime;
 // YES once the FULL-SIZE image is what's on screen. While it's NO, the image
 // view is showing the grid's downsampled thumbnail as a placeholder — which
 // Save/Share must never export.
@@ -118,6 +123,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
 @property (nonatomic, readonly) BOOL isZoomed;
 - (void)configureWithItem:(ApolloGalleryItem *)item;
 - (void)replaceVideoURL:(nullable NSURL *)videoURL andPlay:(BOOL)play;
+- (void)showPlaceholderImage:(UIImage *)image;
 @end
 
 @implementation ApolloGalleryViewerCell
@@ -127,6 +133,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     if (self) {
         self.backgroundColor = UIColor.blackColor;
         self.contentView.backgroundColor = UIColor.blackColor;
+        _startTime = kCMTimeInvalid;
 
         _zoomView = [[UIScrollView alloc] initWithFrame:self.contentView.bounds];
         _zoomView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -192,6 +199,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     [self teardownPlayer];
     [self apollo_displayImage:nil animation:nil];
     self.fullImageLoaded = NO;
+    self.startTime = kCMTimeInvalid;
     self.zoomGeometrySize = CGSizeZero;
     self.zoomView.zoomScale = 1.0;
     self.zoomView.contentInset = UIEdgeInsetsZero;
@@ -275,7 +283,11 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     self.videoURL = url;
 
     AVPlayer *player = [AVPlayer playerWithURL:url];
-    player.muted = ApolloGalleryViewerVideosMuted();
+    player.muted = [self apollo_videosMuted];
+    if (CMTIME_IS_VALID(self.startTime)) {
+        [player seekToTime:self.startTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        self.startTime = kCMTimeInvalid;
+    }
     // Clips are short and usually watched more than once; looping is what a
     // gallery reader expects and matches how Apollo plays GIF-ish media.
     __weak typeof(self) weakSelf = self;
@@ -309,9 +321,22 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     if (!self.player) return;
     // Playback needs the session on a category that isn't silenced by the
     // ringer switch; Apollo parks it on Ambient, which mutes everything.
-    ApolloGalleryViewerActivateAudioSession();
-    self.player.muted = ApolloGalleryViewerVideosMuted();
+    BOOL muted = [self apollo_videosMuted];
+    ApolloGalleryViewerActivateAudioSession(muted);
+    self.player.muted = muted;
     [self.player play];
+}
+
+- (BOOL)apollo_videosMuted {
+    return self.mutedOverride ? self.mutedOverride.boolValue : ApolloGalleryViewerVideosMuted();
+}
+
+// A picture from the screen the viewer is embedded in, until the full-size one
+// lands; Save and Share still wait for that one (fullImageLoaded stays NO).
+- (void)showPlaceholderImage:(UIImage *)image {
+    if (!image || self.fullImageLoaded) return;
+    [self apollo_displayImage:image animation:nil];
+    [self apollo_resetZoomGeometry];
 }
 
 - (void)pausePlayback {
@@ -642,6 +667,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // video ever played (issue #1104: Gallery View shown on CarPlay through
 // CarBridge/CarCast).
 @property (nonatomic) CGSize lastLaidOutPageSize;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSNumber *, UIImage *> *placeholderImages;
+@property (nonatomic) BOOL initialPlaybackTimeUsed;
 @end
 
 @implementation ApolloGalleryImageViewer
@@ -650,6 +677,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _feed = feed;
+        _initialPlaybackTime = kCMTimeInvalid;
         _pendingInitialIndex = MAX(0, MIN(initialIndex, (NSInteger)feed.items.count - 1));
         _currentIndex = _pendingInitialIndex;
         _chromeVisible = YES;
@@ -1547,7 +1575,30 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     if (indexPath.item < (NSInteger)items.count) {
         [cell configureWithItem:items[indexPath.item]];
     }
+    cell.mutedOverride = self.embeddedVideosMuted;
+    [cell showPlaceholderImage:self.placeholderImages[@(indexPath.item)]];
+    // The starting page's video picks up where the screen around left it, once.
+    if (indexPath.item == self.pendingInitialIndex && !self.initialPlaybackTimeUsed &&
+        CMTIME_IS_VALID(self.initialPlaybackTime)) {
+        cell.startTime = self.initialPlaybackTime;
+        self.initialPlaybackTimeUsed = YES;
+    }
     return cell;
+}
+
+- (void)setPlaceholderImage:(UIImage *)image forItemAtIndex:(NSInteger)index {
+    if (!image || index < 0) return;
+    if (!self.placeholderImages) self.placeholderImages = [NSMutableDictionary dictionary];
+    self.placeholderImages[@(index)] = image;
+}
+
+- (CMTime)currentPlaybackTime {
+    AVPlayer *player = [self apollo_currentCell].player;
+    return player ? player.currentTime : kCMTimeInvalid;
+}
+
+- (BOOL)apollo_videosMuted {
+    return self.embeddedVideosMuted ? self.embeddedVideosMuted.boolValue : ApolloGalleryViewerVideosMuted();
 }
 
 - (CGSize)collectionView:(UICollectionView *)collectionView
@@ -2011,7 +2062,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     BOOL showsMute = item.playsAsVideo && item.kind == ApolloGalleryMediaKindVideo;
     self.muteHost.hidden = !showsMute;
     if (showsMute) {
-        BOOL muted = ApolloGalleryViewerVideosMuted();
+        BOOL muted = [self apollo_videosMuted];
         [self.muteButton setImage:ApolloGalleryChromeSymbol(muted ? @"speaker.slash.fill" : @"speaker.wave.2.fill")
                          forState:UIControlStateNormal];
         self.muteButton.accessibilityLabel = muted ? @"Unmute" : @"Mute";
@@ -2021,7 +2072,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)apollo_muteTapped {
-    ApolloGalleryViewerSetVideosMuted(!ApolloGalleryViewerVideosMuted());
+    BOOL muted = ![self apollo_videosMuted];
+    if (self.embeddedVideosMuted) {
+        self.embeddedVideosMuted = @(muted);
+        for (UICollectionViewCell *cell in self.collectionView.visibleCells) {
+            if ([cell isMemberOfClass:[ApolloGalleryViewerCell class]])
+                ((ApolloGalleryViewerCell *)cell).mutedOverride = self.embeddedVideosMuted;
+        }
+        if (self.embeddedMuteChanged) self.embeddedMuteChanged(muted);
+    } else {
+        ApolloGalleryViewerSetVideosMuted(muted);
+    }
     [self apollo_syncPlayback];
 }
 

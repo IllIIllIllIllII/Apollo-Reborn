@@ -11,6 +11,7 @@
 // two never disagree about what has been loaded.
 
 #import <UIKit/UIKit.h>
+#import <CoreMedia/CoreMedia.h>
 
 @class ApolloGalleryFeed;
 @class ApolloGalleryImageViewer;
@@ -60,6 +61,19 @@ NS_ASSUME_NONNULL_BEGIN
 // view) is the viewer's own (paging back, panning a zoomed picture, the video
 // controls) rather than the screen's Back.
 - (BOOL)ownsRightwardDragAtPoint:(CGPoint)point;
+
+// Embedded: what the screen around the viewer already shows, so the viewer
+// picks up from it. A picture shows on its item's page until the viewer's own
+// full-size copy lands; the starting item's video starts at
+// `initialPlaybackTime` (kCMTimeInvalid, the default, starts it from the top).
+- (void)setPlaceholderImage:(UIImage *)image forItemAtIndex:(NSInteger)index;
+@property (nonatomic) CMTime initialPlaybackTime;
+// Embedded: whether videos start muted, in place of Gallery View's saved
+// choice. The mute button toggles it for this viewer and reports it.
+@property (nonatomic, strong, nullable) NSNumber *embeddedVideosMuted;
+@property (nonatomic, copy, nullable) void (^embeddedMuteChanged)(BOOL muted);
+// Where the video on screen is (kCMTimeInvalid without one).
+@property (nonatomic, readonly) CMTime currentPlaybackTime;
 
 @end
 
