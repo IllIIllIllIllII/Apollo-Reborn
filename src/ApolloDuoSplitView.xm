@@ -50,6 +50,7 @@ static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *s
 static NSInteger ApolloDuoFeedRailSelection(UINavigationController *feed);
 static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed);
 static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed);
+static void ApolloDuoFeedRailRefreshSoon(ApolloDuoSplitHost *host);
 static BOOL ApolloDuoPostContentCandidate(UIViewController *page);
 static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoPostContentUninstall(ApolloDuoSplitHost *host);
@@ -3036,6 +3037,16 @@ static NSString *ApolloDuoFeedRailSubreddit(UINavigationController *feed) {
         ? ApolloNamedSubredditForPostsController(page) : nil;
 }
 
+// Looks again once a feed that just opened has had time to name itself.
+static void ApolloDuoFeedRailRefreshSoon(ApolloDuoSplitHost *host) {
+    __weak ApolloDuoSplitHost *weakHost = host;
+    for (NSNumber *delay in @[@0.5, @1.5, @4.1]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakHost refreshFeedRailSelection];
+        });
+    }
+}
+
 // Highlights a pick in the rail at once (see feedRailPickFeed), then looks
 // again once the feed it opens has had time to name itself.
 static void ApolloDuoFeedRailNotePick(ApolloDuoSplitHost *host, NSInteger feed, NSString *subreddit) {
@@ -3046,12 +3057,7 @@ static void ApolloDuoFeedRailNotePick(ApolloDuoSplitHost *host, NSInteger feed, 
     host.feedRailPickFrom = count ? posts.viewControllers[count - 1] : nil;
     host.feedRailPickDeadline = CACurrentMediaTime() + 4.0;
     [host refreshFeedRailSelection];
-    __weak ApolloDuoSplitHost *weakHost = host;
-    for (NSNumber *delay in @[@0.5, @1.5, @4.1]) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [weakHost refreshFeedRailSelection];
-        });
-    }
+    ApolloDuoFeedRailRefreshSoon(host);
 }
 
 BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table) {
@@ -6453,10 +6459,15 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             // has already dismissed by then, so its visibility is not an
             // animation gate; preserve the originating navigation request.
             BOOL animate = animated && !UIAccessibilityIsReduceMotionEnabled();
-            // A pick in the Sidebar & Post rail swaps the feed in place.
+            // Beside the Sidebar & Post rail a pick, there or in the drawer,
+            // swaps the feed in place.
             BOOL railPick = state.host.feedRailSwitchDeadline > CACurrentMediaTime();
             state.host.feedRailSwitchDeadline = 0;
-            if (railPick) animate = NO;
+            BOOL beside = railPick || state.host.usesFeedRail;
+            if (beside) {
+                animate = NO;
+                ApolloDuoFeedRailRefreshSoon(state.host);
+            }
             ApolloDuoPostsReviewClosedThread(state, ApolloDuoClosedThreadEventFeedOpened, 0.0);
             [state.secondary setViewControllers:@[state.secondary.viewControllers.firstObject] animated:NO];
             ApolloDuoPostsSyncColumns(state);
@@ -6467,7 +6478,7 @@ static BOOL ApolloDuoSplitRoutePush(UINavigationController *nav, UIViewControlle
             NSArray *feedBefore = state.feed.viewControllers;
             [state.feed setViewControllers:@[page] animated:animate];
             ApolloDuoSplitForgetForward(state.feed, feedBefore);
-            ApolloLog(@"[DuoSplit] subreddit forward transition animated=%d rail=%d", animate, railPick);
+            ApolloLog(@"[DuoSplit] subreddit forward transition animated=%d rail=%d beside=%d", animate, railPick, beside);
             [state.host setListVisible:NO animated:YES];
         } else if (nav == state.feed || nav == state.outer) {
             if (!ApolloDuoPostsUsesSplit(state) || ApolloDuoIsFeedPage(page)) {

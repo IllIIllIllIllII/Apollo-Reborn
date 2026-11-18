@@ -44,6 +44,8 @@ static UIColor *ApolloDuoFeedRailSelectionColor(void) {
     return color;
 }
 
+static char kApolloDuoFeedRailFavoritesContext;
+
 // "u/name" favorites are followed users.
 static NSString *ApolloDuoFeedRailUsername(NSString *favorite) {
     return [favorite.lowercaseString hasPrefix:@"u/"] && favorite.length > 2 ? [favorite substringFromIndex:2] : nil;
@@ -80,6 +82,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 // The highlight's top corner radius: the panel's own curve, less the inset,
 // for the button at the top of the panel; kRailSelectionRadius elsewhere.
 @property(nonatomic) CGFloat selectionTopRadius;
+// How far the highlight reaches above the button: to the panel's top edge
+// for the button at the top of the panel; 0 elsewhere.
+@property(nonatomic) CGFloat selectionTopExtension;
 @end
 
 @implementation ApolloDuoFeedRailButton
@@ -157,7 +162,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
     CGRect selection = CGRectInset(bounds, kRailSelectionInset, 2);
-    self.selection.frame = selection;
+    CGRect highlight = selection;
+    highlight.origin.y -= self.selectionTopExtension;
+    highlight.size.height += self.selectionTopExtension;
+    self.selection.frame = highlight;
     if (@available(iOS 26.0, *)) {
         UICornerRadius *top = [UICornerRadius fixedRadius:self.selectionTopRadius];
         UICornerRadius *bottom = [UICornerRadius fixedRadius:kRailSelectionRadius];
@@ -244,8 +252,28 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     for (NSString *name in @[ApolloFavoriteSubredditsUpdatedNotification, ApolloFeedShortcutsChangedNotification]) {
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadShortcuts) name:name object:nil];
     }
+    // Apollo saves a star from the subreddit list (or a confirmed unfavorite)
+    // without posting anything, so the column watches the saved list itself.
+    [NSUserDefaults.standardUserDefaults addObserver:self forKeyPath:UDKeyApolloFavoriteSubreddits options:0
+                                             context:&kApolloDuoFeedRailFavoritesContext];
     [self reloadShortcuts];
     return self;
+}
+
+- (void)dealloc {
+    [NSUserDefaults.standardUserDefaults removeObserver:self forKeyPath:UDKeyApolloFavoriteSubreddits
+                                                context:&kApolloDuoFeedRailFavoritesContext];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    if (context != &kApolloDuoFeedRailFavoritesContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    // After the write that changed it; a burst of writes (the alphabetizing
+    // pass writes again) rebuilds once, the rest find nothing new.
+    __weak ApolloDuoFeedRail *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf reloadShortcuts]; });
 }
 
 - (void)reloadShortcuts {
@@ -282,6 +310,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         self.feedButtons = buttons;
     }
     if (favoritesChanged) {
+        if (self.favoriteNames) ApolloLog(@"[DuoFeedRail] favorites changed: %lu", (unsigned long)names.count);
         self.favoriteNames = names;
         for (UIView *view in self.favoriteButtons) [view removeFromSuperview];
         // The subreddit list's own icon cache first, then Apollo's icon
@@ -315,8 +344,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
-    // The top button's highlight follows the panel's rounded top, the same
-    // distance inside it all the way round.
+    // The top button's highlight runs up to the panel's top edge, under its
+    // rounded top, and keeps the sides' inset.
     CGFloat panelRadius = kRailColumnWidth / 2;
     if (@available(iOS 26.0, *)) panelRadius = MIN(panelRadius, [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft]);
     CGFloat topRadius = MAX(kRailSelectionRadius, panelRadius - kRailSelectionInset);
@@ -325,9 +354,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [buttons addObject:self.subredditsButton];
     CGFloat y = kRailSelectionInset - 2;
     for (ApolloDuoFeedRailButton *button in buttons) {
-        CGFloat radius = button == buttons.firstObject ? topRadius : kRailSelectionRadius;
-        if (fabs(button.selectionTopRadius - radius) > 0.5) {
+        BOOL top = button == buttons.firstObject;
+        CGFloat radius = top ? topRadius : kRailSelectionRadius;
+        // The highlight sits 2pt inside its button.
+        CGFloat extension = top ? y + 2 : 0;
+        if (fabs(button.selectionTopRadius - radius) > 0.5 || fabs(button.selectionTopExtension - extension) > 0.5) {
             button.selectionTopRadius = radius;
+            button.selectionTopExtension = extension;
             [button setNeedsLayout];
         }
         button.frame = CGRectMake(0, y, kRailColumnWidth, kRailButtonHeight);
