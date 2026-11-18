@@ -82,9 +82,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 // The highlight's top corner radius: the panel's own curve, less the inset,
 // for the button at the top of the panel; kRailSelectionRadius elsewhere.
 @property(nonatomic) CGFloat selectionTopRadius;
-// How far the highlight reaches above the button: to the panel's top edge
-// for the button at the top of the panel; 0 elsewhere.
-@property(nonatomic) CGFloat selectionTopExtension;
+// Shapes the top button's highlight under the panel's rounded top.
+@property(nonatomic, strong) CAShapeLayer *domeMask;
 @end
 
 @implementation ApolloDuoFeedRailButton
@@ -162,16 +161,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [super layoutSubviews];
     CGRect bounds = self.bounds;
     CGRect selection = CGRectInset(bounds, kRailSelectionInset, 2);
-    CGRect highlight = selection;
-    highlight.origin.y -= self.selectionTopExtension;
-    highlight.size.height += self.selectionTopExtension;
-    self.selection.frame = highlight;
-    if (@available(iOS 26.0, *)) {
-        UICornerRadius *top = [UICornerRadius fixedRadius:self.selectionTopRadius];
-        UICornerRadius *bottom = [UICornerRadius fixedRadius:kRailSelectionRadius];
-        self.selection.cornerConfiguration = [UICornerConfiguration configurationWithTopLeftRadius:top
-            topRightRadius:top bottomLeftRadius:bottom bottomRightRadius:bottom];
-    }
+    self.selection.frame = selection;
+    [self shapeSelection];
     // Icon and name sit in the middle of the highlight, the name well above
     // its rounded bottom corners and inset from its sides.
     CGFloat iconSize = self.avatar ? kRailAvatarSize : kRailGlyphSize;
@@ -181,6 +172,40 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat labelInset = self.avatar ? 6 : 5;
     self.label.frame = CGRectMake(CGRectGetMinX(selection) + labelInset, CGRectGetMaxY(self.icon.frame) + (self.avatar ? 3 : 5),
                                   CGRectGetWidth(selection) - labelInset * 2, self.avatar ? 12 : 13);
+}
+// Under the panel's rounded top, the highlight's top follows it in circular
+// arcs, as the panel's corners are, so the gap there matches the sides'.
+// UIKit's corner radii are continuous curves, which hug the corner and pinch
+// that gap.
+- (void)shapeSelection {
+    CGSize size = self.selection.bounds.size;
+    CGFloat top = MIN(self.selectionTopRadius, size.width / 2);
+    CGFloat bottom = MIN(kRailSelectionRadius, MIN(size.width / 2, size.height - top));
+    BOOL dome = top > kRailSelectionRadius && bottom > 0;
+    CGFloat radius = dome ? 0 : kRailSelectionRadius;
+    if (@available(iOS 26.0, *)) {
+        self.selection.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:
+            [UICornerRadius fixedRadius:radius]];
+    } else {
+        self.selection.layer.cornerRadius = radius;
+    }
+    if (!dome) {
+        self.selection.layer.mask = nil;
+        return;
+    }
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    [path moveToPoint:CGPointMake(0, top)];
+    [path addArcWithCenter:CGPointMake(top, top) radius:top startAngle:M_PI endAngle:M_PI * 1.5 clockwise:YES];
+    [path addArcWithCenter:CGPointMake(size.width - top, top) radius:top startAngle:M_PI * 1.5 endAngle:0 clockwise:YES];
+    [path addArcWithCenter:CGPointMake(size.width - bottom, size.height - bottom) radius:bottom
+                startAngle:0 endAngle:M_PI_2 clockwise:YES];
+    [path addArcWithCenter:CGPointMake(bottom, size.height - bottom) radius:bottom
+                startAngle:M_PI_2 endAngle:M_PI clockwise:YES];
+    [path closePath];
+    if (!self.domeMask) self.domeMask = [CAShapeLayer layer];
+    self.domeMask.frame = self.selection.bounds;
+    self.domeMask.path = path.CGPath;
+    self.selection.layer.mask = self.domeMask;
 }
 - (void)setHighlighted:(BOOL)highlighted {
     [super setHighlighted:highlighted];
@@ -344,8 +369,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
-    // The top button's highlight runs up to the panel's top edge, under its
-    // rounded top, and keeps the sides' inset.
+    // The top button's highlight follows the panel's rounded top, the same
+    // distance inside it all the way round.
     CGFloat panelRadius = kRailColumnWidth / 2;
     if (@available(iOS 26.0, *)) panelRadius = MIN(panelRadius, [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft]);
     CGFloat topRadius = MAX(kRailSelectionRadius, panelRadius - kRailSelectionInset);
@@ -354,13 +379,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [buttons addObject:self.subredditsButton];
     CGFloat y = kRailSelectionInset - 2;
     for (ApolloDuoFeedRailButton *button in buttons) {
-        BOOL top = button == buttons.firstObject;
-        CGFloat radius = top ? topRadius : kRailSelectionRadius;
-        // The highlight sits 2pt inside its button.
-        CGFloat extension = top ? y + 2 : 0;
-        if (fabs(button.selectionTopRadius - radius) > 0.5 || fabs(button.selectionTopExtension - extension) > 0.5) {
+        CGFloat radius = button == buttons.firstObject ? topRadius : kRailSelectionRadius;
+        if (fabs(button.selectionTopRadius - radius) > 0.5) {
             button.selectionTopRadius = radius;
-            button.selectionTopExtension = extension;
             [button setNeedsLayout];
         }
         button.frame = CGRectMake(0, y, kRailColumnWidth, kRailButtonHeight);
