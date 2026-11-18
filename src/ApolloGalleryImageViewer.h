@@ -50,6 +50,17 @@ NS_ASSUME_NONNULL_BEGIN
 // Pauses the page's video, for an embedded viewer the screen around it hides.
 - (void)pausePlayback;
 
+// Embedded: the hold menu for the page on screen when the screen around the
+// viewer has its own (the feed's), in place of Gallery View's. Returning nil
+// keeps Gallery View's. `embeddedMenuDidEnd` runs once that menu closes.
+@property (nonatomic, copy, nullable) UIMenu *_Nullable (^embeddedMenu)(NSInteger index, UIView *sourceView);
+@property (nonatomic, copy, nullable) dispatch_block_t embeddedMenuDidEnd;
+
+// Embedded: whether a rightward drag starting at `point` (in the viewer's
+// view) is the viewer's own (paging back, panning a zoomed picture, the video
+// controls) rather than the screen's Back.
+- (BOOL)ownsRightwardDragAtPoint:(CGPoint)point;
+
 @end
 
 NS_ASSUME_NONNULL_END

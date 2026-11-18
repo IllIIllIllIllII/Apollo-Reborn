@@ -44,6 +44,7 @@ static void ApolloDuoToggleFeedLayout(ApolloDuoSplitHost *host);
 static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL enabled);
 static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page);
 static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewController *top, UIViewController *leaving);
+static CGFloat ApolloDuoPostsLeadingReserve(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed);
 static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *subreddit);
 static NSInteger ApolloDuoFeedRailSelection(UINavigationController *feed);
@@ -53,7 +54,7 @@ static BOOL ApolloDuoPostContentInstall(ApolloDuoSplitHost *host, UIViewControll
 static void ApolloDuoPostContentUninstall(ApolloDuoSplitHost *host);
 static void ApolloDuoPostContentPark(ApolloDuoSplitHost *host);
 static void ApolloDuoPostContentDropLeaving(ApolloDuoSplitHost *host);
-static void ApolloDuoPostContentShow(ApolloDuoSplitHost *host, UIViewController *page, BOOL animated);
+static void ApolloDuoPostContentArrive(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoPostContentCollapseHeader(UIViewController *page, BOOL collapse, BOOL linkCard);
 static void ApolloDuoPostContentPlace(ApolloDuoSplitHost *host, CGFloat width);
 static CGFloat ApolloDuoPostContentWidth(ApolloDuoSplitHost *host);
@@ -972,6 +973,8 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     // A push or Back moves the rail with its own transition.
     if (self.feedRailTransitioning || self.postsNavigation.transitionCoordinator) return;
     [self layoutPostContent:rail];
+    // So does the Split View toggle.
+    if (self.postContentAnimating) return;
     UIViewController *top = self.postsNavigation.topViewController;
     ApolloDuoFeedRailApplyInsets(self, top, nil);
     [self setFeedRailShown:rail && ApolloDuoFeedRailReservesPage(top)];
@@ -1311,8 +1314,8 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         self.listButton.hidden = rail;
         // Beside the sidebar, Split shows on a post with content to put beside
         // its comments.
-        self.splitButton.hidden = portrait
-            || (rail && !ApolloDuoPostContentCandidate(self.postsNavigation.topViewController));
+        // Beside the rail, Split stays on every page: it decides how posts open.
+        self.splitButton.hidden = portrait;
         if (!self.splitButtonSidebar || self.splitButtonSidebar.boolValue != rail) {
             self.splitButtonSidebar = @(rail);
             [self updateSplitButton];
@@ -1689,22 +1692,29 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
     // safe-area guide, rather than its full bounds, is the visible column.
     UIView *view = nav.view;
     UIEdgeInsets insets = view.safeAreaInsets;
+    UIViewController *page = controller == nav ? nil : controller;
+    while (page.parentViewController && page.parentViewController != nav) page = page.parentViewController;
+    UIView *pageView = page.parentViewController == nav ? page.viewIfLoaded : nil;
     // Center across the whole detail pane, including its trailing navigation
     // strip. Only the leading sidebar is excluded from this alignment band.
     // Sidebar & Post draws a divider before the trailing rail, so its feed
     // centers between the two dividers instead (the host's safe edge; the
     // feed navigation's own runs past it by the bar's trailing gap).
-    if (nav == state.feed && [state.host usesFeedRail]) insets.right = state.host.view.safeAreaInsets.right;
-    else insets.right = 0.0;
+    if (nav == state.feed && [state.host usesFeedRail]) {
+        insets.right = state.host.view.safeAreaInsets.right;
+        // The navigation's leading inset follows the page on top (the rail,
+        // or a post's left column); a page under it keeps its own reserve,
+        // also while it is off screen with no safe area of its own.
+        if (pageView) insets.left = state.host.view.safeAreaInsets.left + ApolloDuoPostsLeadingReserve(state.host, page);
+    } else {
+        insets.right = 0.0;
+    }
     CGRect content = UIEdgeInsetsInsetRect(view.bounds, insets);
     CGRect column = [coordinateView convertRect:content fromView:view];
     // A page rests at its navigation view's origin, but a push parks the
     // outgoing page at its parallax offset as soon as an interactive peek
     // begins. Map views inside the page through the page at rest, so what
     // lays out mid-transition moves with the page instead of across it.
-    UIViewController *page = controller == nav ? nil : controller;
-    while (page.parentViewController && page.parentViewController != nav) page = page.parentViewController;
-    UIView *pageView = page.parentViewController == nav ? page.viewIfLoaded : nil;
     if (pageView && [coordinateView isDescendantOfView:pageView]) {
         column.origin.x = CGRectGetMinX([coordinateView convertRect:content fromView:pageView]);
     }
@@ -2071,11 +2081,17 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
     return kept;
 }
 
+// Sidebar & Post's Split View: a post's content in the left column beside its
+// comments. The pages' reserves read it too, so they follow the button at once.
+static BOOL ApolloDuoPostContentSplitOn(void) {
+    return ![NSUserDefaults.standardUserDefaults boolForKey:@"ApolloDuoPostContentSplitDisabled"];
+}
+
 // Sidebar & Post: feed pages keep the rail's width beside them whether or not
 // they are on top, so opening and closing a post never re-measures the feed.
-// So does a post with nothing for the left column (a text post with no
-// pictures), which keeps the rail beside it. Every other page uses the full
-// width.
+// So does a post that shows whole (a text post with no pictures, or any post
+// while Split View is off), which keeps the rail beside it. Every other page
+// uses the full width.
 static char kDuoFeedRailInset;
 static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page) {
     if (!page) return NO;
@@ -2083,7 +2099,7 @@ static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page) {
     if (page.class == UIViewController.class || ApolloDuoIsFeedPage(page)
         || [objc_getAssociatedObject(page, &kDuoFeedLinkPage) boolValue]) return YES;
     return ApolloClassCommentsViewController && [page isKindOfClass:ApolloClassCommentsViewController]
-        && !ApolloDuoPostContentCandidate(page);
+        && (!ApolloDuoPostContentSplitOn() || !ApolloDuoPostContentCandidate(page));
 }
 
 // The rail's share of a controller's additionalSafeAreaInsets.left. Applied
@@ -2349,11 +2365,47 @@ static void ApolloDuoPostContentNoticeHeader(UITableView *table) {
         ApolloDuoSplitHost *live = weakHost;
         UIViewController *post = weakPage;
         if (!live || !ApolloDuoPostContentCanJoin(live, post)) return;
-        BOOL animated = !UIAccessibilityIsReduceMotionEnabled();
-        [UIView animateWithDuration:animated ? 0.25 : 0 animations:^{ [live setFeedRailShown:NO]; }];
-        ApolloDuoPostContentShow(live, post, animated);
-        ApolloLog(@"[DuoPostContent] the post's column joined once its post loaded");
+        ApolloDuoPostContentArrive(live, post);
     });
+}
+
+// The column joining a post already on screen. Everything goes straight to its
+// final place under a picture of the screen as it was, which then fades away:
+// sliding columns over a post that is still laying itself out at a new width
+// stretched its text on the way.
+static void ApolloDuoPostContentArrive(ApolloDuoSplitHost *host, UIViewController *page) {
+    UIView *surface = host.view;
+    BOOL animated = surface.window && !UIAccessibilityIsReduceMotionEnabled();
+    UIView *before = animated ? [surface snapshotViewAfterScreenUpdates:NO] : nil;
+    if (before) {
+        before.frame = surface.bounds;
+        before.userInteractionEnabled = NO;
+        [surface addSubview:before];
+    }
+    if (!ApolloDuoPostContentInstall(host, page)) {
+        [before removeFromSuperview];
+        return;
+    }
+    host.postContentReserved = YES;
+    ApolloDuoPostContentCollapseHeader(page, YES, !host.postContent.showsMedia);
+    ApolloDuoFeedRailApplyInsets(host, page, nil);
+    [host setFeedRailShown:NO];
+    ApolloDuoPostContentPlace(host, ApolloDuoPostContentWidth(host));
+    host.postContent.view.transform = CGAffineTransformIdentity;
+    host.postContent.view.alpha = 1;
+    host.postContent.view.userInteractionEnabled = YES;
+    [surface layoutIfNeeded];
+    ApolloDuoRailPrepareTableForTransition(ApolloDuoSplitFindTable(page.view));
+    [surface setNeedsLayout];
+    ApolloLog(@"[DuoPostContent] the post's column joined once its post loaded");
+    if (!before) return;
+    ApolloFullFrameRateBegin();
+    [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+        before.alpha = 0;
+    } completion:^(__unused BOOL finished) {
+        [before removeFromSuperview];
+        ApolloFullFrameRateEnd(0.1);
+    }];
 }
 
 // A zero-height row still draws its node past its bounds; hide the cell too.
@@ -2711,7 +2763,7 @@ static void ApolloDuoFeedRailFollowNavigation(ApolloDuoSplitHost *host) {
 
 // Split View off: the comments slide away while the left column widens over
 // the whole post; under it the post goes back to one column with its media on
-// top, and the column fades to reveal it.
+// top, and the column fades to reveal it with the rail back beside it.
 static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController *page, BOOL animated) {
     ApolloDuoPostContentViewController *content = host.postContent;
     if (!content || host.postContentPage != page) return;
@@ -2740,6 +2792,7 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
     if (!animated) {
         host.postContentAnimating = NO;
         ApolloDuoPostContentUninstall(host);
+        [host setFeedRailShown:[host usesFeedRail]];
         [hostView setNeedsLayout];
         return;
     }
@@ -2753,6 +2806,9 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
         [comments removeFromSuperview];
         [UIView animateWithDuration:0.22 animations:^{
             content.view.alpha = 0;
+            // The whole post keeps the rail beside it.
+            ApolloDuoSplitHost *live = weakHost;
+            [live setFeedRailShown:[live usesFeedRail]];
         } completion:^(__unused BOOL done) {
             ApolloFullFrameRateEnd(0.1);
             ApolloDuoSplitHost *live = weakHost;
@@ -2764,9 +2820,9 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
     ApolloLog(@"[DuoPostContent] Split View off");
 }
 
-// Split View on: the left column fades in over the whole post, the post moves
-// to the right column beneath it, then the column narrows to uncover the
-// comments sliding in beside it.
+// Split View on: the left column fades in over the whole post as the rail
+// fades out, the post moves to the right column beneath it, then the column
+// narrows to uncover the comments sliding in beside it.
 static void ApolloDuoPostContentShow(ApolloDuoSplitHost *host, UIViewController *page, BOOL animated) {
     if (!ApolloDuoPostContentInstall(host, page)) return;
     host.postContentAnimating = YES;
@@ -2782,6 +2838,7 @@ static void ApolloDuoPostContentShow(ApolloDuoSplitHost *host, UIViewController 
     if (!animated) {
         split();
         host.postContentAnimating = NO;
+        [host setFeedRailShown:NO];
         [host.view setNeedsLayout];
         return;
     }
@@ -2794,6 +2851,7 @@ static void ApolloDuoPostContentShow(ApolloDuoSplitHost *host, UIViewController 
     ApolloFullFrameRateBegin();
     [UIView animateWithDuration:0.2 animations:^{
         content.view.alpha = 1;
+        [weakHost setFeedRailShown:NO];
     } completion:^(__unused BOOL finished) {
         ApolloDuoSplitHost *live = weakHost;
         if (!live || live.postContent != content) {

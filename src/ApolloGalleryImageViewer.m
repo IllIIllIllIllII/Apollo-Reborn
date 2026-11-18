@@ -538,6 +538,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 @property (nonatomic, strong) UIView *muteHost;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) ApolloGalleryChromePillView *counterPill;
+// Embedded, the position reads like the feed's album badge instead.
+@property (nonatomic, strong, nullable) UILabel *embeddedCounter;
 @property (nonatomic, strong) UIView *infoPanel;
 @property (nonatomic, strong, nullable) UIView *infoPanelMaterial;
 @property (nonatomic, strong) UITapGestureRecognizer *infoTap;
@@ -870,7 +872,23 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     // such animation, which is why this felt unlike the rest of the app. The
     // menu itself is rebuilt per page in -apollo_updateChromeContent.
     self.shareButton.showsMenuAsPrimaryAction = YES;
+    // Embedded, holding the picture is the way to its actions, as in the feed.
+    self.shareHost.hidden = self.embedded;
     [self.view addSubview:self.shareHost];
+
+    if (self.embedded) {
+        // The feed's album badge (ApolloFeedGalleryCarousel), not a new one.
+        UILabel *badge = [[UILabel alloc] initWithFrame:CGRectZero];
+        badge.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
+        badge.textColor = UIColor.whiteColor;
+        badge.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.layer.cornerRadius = 13.0;
+        badge.clipsToBounds = YES;
+        badge.hidden = YES;
+        [self.view addSubview:badge];
+        self.embeddedCounter = badge;
+    }
 
     // Only shown while a video/GIF page is up; still images have nothing to mute.
     self.muteButton = ApolloGalleryChromeButton(ApolloGalleryChromeSymbol(@"speaker.slash.fill"), nil, &_muteHost);
@@ -1151,6 +1169,14 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     if (!self.muteHost.hidden) {
         self.muteHost.frame = CGRectMake(trailing - controlGap - iconSize, top, iconSize, controlHeight);
         trailing = CGRectGetMinX(self.muteHost.frame);
+    }
+    if (self.embedded) {
+        // The feed badge's place on a card: 10pt in from the top right corner,
+        // with the mute button beside it.
+        self.embeddedCounter.frame = CGRectMake(bounds.size.width - 58.0, safe.top + 10.0, 48.0, 26.0);
+        CGFloat muteTrailing = self.embeddedCounter.hidden ? bounds.size.width - rightSide
+                                                           : CGRectGetMinX(self.embeddedCounter.frame) - controlGap;
+        if (!self.muteHost.hidden) self.muteHost.frame = CGRectMake(muteTrailing - iconSize, top, iconSize, controlHeight);
     }
     CGFloat counterWidth = 88.0;
     self.counterPill.frame = CGRectMake(trailing - controlGap - counterWidth, top, counterWidth, controlHeight);
@@ -1441,8 +1467,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     } else {
         self.counterLabel.text = @"";
     }
-    // Embedded on one post, a lone picture needs no position.
-    self.counterPill.hidden = self.embedded && total < 2;
+    // Embedded on one post, the feed's badge shows the position, and a lone
+    // picture needs none.
+    self.counterPill.hidden = self.embedded;
+    self.embeddedCounter.text = [NSString stringWithFormat:@"%ld/%ld", (long)index + 1, (long)total];
+    self.embeddedCounter.hidden = total < 2;
 
     ApolloGalleryItem *item = (index >= 0 && index < total) ? items[index] : nil;
     self.titleLabel.text = item.postTitle ?: @"";
@@ -2170,13 +2199,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     // the root lands in UIKit's modal transition container, whose responder
     // chain cannot resolve the viewer as the menu's presentation owner.
     CGPoint point = [self.view convertPoint:self.mediaHoldPoint toView:sourceView];
-    BOOL presented = ApolloNativeActionMenuPresentCapturedAtPoint([session menu], sourceView, point, session, ^{
+    // Embedded, the screen around the viewer may supply the feed's own menu.
+    UIMenu *menu = self.embedded && self.embeddedMenu ? self.embeddedMenu(self.currentIndex, sourceView) : nil;
+    dispatch_block_t embeddedDidEnd = menu ? self.embeddedMenuDidEnd : nil;
+    BOOL presented = ApolloNativeActionMenuPresentCapturedAtPoint(menu ?: [session menu], sourceView, point, session, ^{
         typeof(self) strongSelf = weakSelf;
         if (strongSelf.mediaMenuSession == session) {
             strongSelf.mediaMenuSession = nil;
             strongSelf.collectionView.scrollEnabled = YES;
         }
         [session menuDidEnd];
+        if (embeddedDidEnd) embeddedDidEnd();
     });
     if (presented) {
         ApolloNativeActionMenuPreviewFeedback(sourceView, point);
@@ -2184,8 +2217,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     } else {
         self.mediaMenuSession = nil;
         self.collectionView.scrollEnabled = YES;
+        if (embeddedDidEnd) embeddedDidEnd();
         ApolloLog(@"[Gallery] native media menu could not open");
     }
+}
+
+- (BOOL)ownsRightwardDragAtPoint:(CGPoint)point {
+    if (self.currentIndex > 0 || [self apollo_currentCell].isZoomed) return YES;
+    for (UIView *control in @[self.videoBarPill ?: UIView.new, self.muteHost ?: UIView.new]) {
+        if (!control.hidden && control.alpha > 0.01 && CGRectContainsPoint(control.frame, point)) return YES;
+    }
+    return NO;
 }
 
 // Original bytes when we still have them (a GIF stays animated), otherwise a

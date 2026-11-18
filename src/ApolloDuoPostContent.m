@@ -1,4 +1,5 @@
 #import "ApolloDuoPostContent.h"
+#import "ApolloFeedMediaMenu.h"
 #import "ApolloFrameRate.h"
 #import "ApolloGalleryFeed.h"
 #import "ApolloGalleryImageLoader.h"
@@ -103,6 +104,21 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
     return kind;
 }
 
+// The column's media as the feed menu's items, or nil when one of them has no
+// file to save yet (a hosted video still to resolve).
+static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloGalleryItem *> *items) {
+    NSMutableArray<ApolloSaveAllMediaItem *> *saves = [NSMutableArray arrayWithCapacity:items.count];
+    for (ApolloGalleryItem *item in items) {
+        BOOL video = item.kind == ApolloGalleryMediaKindVideo;
+        NSURL *url = video ? (item.videoDownloadURL ?: item.videoURL) : item.imageURL;
+        if (!url || (video && item.needsHostedVideoResolution)) return nil;
+        // An animation served only as MP4 saves as a video.
+        if (!video && [url.pathExtension.lowercaseString isEqualToString:@"mp4"]) video = YES;
+        [saves addObject:[[ApolloSaveAllMediaItem alloc] initWithURL:url isVideo:video]];
+    }
+    return saves.count ? saves : nil;
+}
+
 @interface ApolloDuoPostContentViewController () <SFSafariViewControllerDelegate, UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIPanGestureRecognizer *edgePan;
 @property(nonatomic, weak, readwrite) id link;
@@ -114,6 +130,8 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
 @property(nonatomic, strong) NSURL *pageURL;
 @property(nonatomic, strong) SFSafariViewController *safari;
 @property(nonatomic, strong) UIView *edge;
+// The feed's hold menu while it is up (ApolloFeedMediaMenu).
+@property(nonatomic, strong) id menuSession;
 @end
 
 @implementation ApolloDuoPostContentViewController
@@ -180,6 +198,23 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
     if (self.viewer || !self.feed) return;
     ApolloGalleryImageViewer *viewer = [[ApolloGalleryImageViewer alloc] initWithFeed:self.feed initialIndex:0];
     viewer.embedded = YES;
+    // Holding the media opens the feed's menu for it.
+    __weak ApolloDuoPostContentViewController *weakSelf = self;
+    viewer.embeddedMenu = ^UIMenu *(NSInteger index, UIView *sourceView) {
+        ApolloDuoPostContentViewController *content = weakSelf;
+        NSArray<ApolloSaveAllMediaItem *> *items = ApolloDuoPostSaveItems(content.feed.items);
+        if (!content || index < 0 || (!content.link && !items)) return nil;
+        ApolloFeedMediaMenuSessionDidEnd(content.menuSession);
+        content.menuSession = ApolloFeedMediaMenuSession(content.link, (NSUInteger)index, content.feed.items.count > 1,
+                                                         content, sourceView, items);
+        return ApolloFeedMediaMenuForSession(content.menuSession);
+    };
+    viewer.embeddedMenuDidEnd = ^{
+        ApolloDuoPostContentViewController *content = weakSelf;
+        id session = content.menuSession;
+        content.menuSession = nil;
+        ApolloFeedMediaMenuSessionDidEnd(session);
+    };
     [self addChildViewController:viewer];
     viewer.view.frame = self.view.bounds;
     viewer.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -279,16 +314,27 @@ static ApolloDuoPostContentKind ApolloDuoPostContentKindForLink(id link, ApolloG
     if (self.edgeBack) self.edgeBack(pan);
 }
 
-// The same strip the Duo's Back swipe uses on a page.
+// The same strip the Duo's Back swipe uses on a page. Over media a rightward
+// swipe anywhere goes Back, as it does across a post's comments, unless the
+// media takes it (paging back through an album, a zoomed picture, the video
+// controls); a page in Safari keeps the strip, since it scrolls sideways.
+static const CGFloat kApolloDuoPostContentBackStrip = 28;
+
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     if (gesture != self.edgePan) return YES;
-    return self.edgeBack && [touch locationInView:self.view].x <= 28;
+    if (!self.edgeBack) return NO;
+    if ([touch locationInView:self.view].x <= kApolloDuoPostContentBackStrip) return YES;
+    return self.showsMedia && ![touch.view isKindOfClass:UIControl.class];
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
     if (gesture != self.edgePan) return YES;
     CGPoint velocity = [self.edgePan velocityInView:self.view];
-    return velocity.x > 0 && fabs(velocity.x) > fabs(velocity.y);
+    if (velocity.x <= 0 || fabs(velocity.x) <= fabs(velocity.y)) return NO;
+    CGPoint start = [self.edgePan locationInView:self.view];
+    start.x -= [self.edgePan translationInView:self.view].x;
+    if (start.x <= kApolloDuoPostContentBackStrip) return YES;
+    return !self.viewer || ![self.viewer ownsRightwardDragAtPoint:[self.view convertPoint:start toView:self.viewer.view]];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)other {
