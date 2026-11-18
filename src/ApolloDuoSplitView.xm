@@ -4732,6 +4732,8 @@ static const CFTimeInterval kApolloDuoScrubLength = 1.0;
 // Paused with the feed: the bar items' old renderings fading out.
 @property(nonatomic, strong) UIView *fadeHost;
 @property(nonatomic, copy) NSArray<ApolloDuoTextFade *> *textFades;
+// Paused with the feed: the rail and trailing divider the drag shows or hides.
+@property(nonatomic, copy) NSArray<CALayer *> *railLayers;
 // After release, a critically damped spring to `target` (0 or 1).
 @property(nonatomic, strong) CADisplayLink *link;
 @property(nonatomic) CGFloat target;
@@ -4751,6 +4753,55 @@ BOOL ApolloDuoSplitIsColumnDragging(void) {
 - (void)tick:(__unused CADisplayLink *)link { ApolloDuoColumnScrubTick(self); }
 @end
 
+// Feed & Thread: a column drag shows or hides the rail and the trailing
+// divider. Layout already put them where the drag ends, so each moves from
+// where it was, paused like the feed for the finger to drive.
+static NSString *const kApolloDuoRailScrubFade = @"ApolloDuoRailScrubFade";
+static NSString *const kApolloDuoRailScrubSlide = @"ApolloDuoRailScrubSlide";
+static NSArray<CALayer *> *ApolloDuoFeedRailScrubChange(ApolloDuoSplitHost *host, BOOL railWasShown,
+                                                        BOOL backdropWasHidden, ApolloDuoGeometryTiming timing) {
+    NSMutableArray<CALayer *> *layers = [NSMutableArray array];
+    BOOL shown = host.feedRail.alpha > 0.5;
+    if (host.feedRail && shown != railWasShown) {
+        // setFeedRailShown: hides the rail half its width to the left.
+        CGFloat hidden = -ApolloDuoFeedRail.reservedWidth / 2;
+        CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        fade.fromValue = @(railWasShown ? 1.0 : 0.0);
+        fade.toValue = @(shown ? 1.0 : 0.0);
+        CABasicAnimation *slide = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
+        slide.fromValue = @(railWasShown ? 0.0 : hidden);
+        slide.toValue = @(shown ? 0.0 : hidden);
+        ApolloDuoGeometryTime(fade, timing);
+        ApolloDuoGeometryTime(slide, timing);
+        [host.feedRail.layer addAnimation:fade forKey:kApolloDuoRailScrubFade];
+        [host.feedRail.layer addAnimation:slide forKey:kApolloDuoRailScrubSlide];
+        [layers addObject:host.feedRail.layer];
+        ApolloLog(@"[DuoFeedRail] %@ with the column drag", shown ? @"comes back" : @"leaves");
+    }
+    UIView *backdrop = host.trailingBackdrop;
+    if (backdrop && backdrop.hidden != backdropWasHidden) {
+        CATransition *fade = [CATransition animation];
+        fade.type = kCATransitionFade;
+        ApolloDuoGeometryTime(fade, timing);
+        [backdrop.layer addAnimation:fade forKey:kApolloDuoRailScrubFade];
+        [layers addObject:backdrop.layer];
+    }
+    for (CALayer *layer in layers) {
+        layer.speed = 0;
+        layer.timeOffset = timing.begin;
+    }
+    return layers;
+}
+
+static void ApolloDuoFeedRailScrubEnd(NSArray<CALayer *> *layers) {
+    for (CALayer *layer in layers) {
+        [layer removeAnimationForKey:kApolloDuoRailScrubFade];
+        [layer removeAnimationForKey:kApolloDuoRailScrubSlide];
+        layer.speed = 1;
+        layer.timeOffset = 0;
+    }
+}
+
 static void ApolloDuoColumnScrubApply(ApolloDuoColumnScrub *scrub) {
     CGFloat progress = MIN(1, MAX(0, scrub.progress));
     CFTimeInterval time = kApolloDuoScrubBegin + progress * kApolloDuoScrubLength;
@@ -4758,6 +4809,7 @@ static void ApolloDuoColumnScrubApply(ApolloDuoColumnScrub *scrub) {
     [CATransaction setDisableActions:YES];
     scrub.feedView.layer.timeOffset = time;
     scrub.fadeHost.layer.timeOffset = time;
+    for (CALayer *layer in scrub.railLayers) layer.timeOffset = time;
     if (scrub.opening) ApolloDuoSetThreadDragOffset(scrub.state.secondary.viewIfLoaded, (1 - progress) * scrub.travel);
     else scrub.thread.transform = CGAffineTransformMakeTranslation(progress * scrub.travel, 0);
     [CATransaction commit];
@@ -4871,6 +4923,9 @@ static void ApolloDuoColumnScrubComplete(ApolloDuoColumnScrub *scrub) {
         if (backstop) ApolloDuoPostsApplyDetailStack(state, @[backstop], scrub.pages, scrub.pane, anchor);
     }
     UIView *feedView = scrub.feedView;
+    // A drag put back leaves the rail as it found it (the stack above runs
+    // layout), so neither end jumps when its animations come off.
+    ApolloDuoFeedRailScrubEnd(scrub.railLayers);
     ApolloDuoEndTextCrossfade(scrub.textFades, !completed);
     ApolloDuoPostsStopGeometry(feedView);
     feedView.layer.speed = 1;
@@ -4943,6 +4998,8 @@ static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *stat
     NSMapTable<CALayer *, id> *text = ApolloDuoCaptureTextDrawings(@[feedView]);
     ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(
         ApolloDuoSplitFindTable(state.feed.topViewController.viewIfLoaded));
+    BOOL railWasShown = host.feedRail.alpha > 0.5;
+    BOOL backdropWasHidden = host.trailingBackdrop.hidden;
     if (opening) {
         ApolloDuoPostsApplyDetailStack(state, [@[backstop] arrayByAddingObjectsFromArray:pages], nil, CGRectNull, anchor);
         pane = ApolloDuoPostsDetailPane(state);
@@ -4953,6 +5010,7 @@ static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *stat
     if (travel < 1) {
         // Nothing to slide across; the columns stay as the drag left them.
         if (!opening) ApolloDuoUnparkThread(state, YES, pages, pane);
+        ApolloDuoFeedRailAnimateChange(host, railWasShown, backdropWasHidden, 0.32);
         ApolloDuoSplitScheduleUpdate();
         return nil;
     }
@@ -4990,6 +5048,7 @@ static ApolloDuoColumnScrub *ApolloDuoColumnScrubBegin(ApolloDuoSplitState *stat
     ApolloDuoFadeInNewBarItems(state.feed.navigationBar, geometry, timing);
     [pins addObjectsFromArray:ApolloDuoCrossfadeTextLayout(@[feedView], text, timing)];
     scrub.textFades = pins;
+    scrub.railLayers = ApolloDuoFeedRailScrubChange(host, railWasShown, backdropWasHidden, timing);
     __weak ApolloDuoColumnScrub *weakScrub = scrub;
     __weak ApolloDuoSplitHost *weakHost = host;
     ApolloDuoScheduleRetarget(feedView, ^BOOL {
