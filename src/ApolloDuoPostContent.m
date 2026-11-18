@@ -121,8 +121,6 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
 
 @interface ApolloDuoPostContentViewController () <SFSafariViewControllerDelegate, UIGestureRecognizerDelegate>
 @property(nonatomic, strong) UIPanGestureRecognizer *edgePan;
-// When the swipe's touch came down (UITouch timestamp).
-@property(nonatomic) NSTimeInterval edgeTouchDown;
 @property(nonatomic, weak, readwrite) id link;
 @property(nonatomic, readwrite) BOOL showsMedia;
 @property(nonatomic, strong) ApolloGalleryFeed *feed;
@@ -174,8 +172,8 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
         self.view.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
         [self installSafari];
     }
-    // Back with a rightward swipe, as on the page this column covers. The
-    // pager's and the page's own drags wait for it to fail.
+    // Back from the leading edge, as on the page this column covers. The
+    // pager's and the page's own drags wait for it to fail there.
     self.edgePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(edgePanned:)];
     self.edgePan.maximumNumberOfTouches = 1;
     self.edgePan.delegate = self;
@@ -316,22 +314,19 @@ static NSArray<ApolloSaveAllMediaItem *> *ApolloDuoPostSaveItems(NSArray<ApolloG
     if (self.edgeBack) self.edgeBack(pan);
 }
 
-// The same strip the Duo's Back swipe uses on a page. Elsewhere a rightward
-// swipe goes Back too, as it does across a post's comments: over media unless
-// the media takes it (paging back through an album, a zoomed picture, the
-// video controls). A page in Safari runs in Safari's process and can't say
-// what it scrolls, so only a quick swipe goes Back there; a slow drag or one
-// after a hold (selecting text) stays with the page.
+// The same strip the Duo's Back swipe uses on a page. Over media a rightward
+// swipe anywhere goes Back, as it does across a post's comments, unless the
+// media takes it (paging back through an album, a zoomed picture, the video
+// controls). A page in Safari keeps its touches in Safari's own process; the
+// only ones the column sees start in the 24pt strip Safari leaves to the app
+// along its leading edge.
 static const CGFloat kApolloDuoPostContentBackStrip = 28;
-static const CGFloat kApolloDuoPostContentWebBackSpeed = 250;
-static const NSTimeInterval kApolloDuoPostContentWebBackHold = 0.3;
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gesture shouldReceiveTouch:(UITouch *)touch {
     if (gesture != self.edgePan) return YES;
     if (!self.edgeBack) return NO;
-    self.edgeTouchDown = touch.timestamp;
     if ([touch locationInView:self.view].x <= kApolloDuoPostContentBackStrip) return YES;
-    return ![touch.view isKindOfClass:UIControl.class];
+    return self.showsMedia && ![touch.view isKindOfClass:UIControl.class];
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gesture {
@@ -341,10 +336,6 @@ static const NSTimeInterval kApolloDuoPostContentWebBackHold = 0.3;
     CGPoint start = [self.edgePan locationInView:self.view];
     start.x -= [self.edgePan translationInView:self.view].x;
     if (start.x <= kApolloDuoPostContentBackStrip) return YES;
-    if (!self.showsMedia) {
-        NSTimeInterval held = NSProcessInfo.processInfo.systemUptime - self.edgeTouchDown;
-        return velocity.x >= kApolloDuoPostContentWebBackSpeed && held < kApolloDuoPostContentWebBackHold;
-    }
     return !self.viewer || ![self.viewer ownsRightwardDragAtPoint:[self.view convertPoint:start toView:self.viewer.view]];
 }
 
