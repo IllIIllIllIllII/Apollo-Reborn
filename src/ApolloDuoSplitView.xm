@@ -1784,13 +1784,19 @@ CGRect ApolloDuoSplitContentFrame(UIViewController *controller, UIView *coordina
     // strip. Only the leading sidebar is excluded from this alignment band.
     // Beside the feed rail a divider stands before the trailing rail, so the
     // feed centers between the two dividers instead (the host's safe edge; the
-    // feed navigation's own runs past it by the bar's trailing gap).
-    if (nav == state.feed && [state.host showsFeedRail]) {
+    // feed navigation's own runs past it by the bar's trailing gap). So does a
+    // thread Split View is moving into or out of its own column: it stands
+    // full width beside the rail meanwhile, and centering it across the
+    // trailing rail would shift its media as it joins or leaves the feed.
+    BOOL besideRail = [state.host showsFeedRail]
+        && (nav == state.feed || (state.host.postsShowingDetail && !state.host.postsColumnsPaired));
+    if (besideRail) {
         insets.right = state.host.view.safeAreaInsets.right;
         // The navigation's leading inset follows the page on top (the rail,
         // or a post's left column); a page under it keeps its own reserve,
         // also while it is off screen with no safe area of its own.
-        if (pageView) insets.left = state.host.view.safeAreaInsets.left + ApolloDuoPostsLeadingReserve(state.host, page);
+        if (nav == state.feed && pageView)
+            insets.left = state.host.view.safeAreaInsets.left + ApolloDuoPostsLeadingReserve(state.host, page);
     } else {
         insets.right = 0.0;
     }
