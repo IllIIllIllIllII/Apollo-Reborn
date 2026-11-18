@@ -3372,6 +3372,9 @@ static BOOL ApolloSubredditIndexRecordMetaFeedCell(UITableView *tableView,
 static void ApolloSubredditIndexRestoreMetaFeedCell(UITableViewCell *cell) {
     if (!cell) return;
     cell.hidden = NO;
+    // Every hide is applied again from here (the docks below, the Duo drawer
+    // on display), so an earlier drawer mark must not unhide a docked row.
+    objc_setAssociatedObject(cell, &kApolloSubredditHiddenOnRailKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     ApolloMetaFeedShortcutsView *shortcutsView = objc_getAssociatedObject(cell, &kApolloMetaFeedShortcutsViewKey);
     [shortcutsView removeFromSuperview];
