@@ -120,6 +120,16 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
     return self;
 }
+// A feed shortcut's glyph exactly as the subreddit list draws it in the
+// Tinted icon style (Settings > Feed Shortcuts), in the rail's colors. It is
+// centered on the glyph box and overhangs it as the list's does its own.
+- (instancetype)initWithShortcutGlyph:(UIImage *)glyph title:(NSString *)title {
+    if (!(self = [self initWithTitle:title])) return nil;
+    self.icon.image = [glyph imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    self.icon.contentMode = UIViewContentModeCenter;
+    self.label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    return self;
+}
 - (instancetype)initWithSubreddit:(NSString *)subreddit iconURL:(NSURL *)iconURL {
     if (!(self = [self initWithTitle:subreddit])) return nil;
     self.avatar = YES;
@@ -324,9 +334,12 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         for (UIView *view in self.feedButtons) [view removeFromSuperview];
         NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [NSMutableArray array];
         for (NSNumber *index in shortcuts) {
-            ApolloDuoFeedRailButton *button = [[ApolloDuoFeedRailButton alloc]
-                initWithGlyph:ApolloFeedShortcutTemplateGlyph(index.integerValue)
-                        title:ApolloFeedShortcutShortTitle(index.integerValue)];
+            NSString *title = ApolloFeedShortcutShortTitle(index.integerValue);
+            UIImage *glyph = ApolloFeedShortcutIconImage(index.integerValue, ApolloSubredditFeedIconStyleTinted,
+                                                         ApolloSubredditFeedLayoutRows, shortcuts.count);
+            ApolloDuoFeedRailButton *button = glyph
+                ? [[ApolloDuoFeedRailButton alloc] initWithShortcutGlyph:glyph title:title]
+                : [[ApolloDuoFeedRailButton alloc] initWithGlyph:ApolloFeedShortcutTemplateGlyph(index.integerValue) title:title];
             button.tag = index.integerValue;
             [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
             [self.panel.contentView addSubview:button];
