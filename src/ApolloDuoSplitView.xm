@@ -312,6 +312,9 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 @property(nonatomic, weak) UINavigationController *postsNavigation;
 @property(nonatomic, strong) UIView *listContainer;
 @property(nonatomic, strong) UIVisualEffectView *listGlass;
+// The fixed corner radius the drawer takes beside the rail; 0 while it follows
+// the display's corners.
+@property(nonatomic) CGFloat listFixedCornerRadius;
 @property(nonatomic) BOOL listUsesGlass;
 @property(nonatomic) BOOL listStyleApplied;
 - (void)updateListAppearance;
@@ -945,6 +948,31 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 - (CGFloat)listLeading {
     return [self showsFeedRail] ? ApolloDuoFeedRail.reservedWidth : 12;
 }
+// The display's corner radius, which container-concentric corners follow.
+// UIWindow reports 0 and a view resolves its radius only after a layout pass,
+// so ask the screen; 0 when it can't say.
+- (CGFloat)displayCornerRadius {
+    UIScreen *screen = self.view.window.windowScene.screen;
+    if (![screen respondsToSelector:@selector(_displayCornerRadius)]) return 0;
+    return ((CGFloat (*)(id, SEL))objc_msgSend)(screen, @selector(_displayCornerRadius));
+}
+// Beside the rail the drawer is too far from the display's corners to follow
+// them, and would fall back to the minimum. Keep the radius it has 12pt inside
+// those corners, as in portrait.
+- (void)applyListCorners API_AVAILABLE(ios(26.0)) {
+    BOOL besideRail = [self listLeading] > 12;
+    CGFloat display = besideRail ? [self displayCornerRadius] : 0;
+    CGFloat fixed = besideRail && display > 40 ? display - 12 : 0;
+    if (fixed == self.listFixedCornerRadius) return;
+    self.listFixedCornerRadius = fixed;
+    UICornerRadius *radius = fixed > 0 ? [UICornerRadius fixedRadius:fixed]
+        : [UICornerRadius containerConcentricRadiusWithMinimum:28];
+    UICornerConfiguration *corners = [UICornerConfiguration configurationWithUniformRadius:radius];
+    self.listContainer.cornerConfiguration = corners;
+    self.listGlass.cornerConfiguration = corners;
+    ApolloLog(@"[DuoSplit] drawer corners %@ (display radius %.1f)",
+              fixed > 0 ? [NSString stringWithFormat:@"fixed at %.1f beside the rail", fixed] : @"follow the display", display);
+}
 // How far the drawer travels between hidden and shown: its width plus its
 // leading edge. Before its first layout, the width viewDidLayoutSubviews will give.
 - (CGFloat)listTravel {
@@ -1350,6 +1378,7 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         self.listContainer.bounds = CGRectMake(0, 0, width, height);
         self.listContainer.center = CGPointMake(listLeading + width / 2, 12 + height / 2);
         self.listGlass.frame = self.listContainer.bounds;
+        if (@available(iOS 26.0, *)) [self applyListCorners];
         if (!self.pinnedPrompt.hidden) {
             // Center in the open area beside the drawer, level with its middle.
             CGFloat leading = listLeading + width;
