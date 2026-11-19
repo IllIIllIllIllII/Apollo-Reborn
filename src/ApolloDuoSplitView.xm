@@ -4541,7 +4541,9 @@ static void ApolloDuoPageScheduleLayoutControl(UIViewController *controller) {
 // Moving the thread between its own column and the feed's stack rebuilds
 // both navigation bars in one pass: for a frame the title sits at the bar's
 // leading edge and the bar items swap columns. Hold a picture of the bars
-// over that handoff and fade it out once the new ones are laid out.
+// over that handoff and fade it out once the new ones are laid out. The
+// title comes back to its slot a frame or two after the move, so the picture
+// holds a moment first; fading at once showed it twice.
 static void ApolloDuoCoverBarHandoff(ApolloDuoSplitState *state, NSTimeInterval fade) {
     UIView *surface = state.host.view;
     UINavigationBar *bar = state.feed.navigationBar;
@@ -4554,7 +4556,7 @@ static void ApolloDuoCoverBarHandoff(ApolloDuoSplitState *state, NSTimeInterval 
     cover.frame = band;
     cover.userInteractionEnabled = NO;
     [surface insertSubview:cover belowSubview:state.host.listDismiss];
-    [UIView animateWithDuration:fade delay:0.03 options:UIViewAnimationOptionCurveEaseOut
+    [UIView animateWithDuration:fade delay:0.12 options:UIViewAnimationOptionCurveEaseOut
                      animations:^{ cover.alpha = 0; }
                      completion:^(__unused BOOL finished) { [cover removeFromSuperview]; }];
 }
