@@ -4596,14 +4596,32 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
             [table layoutIfNeeded];
         }
     };
+    // Moving the thread between the feed's stack and its own column rebuilds
+    // both bars: UIKit collapses the thread's Find bar and lays the new bar's
+    // title out at its leading edge for a frame. Keep a revealed Find bar
+    // revealed and settle the titles before anything is drawn or captured.
+    void (^settleBars)(void) = ^{
+        for (UINavigationController *navigation in @[state.feed, state.secondary]) {
+            UINavigationBar *bar = navigation.navigationBar;
+            [bar layoutIfNeeded];
+            ApolloNavigationTitlePresentationSettle(bar);
+            [bar layoutIfNeeded];
+        }
+        [surface layoutIfNeeded];
+    };
+    void (^moveThread)(UIViewController *) = ^(UIViewController *thread) {
+        ApolloNativeFeedSearchWillMoveBetweenColumns(thread);
+        ApolloDuoPostsSyncColumns(state);
+        commitTables();
+        ApolloNativeFeedSearchFinishColumnMove(thread);
+        settleBars();
+    };
     if (!state.host.postsSplitEnabled && state.feed.viewControllers.count > 1) {
         // Move the SAME comments page to a full-width secondary first. Its
         // appearance and geometry stay fixed; UIKit can then animate the
         // retained columns to 50/50 without a pop/re-push or an empty surface.
-        [UIView performWithoutAnimation:^{
-            ApolloDuoPostsSyncColumns(state);
-            commitTables();
-        }];
+        UIViewController *thread = state.feed.topViewController;
+        [UIView performWithoutAnimation:^{ moveThread(thread); }];
     }
     state.host.postsSplitEnabled = !state.host.postsSplitEnabled;
     [NSUserDefaults.standardUserDefaults setBool:!state.host.postsSplitEnabled forKey:@"ApolloDuoPostsSplitDisabled"];
@@ -4618,11 +4636,15 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
         // Hiding the primary has completed. Rejoin the stacks at the same
         // full-width geometry so subsequent Back uses Apollo's own animator.
         if (state.feed && state.split) {
-            if (animate && !state.host.postsSplitEnabled && state.secondary.viewControllers.count > 1)
-                ApolloDuoCoverBarHandoff(state, 0.2);
+            BOOL rejoins = !state.host.postsSplitEnabled && state.secondary.viewControllers.count > 1;
+            if (animate && rejoins) ApolloDuoCoverBarHandoff(state, 0.2);
+            UIViewController *thread = rejoins ? state.secondary.topViewController : nil;
             [UIView performWithoutAnimation:^{
-                ApolloDuoPostsSyncColumns(state);
-                commitTables();
+                if (thread) moveThread(thread);
+                else {
+                    ApolloDuoPostsSyncColumns(state);
+                    commitTables();
+                }
                 // The rail's Back is UIKit's floating copy of one navigation
                 // bar, adopted while the thread had its own column. Once the
                 // feed takes the thread back onto its stack, re-show the
@@ -4630,6 +4652,7 @@ static void ApolloDuoPostsToggleSplit(ApolloDuoSplitState *state) {
                 if (!state.host.postsSplitEnabled && state.feed.viewControllers.count > 1 && !state.feed.navigationBarHidden) {
                     [state.feed setNavigationBarHidden:YES animated:NO];
                     [state.feed setNavigationBarHidden:NO animated:NO];
+                    settleBars();
                 }
             }];
         }
