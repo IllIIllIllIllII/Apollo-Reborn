@@ -78,6 +78,26 @@ static void ApolloDuoPostsAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geo
 static void ApolloDuoHoldTextLayout(NSArray<UIView *> *roots);
 static ApolloDuoFeedAnchor *ApolloDuoCaptureFeedAnchor(UITableView *table);
 static void ApolloDuoRestoreFeedAnchor(UITableView *table, ApolloDuoFeedAnchor *anchor);
+// A column move's animations run on their own clock (Back button, opened post)
+// or, `scrubbed`, wait from `begin` in paused time for a finger to drive them.
+typedef struct {
+    NSTimeInterval duration;
+    BOOL scrubbed;
+    CFTimeInterval begin;
+} ApolloDuoGeometryTiming;
+@class ApolloDuoTextFade;
+static NSArray<ApolloDuoPostsGeometry *> *ApolloDuoPostsCaptureGeometryWithLayers(UIView *feed, UIView *surface,
+                                                                                  BOOL bareLayers);
+static NSMapTable<CALayer *, id> *ApolloDuoCaptureTextDrawings(NSArray<UIView *> *roots);
+static void ApolloDuoAnimateGeometry(NSArray<ApolloDuoPostsGeometry *> *geometry, UIView *feed, UIView *surface,
+                                     ApolloDuoGeometryTiming timing, BOOL convertReparentedDescendants,
+                                     BOOL fadeRecenteredBarItems, UIView *fadeHost, NSMutableArray<ApolloDuoTextFade *> *pins);
+static void ApolloDuoFadeInNewBarItems(UINavigationBar *bar, NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                       ApolloDuoGeometryTiming timing);
+static NSArray<ApolloDuoTextFade *> *ApolloDuoCrossfadeTextLayout(NSArray<UIView *> *roots, NSMapTable<CALayer *, id> *drawings,
+                                                                  ApolloDuoGeometryTiming timing);
+static void ApolloDuoEndTextCrossfade(NSArray<ApolloDuoTextFade *> *fades, BOOL redraw);
+static void ApolloDuoScheduleRetarget(UIView *feed, BOOL (^stillMoving)(void));
 
 @protocol ApolloDuoLayoutControl <NSObject>
 - (void)updateFeedLayoutButton;
@@ -2250,13 +2270,9 @@ static BOOL ApolloDuoPostContentCandidate(UIViewController *page) {
     return [ApolloDuoPostContentViewController hasContentForLink:ApolloObjectIvar(page, "link")];
 }
 
-// The room left of UIKit's trailing rail, and the left column's part of it:
-// the width its divider holds or saved, measured like the Feed & Thread
-// divider's (UDKeyDuoPostContentShare of the display), or the left page when
-// the Duo is half open like a book.
-static CGFloat ApolloDuoPostContentFullWidth(ApolloDuoSplitHost *host) {
-    return MAX(0, CGRectGetWidth(host.view.bounds) - host.view.safeAreaInsets.right);
-}
+// The left column's width: what its divider holds or saved, measured like the
+// Feed & Thread divider's (UDKeyDuoPostContentShare of the display), or the
+// left page when the Duo is half open like a book.
 static CGFloat ApolloDuoPostContentWidth(ApolloDuoSplitHost *host) {
     CGFloat width = CGRectGetWidth(host.view.bounds);
     CGRect division = ApolloDuoActiveVerticalDivision(host.view);
@@ -2557,13 +2573,59 @@ static void ApolloDuoPostContentDropLinkCard(UIViewController *page, BOOL drop) 
 // Folds the post's media row away while the left column shows it, and brings
 // it back for the full post. Texture's own begin/endUpdates only apply node
 // changes; UIKit's re-ask every row height without touching a node. Animated,
-// the row opens at the top of the post with its picture clipped to it.
-static void ApolloDuoPostContentFoldMedia(UIViewController *page, BOOL fold, BOOL animated) {
+// the row opens at the top of the post with its picture clipped to it, or
+// folds at once while a picture of it rises away under the bar. `done` runs
+// once it settles.
+static void ApolloDuoPostContentFoldMedia(UIViewController *page, BOOL fold, BOOL animated, dispatch_block_t done) {
     UITableView *table = ApolloDuoSplitFindTable(page.viewIfLoaded);
-    if (!table) return;
+    if (!table) {
+        if (done) done();
+        return;
+    }
+    BOOL folded = [objc_getAssociatedObject(table, &kDuoPostSplitTable) boolValue];
+    // Shrinking the row in place uncovered comments already at their new
+    // places. Instead it folds at once and a picture of it rises under the bar
+    // with the comments beneath it, so everything moves together. Scrolling the
+    // table there would collapse its Find bar.
+    if (fold && animated && !folded && table.superview) {
+        UITableViewCell *mediaCell = nil;
+        for (UITableViewCell *cell in table.visibleCells) {
+            id node = [cell respondsToSelector:@selector(node)] ? ((id (*)(id, SEL))objc_msgSend)(cell, @selector(node)) : nil;
+            if (ApolloClassRichMediaHeaderCellNode && [node isKindOfClass:ApolloClassRichMediaHeaderCellNode]) {
+                mediaCell = cell;
+                break;
+            }
+        }
+        CGFloat travel = mediaCell ? CGRectGetMaxY(mediaCell.frame) - (table.contentOffset.y + table.adjustedContentInset.top) : 0;
+        UIView *picture = travel > 1 ? [mediaCell snapshotViewAfterScreenUpdates:NO] : nil;
+        if (picture) {
+            UIView *surface = table.superview;
+            picture.frame = [table convertRect:mediaCell.frame toView:surface];
+            picture.userInteractionEnabled = NO;
+            [surface insertSubview:picture aboveSubview:table];
+            [UIView performWithoutAnimation:^{
+                ApolloDuoPostContentFoldMedia(page, YES, NO, nil);
+                [table layoutIfNeeded];
+            }];
+            table.transform = CGAffineTransformMakeTranslation(0, travel);
+            [UIView animateWithDuration:0.3 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+                table.transform = CGAffineTransformIdentity;
+                picture.transform = CGAffineTransformMakeTranslation(0, -travel);
+            } completion:^(__unused BOOL finished) {
+                table.transform = CGAffineTransformIdentity;
+                [picture removeFromSuperview];
+                if (done) done();
+            }];
+            ApolloLog(@"[DuoPostContent] media row folded, rising away");
+            return;
+        }
+    }
     // Rows off screen get no display callback; hold or release them here.
     ApolloDuoPostContentHoldVideo(page, fold);
-    if ([objc_getAssociatedObject(table, &kDuoPostSplitTable) boolValue] == fold) return;
+    if (folded == fold) {
+        if (done) done();
+        return;
+    }
     objc_setAssociatedObject(table, &kDuoPostSplitTable, fold ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSMutableArray<UITableViewCell *> *opening = [NSMutableArray array];
     for (UITableViewCell *cell in table.visibleCells) {
@@ -2589,16 +2651,18 @@ static void ApolloDuoPostContentFoldMedia(UIViewController *page, BOOL fold, BOO
                 cell.clipsToBounds = NO;
                 cell.alpha = 1;
             }
+            if (done) done();
         }];
     } else {
         [UIView performWithoutAnimation:update];
+        if (done) done();
     }
     ApolloLog(@"[DuoPostContent] media row %@", fold ? @"folded beside the content" : @"back in the post");
 }
 
 static void ApolloDuoPostContentCollapseHeader(UIViewController *page, BOOL collapse, BOOL linkCard) {
     ApolloDuoPostContentDropLinkCard(page, collapse && linkCard);
-    ApolloDuoPostContentFoldMedia(page, collapse, NO);
+    ApolloDuoPostContentFoldMedia(page, collapse, NO, nil);
 }
 
 // Builds the left column for `page`, replacing any other post's. NO when the
@@ -2973,6 +3037,33 @@ static void ApolloDuoFeedRailFollowNavigation(ApolloDuoSplitHost *host) {
     }];
 }
 
+// The comments change width beside the left column. Bar items slide with them
+// (the title settled first) and text crossfades into its new wrapping, as when
+// Feed & Thread opens a thread; recentered items fading instead showed two
+// titles at once. Settle the bar once the new layout is in, then animate; the
+// returned text fades end with ApolloDuoEndTextCrossfade.
+static void ApolloDuoPostContentSettleBar(ApolloDuoSplitHost *host) {
+    UINavigationBar *bar = host.postsNavigation.navigationBar;
+    [bar layoutIfNeeded];
+    ApolloNavigationTitlePresentationSettle(bar);
+    [bar layoutIfNeeded];
+    [host.view layoutIfNeeded];
+}
+static NSArray<ApolloDuoTextFade *> *ApolloDuoPostContentAnimateComments(ApolloDuoSplitHost *host,
+                                                                       NSArray<ApolloDuoPostsGeometry *> *geometry,
+                                                                       NSMapTable<CALayer *, id> *text,
+                                                                       BOOL (^stillMoving)(void)) {
+    UIView *hostView = host.view;
+    UIView *feedView = host.postsNavigation.view;
+    ApolloDuoGeometryTiming timing = {0.32, NO, 0};
+    NSMutableArray<ApolloDuoTextFade *> *pins = [NSMutableArray array];
+    ApolloDuoAnimateGeometry(geometry, feedView, hostView, timing, YES, NO, hostView, pins);
+    ApolloDuoFadeInNewBarItems(host.postsNavigation.navigationBar, geometry, timing);
+    [pins addObjectsFromArray:ApolloDuoCrossfadeTextLayout(@[feedView], text, timing)];
+    ApolloDuoScheduleRetarget(feedView, stillMoving);
+    return pins;
+}
+
 // Split View off: the left column slides out past the leading edge while the
 // comments widen into its place and the rail slides back beside them, the way
 // Feed & Thread resizes its feed. Then the media row opens at the top of the
@@ -2987,7 +3078,8 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
     UITableView *table = ApolloDuoSplitFindTable(page.view);
     BOOL animate = animated && hostView.window;
     [hostView layoutIfNeeded];
-    NSArray<ApolloDuoPostsGeometry *> *geometry = animate ? ApolloDuoPostsCaptureGeometry(feedView, hostView) : nil;
+    NSArray<ApolloDuoPostsGeometry *> *geometry = animate ? ApolloDuoPostsCaptureGeometryWithLayers(feedView, hostView, YES) : nil;
+    NSMapTable<CALayer *, id> *text = animate ? ApolloDuoCaptureTextDrawings(@[feedView]) : nil;
     ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(table);
     host.postContentReserved = NO;
     [UIView performWithoutAnimation:^{
@@ -3003,12 +3095,13 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
             ApolloDuoRestoreFeedAnchor(table, anchor);
             [table layoutIfNeeded];
         }
+        ApolloDuoPostContentSettleBar(host);
     }];
     // The media row comes back where the reader is: opening at the top of the
     // post, or above a reader partway down without moving what they read.
     void (^restoreMedia)(BOOL) = ^(BOOL animateRow) {
         ApolloDuoFeedAnchor *place = ApolloDuoCaptureFeedAnchor(table);
-        ApolloDuoPostContentFoldMedia(page, NO, animateRow && place.atTop);
+        ApolloDuoPostContentFoldMedia(page, NO, animateRow && place.atTop, nil);
         if (place && !place.atTop) {
             [table layoutIfNeeded];
             ApolloDuoRestoreFeedAnchor(table, place);
@@ -3026,11 +3119,13 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
     CGFloat travel = CGRectGetWidth(content.view.bounds);
     __weak ApolloDuoSplitHost *weakHost = host;
     ApolloFullFrameRateBegin();
+    __block NSArray<ApolloDuoTextFade *> *textFades = nil;
     // A transaction completion also runs when a fold or the app leaving cuts
     // the animation short.
     [CATransaction begin];
     [CATransaction setCompletionBlock:^{
         ApolloFullFrameRateEnd(0.1);
+        ApolloDuoEndTextCrossfade(textFades, NO);
         ApolloDuoSplitHost *live = weakHost;
         live.postContentAnimating = NO;
         if (live.postContent != content) return;
@@ -3038,8 +3133,9 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
         ApolloDuoPostContentUninstall(live);
         [live.view setNeedsLayout];
     }];
-    ApolloDuoPostsAnimateGeometry(geometry, feedView, hostView, 0.32);
-    ApolloDuoHoldTextLayout(@[feedView]);
+    textFades = ApolloDuoPostContentAnimateComments(host, geometry, text, ^BOOL {
+        return weakHost.postContentAnimating && weakHost.postContent == content;
+    });
     [UIView animateWithDuration:0.32 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
         content.view.transform = CGAffineTransformMakeTranslation(-travel, 0);
         ApolloDuoSplitHost *live = weakHost;
@@ -3049,59 +3145,97 @@ static void ApolloDuoPostContentHide(ApolloDuoSplitHost *host, UIViewController 
     ApolloLog(@"[DuoPostContent] Split View off");
 }
 
-// Split View on: the left column fades in over the whole post as the rail
-// fades out, the post moves to the right column beneath it, then the column
-// narrows to uncover the comments sliding in beside it.
+// Split View on, the reverse of off: the media row folds away at the top of
+// the post (a reader partway down keeps their place at once), then the left
+// column slides in from the leading edge while the comments narrow beside it
+// and the rail slides out.
 static void ApolloDuoPostContentShow(ApolloDuoSplitHost *host, UIViewController *page, BOOL animated) {
     if (!ApolloDuoPostContentInstall(host, page)) return;
     host.postContentAnimating = YES;
     ApolloDuoPostContentViewController *content = host.postContent;
+    UIView *hostView = host.view;
+    UIView *feedView = host.postsNavigation.view;
     UITableView *table = ApolloDuoSplitFindTable(page.view);
+    BOOL linkCard = !content.showsMedia;
+    // Lays the comments out beside the column, keeping the reader's place.
     void (^split)(void) = ^{
+        ApolloDuoFeedAnchor *anchor = ApolloDuoCaptureFeedAnchor(table);
         host.postContentReserved = YES;
-        ApolloDuoPostContentCollapseHeader(page, YES, !content.showsMedia);
-        ApolloDuoFeedRailApplyInsets(host, page, nil);
-        [host.view layoutIfNeeded];
-        ApolloDuoRailPrepareTableForTransition(table);
+        [UIView performWithoutAnimation:^{
+            ApolloDuoPostContentCollapseHeader(page, YES, linkCard);
+            ApolloDuoFeedRailApplyInsets(host, page, nil);
+            [hostView layoutIfNeeded];
+            ApolloDuoRailPrepareTableForTransition(table);
+            ApolloDuoMediaPrepareTableForTransition(table);
+            SEL commit = NSSelectorFromString(@"waitUntilAllUpdatesAreCommitted");
+            if ([table respondsToSelector:commit]) ((void (*)(id, SEL))objc_msgSend)(table, commit);
+            [table layoutIfNeeded];
+            if (anchor) {
+                ApolloDuoRestoreFeedAnchor(table, anchor);
+                [table layoutIfNeeded];
+            }
+            ApolloDuoPostContentSettleBar(host);
+        }];
     };
-    if (!animated) {
+    if (!animated || !hostView.window) {
         split();
         host.postContentAnimating = NO;
         [host setFeedRailShown:NO];
-        [host.view setNeedsLayout];
+        [hostView setNeedsLayout];
         return;
     }
-    CGFloat fullWidth = ApolloDuoPostContentFullWidth(host);
-    CGFloat columnWidth = ApolloDuoPostContentWidth(host);
-    ApolloDuoPostContentPlace(host, fullWidth);
-    content.view.alpha = 0;
+    // Past the leading edge until it slides in.
+    content.view.transform = CGAffineTransformMakeTranslation(-CGRectGetWidth(content.view.bounds), 0);
     content.view.userInteractionEnabled = NO;
     __weak ApolloDuoSplitHost *weakHost = host;
     ApolloFullFrameRateBegin();
-    [UIView animateWithDuration:0.2 animations:^{
-        content.view.alpha = 1;
-        [weakHost setFeedRailShown:NO];
-    } completion:^(__unused BOOL finished) {
+    dispatch_block_t slide = ^{
         ApolloDuoSplitHost *live = weakHost;
         if (!live || live.postContent != content) {
             live.postContentAnimating = NO;
             ApolloFullFrameRateEnd(0.1);
             return;
         }
+        [hostView layoutIfNeeded];
+        NSArray<ApolloDuoPostsGeometry *> *geometry = ApolloDuoPostsCaptureGeometryWithLayers(feedView, hostView, YES);
+        NSMapTable<CALayer *, id> *text = ApolloDuoCaptureTextDrawings(@[feedView]);
         split();
-        UIView *comments = page.view;
-        comments.transform = CGAffineTransformMakeTranslation(fullWidth - columnWidth, 0);
-        [UIView animateWithDuration:0.42 delay:0 usingSpringWithDamping:1 initialSpringVelocity:0 options:0 animations:^{
-            ApolloDuoPostContentPlace(live, columnWidth);
-            comments.transform = CGAffineTransformIdentity;
-        } completion:^(__unused BOOL done) {
+        __block NSArray<ApolloDuoTextFade *> *textFades = nil;
+        // A transaction completion also runs when a fold or the app leaving cuts
+        // the animation short.
+        [CATransaction begin];
+        [CATransaction setCompletionBlock:^{
             ApolloFullFrameRateEnd(0.1);
-            comments.transform = CGAffineTransformIdentity;
-            live.postContentAnimating = NO;
+            ApolloDuoEndTextCrossfade(textFades, NO);
+            ApolloDuoSplitHost *settled = weakHost;
+            settled.postContentAnimating = NO;
+            if (settled.postContent != content) return;
+            content.view.transform = CGAffineTransformIdentity;
             content.view.userInteractionEnabled = YES;
-            [live.view setNeedsLayout];
+            [settled.view setNeedsLayout];
         }];
-    }];
+        textFades = ApolloDuoPostContentAnimateComments(live, geometry, text, ^BOOL {
+            return weakHost.postContentAnimating && weakHost.postContent == content;
+        });
+        [UIView animateWithDuration:0.32 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            content.view.transform = CGAffineTransformIdentity;
+            [weakHost setFeedRailShown:NO];
+        } completion:nil];
+        [CATransaction commit];
+    };
+    ApolloDuoFeedAnchor *place = ApolloDuoCaptureFeedAnchor(table);
+    if (place.atTop) {
+        ApolloDuoPostContentFoldMedia(page, YES, YES, slide);
+    } else {
+        [UIView performWithoutAnimation:^{
+            ApolloDuoPostContentFoldMedia(page, YES, NO, nil);
+            if (place) {
+                [table layoutIfNeeded];
+                ApolloDuoRestoreFeedAnchor(table, place);
+            }
+        }];
+        slide();
+    }
     ApolloLog(@"[DuoPostContent] Split View on");
 }
 
@@ -3757,14 +3891,6 @@ static BOOL ApolloDuoGeometryRecentersBarItem(ApolloDuoPostsGeometry *item, UIVi
     return fabs(CGRectGetMidX(now) - CGRectGetMidX(item.surfaceFrame)) > 24.0
         && fabs(CGRectGetWidth(now) - CGRectGetWidth(item.surfaceFrame)) < 8.0;
 }
-
-// A column move's animations run on their own clock (Back button, opened post)
-// or, `scrubbed`, wait from `begin` in paused time for a finger to drive them.
-typedef struct {
-    NSTimeInterval duration;
-    BOOL scrubbed;
-    CFTimeInterval begin;
-} ApolloDuoGeometryTiming;
 
 static void ApolloDuoGeometryTime(CAAnimation *animation, ApolloDuoGeometryTiming timing) {
     animation.duration = timing.duration;
