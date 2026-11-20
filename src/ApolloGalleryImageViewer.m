@@ -74,8 +74,8 @@ static void ApolloGalleryViewerSetVideosMuted(BOOL muted) {
 
 // Apollo parks the shared session on Ambient, which is silenced by the ringer
 // switch — so an unmuted clip would still play silently without this.
-static void ApolloGalleryViewerActivateAudioSession(void) {
-    if (ApolloGalleryViewerVideosMuted()) return;
+static void ApolloGalleryViewerActivateAudioSession(BOOL muted) {
+    if (muted) return;
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
     if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
@@ -105,6 +105,11 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
 @property (nonatomic, strong, nullable) id playerEndObserver;
 @property (nonatomic, copy, nullable) NSURL *videoURL;
 @property (nonatomic, readonly) BOOL hasVideo;
+// The viewer's own mute choice (an embedded viewer's), in place of Gallery
+// View's saved one.
+@property (nonatomic, strong, nullable) NSNumber *mutedOverride;
+// Where the next player built for this page starts (kCMTimeInvalid: the top).
+@property (nonatomic) CMTime startTime;
 // YES once the FULL-SIZE image is what's on screen. While it's NO, the image
 // view is showing the grid's downsampled thumbnail as a placeholder — which
 // Save/Share must never export.
@@ -118,6 +123,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
 @property (nonatomic, readonly) BOOL isZoomed;
 - (void)configureWithItem:(ApolloGalleryItem *)item;
 - (void)replaceVideoURL:(nullable NSURL *)videoURL andPlay:(BOOL)play;
+- (void)showPlaceholderImage:(UIImage *)image;
 @end
 
 @implementation ApolloGalleryViewerCell
@@ -127,6 +133,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     if (self) {
         self.backgroundColor = UIColor.blackColor;
         self.contentView.backgroundColor = UIColor.blackColor;
+        _startTime = kCMTimeInvalid;
 
         _zoomView = [[UIScrollView alloc] initWithFrame:self.contentView.bounds];
         _zoomView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -192,6 +199,7 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     [self teardownPlayer];
     [self apollo_displayImage:nil animation:nil];
     self.fullImageLoaded = NO;
+    self.startTime = kCMTimeInvalid;
     self.zoomGeometrySize = CGSizeZero;
     self.zoomView.zoomScale = 1.0;
     self.zoomView.contentInset = UIEdgeInsetsZero;
@@ -275,7 +283,11 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     self.videoURL = url;
 
     AVPlayer *player = [AVPlayer playerWithURL:url];
-    player.muted = ApolloGalleryViewerVideosMuted();
+    player.muted = [self apollo_videosMuted];
+    if (CMTIME_IS_VALID(self.startTime)) {
+        [player seekToTime:self.startTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
+        self.startTime = kCMTimeInvalid;
+    }
     // Clips are short and usually watched more than once; looping is what a
     // gallery reader expects and matches how Apollo plays GIF-ish media.
     __weak typeof(self) weakSelf = self;
@@ -309,9 +321,22 @@ static void ApolloGalleryViewerActivateAudioSession(void) {
     if (!self.player) return;
     // Playback needs the session on a category that isn't silenced by the
     // ringer switch; Apollo parks it on Ambient, which mutes everything.
-    ApolloGalleryViewerActivateAudioSession();
-    self.player.muted = ApolloGalleryViewerVideosMuted();
+    BOOL muted = [self apollo_videosMuted];
+    ApolloGalleryViewerActivateAudioSession(muted);
+    self.player.muted = muted;
     [self.player play];
+}
+
+- (BOOL)apollo_videosMuted {
+    return self.mutedOverride ? self.mutedOverride.boolValue : ApolloGalleryViewerVideosMuted();
+}
+
+// A picture from the screen the viewer is embedded in, until the full-size one
+// lands; Save and Share still wait for that one (fullImageLoaded stays NO).
+- (void)showPlaceholderImage:(UIImage *)image {
+    if (!image || self.fullImageLoaded) return;
+    [self apollo_displayImage:image animation:nil];
+    [self apollo_resetZoomGeometry];
 }
 
 - (void)pausePlayback {
@@ -538,6 +563,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 @property (nonatomic, strong) UIView *muteHost;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) ApolloGalleryChromePillView *counterPill;
+// Embedded, the position reads like the feed's album badge instead.
+@property (nonatomic, strong, nullable) UILabel *embeddedCounter;
 @property (nonatomic, strong) UIView *infoPanel;
 @property (nonatomic, strong, nullable) UIView *infoPanelMaterial;
 @property (nonatomic, strong) UITapGestureRecognizer *infoTap;
@@ -640,6 +667,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 // video ever played (issue #1104: Gallery View shown on CarPlay through
 // CarBridge/CarCast).
 @property (nonatomic) CGSize lastLaidOutPageSize;
+@property (nonatomic, strong, nullable) NSMutableDictionary<NSNumber *, UIImage *> *placeholderImages;
+@property (nonatomic) BOOL initialPlaybackTimeUsed;
 @end
 
 @implementation ApolloGalleryImageViewer
@@ -648,6 +677,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         _feed = feed;
+        _initialPlaybackTime = kCMTimeInvalid;
         _pendingInitialIndex = MAX(0, MIN(initialIndex, (NSInteger)feed.items.count - 1));
         _currentIndex = _pendingInitialIndex;
         _chromeVisible = YES;
@@ -678,7 +708,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
-    self.view.accessibilityViewIsModal = YES;
+    self.view.accessibilityViewIsModal = !self.embedded;
     // The viewer is a black fullscreen surface with white text and icons, but
     // the APP is usually in light mode — so the iOS 26 glass pills first
     // resolved their LIGHT variant (white frost, unreadable white-on-white
@@ -719,11 +749,15 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     longPress.delegate = self;
     [self.view addGestureRecognizer:longPress];
 
-    self.dismissPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_dismissPanned:)];
-    self.dismissPan.delegate = self;
-    [self.view addGestureRecognizer:self.dismissPan];
+    // Embedded, the screen around the viewer owns closing it.
+    if (!self.embedded) {
+        self.dismissPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(apollo_dismissPanned:)];
+        self.dismissPan.delegate = self;
+        [self.view addGestureRecognizer:self.dismissPan];
+    }
 
     [self apollo_updateChromeContent];
+    if (self.embedded) return;
 
     // Physical device orientation keeps reporting while the INTERFACE is
     // locked, which is what makes the smart-rotation offer possible.
@@ -757,6 +791,10 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
         [self apollo_requestInterfaceOrientation:UIInterfaceOrientationPortrait];
     }
     // Nothing should keep playing behind or after the viewer.
+    [self pausePlayback];
+}
+
+- (void)pausePlayback {
     for (UICollectionViewCell *cell in self.collectionView.visibleCells) {
         if ([cell isMemberOfClass:[ApolloGalleryViewerCell class]]) {
             [(ApolloGalleryViewerCell *)cell pausePlayback];
@@ -773,7 +811,8 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     [[NSNotificationCenter defaultCenter] removeObserver:self
                                                     name:UIDeviceOrientationDidChangeNotification
                                                   object:nil];
-    [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
+    // An embedded viewer never began them, and the count is shared app-wide.
+    if (!_embedded) [[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
 }
 
 - (void)didReceiveMemoryWarning {
@@ -845,6 +884,7 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
 - (void)apollo_buildChrome {
     self.doneButton = ApolloGalleryChromeButton(nil, @"Done", &_doneHost);
     [self.doneButton addTarget:self action:@selector(apollo_donePressed) forControlEvents:UIControlEventTouchUpInside];
+    self.doneHost.hidden = self.embedded;
     [self.view addSubview:self.doneHost];
 
     self.counterLabel = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -860,7 +900,23 @@ static UIButton *ApolloGalleryChromeButton(UIImage *symbol, NSString *title, UIV
     // such animation, which is why this felt unlike the rest of the app. The
     // menu itself is rebuilt per page in -apollo_updateChromeContent.
     self.shareButton.showsMenuAsPrimaryAction = YES;
+    // Embedded, holding the picture is the way to its actions, as in the feed.
+    self.shareHost.hidden = self.embedded;
     [self.view addSubview:self.shareHost];
+
+    if (self.embedded) {
+        // The feed's album badge (ApolloFeedGalleryCarousel), not a new one.
+        UILabel *badge = [[UILabel alloc] initWithFrame:CGRectZero];
+        badge.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.62];
+        badge.textColor = UIColor.whiteColor;
+        badge.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+        badge.textAlignment = NSTextAlignmentCenter;
+        badge.layer.cornerRadius = 13.0;
+        badge.clipsToBounds = YES;
+        badge.hidden = YES;
+        [self.view addSubview:badge];
+        self.embeddedCounter = badge;
+    }
 
     // Only shown while a video/GIF page is up; still images have nothing to mute.
     self.muteButton = ApolloGalleryChromeButton(ApolloGalleryChromeSymbol(@"speaker.slash.fill"), nil, &_muteHost);
@@ -990,7 +1046,7 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
 }
 
 - (void)apollo_updateRotationOffer {
-    if (self.isDismissing || !ApolloGallerySmartRotationLockEnabled()) {
+    if (self.isDismissing || self.embedded || !ApolloGallerySmartRotationLockEnabled()) {
         [self apollo_hideRotationOffer];
         return;
     }
@@ -1142,6 +1198,14 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
         self.muteHost.frame = CGRectMake(trailing - controlGap - iconSize, top, iconSize, controlHeight);
         trailing = CGRectGetMinX(self.muteHost.frame);
     }
+    if (self.embedded) {
+        // The feed badge's place on a card: 10pt in from the top right corner,
+        // with the mute button beside it.
+        self.embeddedCounter.frame = CGRectMake(bounds.size.width - 58.0, safe.top + 10.0, 48.0, 26.0);
+        CGFloat muteTrailing = self.embeddedCounter.hidden ? bounds.size.width - rightSide
+                                                           : CGRectGetMinX(self.embeddedCounter.frame) - controlGap;
+        if (!self.muteHost.hidden) self.muteHost.frame = CGRectMake(muteTrailing - iconSize, top, iconSize, controlHeight);
+    }
     CGFloat counterWidth = 88.0;
     self.counterPill.frame = CGRectMake(trailing - controlGap - counterWidth, top, counterWidth, controlHeight);
     self.statusPill.frame = CGRectMake((bounds.size.width - 156.0) / 2.0, CGRectGetMaxY(self.counterPill.frame) + 8.0, 156.0, 28.0);
@@ -1168,7 +1232,8 @@ static UIInterfaceOrientation ApolloGalleryInterfaceOrientationForDevice(UIDevic
     }
     CGFloat gap = (titleSize.height > 0.0 && subtitleSize.height > 0.0) ? 3.0 : 0.0;
     CGFloat panelHeight = 20.0 + titleSize.height + gap + subtitleSize.height;
-    BOOL showsInfo = (titleSize.height + subtitleSize.height) > 0.0 && !self.infoPanelHiddenForItem;
+    // Embedded beside the post, its title and author are already on screen.
+    BOOL showsInfo = (titleSize.height + subtitleSize.height) > 0.0 && !self.infoPanelHiddenForItem && !self.embedded;
     self.infoPanel.hidden = !showsInfo;
     self.titleLabel.frame = CGRectMake(12.0, 10.0, titleSize.width, titleSize.height);
     self.subtitleLabel.frame = CGRectMake(12.0, 10.0 + titleSize.height + gap, subtitleSize.width, subtitleSize.height);
@@ -1430,6 +1495,11 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     } else {
         self.counterLabel.text = @"";
     }
+    // Embedded on one post, the feed's badge shows the position, and a lone
+    // picture needs none.
+    self.counterPill.hidden = self.embedded;
+    self.embeddedCounter.text = [NSString stringWithFormat:@"%ld/%ld", (long)index + 1, (long)total];
+    self.embeddedCounter.hidden = total < 2;
 
     ApolloGalleryItem *item = (index >= 0 && index < total) ? items[index] : nil;
     self.titleLabel.text = item.postTitle ?: @"";
@@ -1505,7 +1575,30 @@ static NSString *ApolloGalleryTimeString(NSTimeInterval seconds) {
     if (indexPath.item < (NSInteger)items.count) {
         [cell configureWithItem:items[indexPath.item]];
     }
+    cell.mutedOverride = self.embeddedVideosMuted;
+    [cell showPlaceholderImage:self.placeholderImages[@(indexPath.item)]];
+    // The starting page's video picks up where the screen around left it, once.
+    if (indexPath.item == self.pendingInitialIndex && !self.initialPlaybackTimeUsed &&
+        CMTIME_IS_VALID(self.initialPlaybackTime)) {
+        cell.startTime = self.initialPlaybackTime;
+        self.initialPlaybackTimeUsed = YES;
+    }
     return cell;
+}
+
+- (void)setPlaceholderImage:(UIImage *)image forItemAtIndex:(NSInteger)index {
+    if (!image || index < 0) return;
+    if (!self.placeholderImages) self.placeholderImages = [NSMutableDictionary dictionary];
+    self.placeholderImages[@(index)] = image;
+}
+
+- (CMTime)currentPlaybackTime {
+    AVPlayer *player = [self apollo_currentCell].player;
+    return player ? player.currentTime : kCMTimeInvalid;
+}
+
+- (BOOL)apollo_videosMuted {
+    return self.embeddedVideosMuted ? self.embeddedVideosMuted.boolValue : ApolloGalleryViewerVideosMuted();
 }
 
 - (CGSize)collectionView:(UICollectionView *)collectionView
@@ -1969,7 +2062,7 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     BOOL showsMute = item.playsAsVideo && item.kind == ApolloGalleryMediaKindVideo;
     self.muteHost.hidden = !showsMute;
     if (showsMute) {
-        BOOL muted = ApolloGalleryViewerVideosMuted();
+        BOOL muted = [self apollo_videosMuted];
         [self.muteButton setImage:ApolloGalleryChromeSymbol(muted ? @"speaker.slash.fill" : @"speaker.wave.2.fill")
                          forState:UIControlStateNormal];
         self.muteButton.accessibilityLabel = muted ? @"Unmute" : @"Mute";
@@ -1979,7 +2072,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
 }
 
 - (void)apollo_muteTapped {
-    ApolloGalleryViewerSetVideosMuted(!ApolloGalleryViewerVideosMuted());
+    BOOL muted = ![self apollo_videosMuted];
+    if (self.embeddedVideosMuted) {
+        self.embeddedVideosMuted = @(muted);
+        for (UICollectionViewCell *cell in self.collectionView.visibleCells) {
+            if ([cell isMemberOfClass:[ApolloGalleryViewerCell class]])
+                ((ApolloGalleryViewerCell *)cell).mutedOverride = self.embeddedVideosMuted;
+        }
+        if (self.embeddedMuteChanged) self.embeddedMuteChanged(muted);
+    } else {
+        ApolloGalleryViewerSetVideosMuted(muted);
+    }
     [self apollo_syncPlayback];
 }
 
@@ -2157,13 +2260,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     // the root lands in UIKit's modal transition container, whose responder
     // chain cannot resolve the viewer as the menu's presentation owner.
     CGPoint point = [self.view convertPoint:self.mediaHoldPoint toView:sourceView];
-    BOOL presented = ApolloNativeActionMenuPresentCapturedAtPoint([session menu], sourceView, point, session, ^{
+    // Embedded, the screen around the viewer may supply the feed's own menu.
+    UIMenu *menu = self.embedded && self.embeddedMenu ? self.embeddedMenu(self.currentIndex, sourceView) : nil;
+    dispatch_block_t embeddedDidEnd = menu ? self.embeddedMenuDidEnd : nil;
+    BOOL presented = ApolloNativeActionMenuPresentCapturedAtPoint(menu ?: [session menu], sourceView, point, session, ^{
         typeof(self) strongSelf = weakSelf;
         if (strongSelf.mediaMenuSession == session) {
             strongSelf.mediaMenuSession = nil;
             strongSelf.collectionView.scrollEnabled = YES;
         }
         [session menuDidEnd];
+        if (embeddedDidEnd) embeddedDidEnd();
     });
     if (presented) {
         ApolloNativeActionMenuPreviewFeedback(sourceView, point);
@@ -2171,8 +2278,17 @@ shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherG
     } else {
         self.mediaMenuSession = nil;
         self.collectionView.scrollEnabled = YES;
+        if (embeddedDidEnd) embeddedDidEnd();
         ApolloLog(@"[Gallery] native media menu could not open");
     }
+}
+
+- (BOOL)ownsRightwardDragAtPoint:(CGPoint)point {
+    if (self.currentIndex > 0 || [self apollo_currentCell].isZoomed) return YES;
+    for (UIView *control in @[self.videoBarPill ?: UIView.new, self.muteHost ?: UIView.new]) {
+        if (!control.hidden && control.alpha > 0.01 && CGRectContainsPoint(control.frame, point)) return YES;
+    }
+    return NO;
 }
 
 // Original bytes when we still have them (a GIF stays animated), otherwise a

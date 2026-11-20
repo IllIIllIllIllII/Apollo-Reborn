@@ -213,6 +213,8 @@ extern BOOL sHideTopBarOnScroll;
 extern NSInteger sDuoUnfoldedFeedLayout;
 // Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
 extern BOOL sDuoSubredditPanelGlassEnabled;
+// Duo flat landscape Posts layout: 0 = Feed & Thread (default), 1 = Sidebar & Post.
+extern NSInteger sDuoLandscapeLayout;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
