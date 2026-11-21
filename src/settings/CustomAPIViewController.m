@@ -2432,7 +2432,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     ApolloSettingsSection *section =
         [ApolloSettingsSection sectionWithTitle:@"iPhone Duo"
-                                         footer:@"How Posts looks when the Duo is open flat in landscape. Both keep Home, Popular, All and your favorite subreddits in a column beside the feed. With Split View on, Feed & Thread opens a post beside the feed, the column stepping aside until you go back, and Sidebar & Post opens a post's image, video or link beside its comments."
+                                         footer:@"How Posts looks when the Duo is open in landscape. With Split View on, Feed & Thread opens posts beside the feed, and Sidebar & Post opens a post's media or link beside its comments."
                                            rows:@[ landscapeLayout ]];
     // Headers are title-cased, which would print "Iphone".
     section.headerDisplay = ^(UITableViewHeaderFooterView *view) {
