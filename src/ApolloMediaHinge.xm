@@ -380,6 +380,34 @@ static id ApolloDuoMediaLimitSpec(id element, NSArray *mediaNodes, NSArray *text
     return element;
 }
 
+// A layout element that is `node` itself, or wraps nothing else (an inset or
+// wrapper around it).
+static BOOL ApolloDuoSpecHoldsOnly(id element, id node) {
+    if (element == node) return YES;
+    if (!ApolloDuoMediaIsSpec(element)) return NO;
+    NSArray *children = [(ASLayoutSpec *)element children];
+    return children.count == 1 && ApolloDuoSpecHoldsOnly(children.firstObject, node);
+}
+
+// `spec` with `node` (and any wrapper holding only it) taken out of its stack.
+// Texture's automatic subnode management then removes the node until a later
+// layout includes it again.
+static id ApolloDuoSpecLeavingOut(id spec, id node) {
+    if (!ApolloDuoMediaIsSpec(spec)) return spec;
+    NSArray *children = [(ASLayoutSpec *)spec children];
+    NSMutableArray *kept = [NSMutableArray arrayWithCapacity:children.count];
+    BOOL dropped = NO;
+    for (id child in children) {
+        if (ApolloDuoSpecHoldsOnly(child, node)) {
+            dropped = YES;
+            continue;
+        }
+        [kept addObject:ApolloDuoSpecLeavingOut(child, node)];
+    }
+    if (dropped) [(ASLayoutSpec *)spec setChildren:kept];
+    return spec;
+}
+
 static ASLayoutSpec *ApolloDuoFeedColumn(id child, CGFloat width) {
     // Size a transient wrapper rather than persisting dimensions on a native
     // node. Closing/folding or opening comments can then restore native layout.
@@ -515,7 +543,14 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
 - (id)layoutSpecThatFits:(struct ApolloTextureSizeRange)range {
     CGFloat availableWidth = range.max.width;
     ApolloDuoFeedGeometry *geometry = ApolloDuoCommentsPrepareCell(self, &range);
-    return ApolloDuoFeedLayoutSpec(%orig(range), availableWidth, geometry);
+    id spec = %orig(range);
+    // Sidebar & Post shows a link post's page beside its comments; the header
+    // keeps its title, details and actions but leaves out the link card.
+    if (ApolloDuoPostSplitDropsLinkCard(self)) {
+        id card = ApolloDuoMediaObjectIvar(self, "linkButtonNode");
+        if (card) spec = ApolloDuoSpecLeavingOut(spec, card);
+    }
+    return ApolloDuoFeedLayoutSpec(spec, availableWidth, geometry);
 }
 %end
 

@@ -23,6 +23,7 @@
 #import <objc/runtime.h>
 
 #import "ApolloCommon.h"
+#import "ApolloFeedGalleryCarousel.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloFeedGalleryGesturePolicy.h"
 #import "ApolloState.h"
@@ -1054,6 +1055,19 @@ static void ApolloFeedGallerySettingChanged(void) {
 }
 
 #pragma mark - Hooks
+
+NSDictionary<NSNumber *, UIImage *> *ApolloFeedGalleryCarouselPictures(id albumNode, NSInteger *currentIndex) {
+    if (!albumNode || !NSThread.isMainThread) return nil;
+    ASDisplayNode *host = objc_getAssociatedObject(albumNode, &kApolloFeedGalleryHostNodeKey);
+    ApolloFeedGalleryCarouselView *carousel = host ? objc_getAssociatedObject(host, &kApolloFeedGalleryViewKey) : nil;
+    if (!carousel) return nil;
+    if (currentIndex) *currentIndex = carousel.currentIndex;
+    NSMutableDictionary<NSNumber *, UIImage *> *pictures = [NSMutableDictionary dictionary];
+    [carousel.imageViews enumerateObjectsUsingBlock:^(UIImageView *view, NSUInteger index, __unused BOOL *stop) {
+        if (view.image) pictures[@(index)] = view.image;
+    }];
+    return pictures;
+}
 
 %hook _TtC6Apollo13RichMediaNode
 
