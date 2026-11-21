@@ -2285,6 +2285,36 @@ typedef NS_ENUM(NSInteger, Tag) {
                                   onToggle:^(UISwitch *sender) { [weakSelf hideUsernameTabSwitchToggled:sender]; }];
     hideUsernameTab.visible = ^BOOL { return !sHideTabBarTitles; };
 
+    // Closed Duo: tabs in UIKit's side rail, or in a bottom tab bar while the
+    // status bar stays vertical (see ApolloDuoCoverUsesTabBar).
+    ApolloSettingsRow *duoCoverTabBar =
+        [ApolloSettingsRow customRowWithID:@"interface.duoCoverTabBar"
+                                      cell:^UITableViewCell *(UITableView *table, __unused ApolloSettingsRow *row) {
+            UITableViewCell *cell = [table dequeueReusableCellWithIdentifier:@"ApolloDuoCoverTabBarMenu"];
+            if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                                      reuseIdentifier:@"ApolloDuoCoverTabBarMenu"];
+            cell.textLabel.text = @"When Closed";
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            NSArray<NSString *> *options = @[ @"Side Rail", @"Bottom Tab Bar" ];
+            NSInteger current = sDuoCoverTabBar ? 1 : 0;
+            cell.accessoryView = ApolloSettingsMenuButton(@"When Closed", options[current], options, current,
+                ^(NSInteger index) {
+                    BOOL bottom = index == 1;
+                    if (sDuoCoverTabBar == bottom) return;
+                    sDuoCoverTabBar = bottom;
+                    [NSUserDefaults.standardUserDefaults setBool:bottom forKey:UDKeyDuoCoverTabBar];
+                    ApolloDuoCoverTabBarSettingChanged();
+                    [weakSelf reloadRowWithID:@"interface.duoCoverTabBar"];
+                });
+            [weakSelf apollo_applyPrimaryTextColorToCell:cell];
+            return cell;
+        } onSelect:nil];
+    duoCoverTabBar.visible = ^BOOL {
+        // Not ApolloDuoUsesAdaptiveBars(): it reads NO after a cold launch on
+        // the closed display, where only the cover screen is attached.
+        return IsLiquidGlass() && ApolloDuoCoverTabBarSupported();
+    };
+
     ApolloSettingsRow *hideBarsOnScroll =
         [ApolloSettingsRow switchRowWithID:@"interface.hideBarsOnScroll"
                                      title:ApolloDuoUsesAdaptiveBars() ? @"Hide Tab Bar on Scroll" : @"Hide Bars on Scroll"
@@ -2396,7 +2426,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         ? @"Swipe across the tab bar to navigate between screens."
         : nil;
     if (ApolloDuoUsesAdaptiveBars()) {
-        NSString *duoFooter = @"On iPhone Duo, Hide Tab Bar on Scroll, Hide Style, and Scroll Behavior apply only while open in portrait. The side rail always stays visible. Hide Header on Scroll works independently in every pose. On the side rail, Swipe Tab Bar to Navigate goes back with a swipe down and forward with a swipe up.";
+        NSString *duoFooter = @"On iPhone Duo, When Closed puts the tabs in the side rail or in a bottom tab bar, which leaves the side to the status bar. Hide Tab Bar on Scroll, Hide Style, and Scroll Behavior apply only to the bottom tab bar: open in portrait, or closed with Bottom Tab Bar. The side rail always stays visible. Hide Header on Scroll works independently in every pose. On the side rail, Swipe Tab Bar to Navigate goes back with a swipe down and forward with a swipe up.";
         footer = footer.length > 0
             ? [footer stringByAppendingFormat:@"\n\n%@", duoFooter]
             : duoFooter;
@@ -2404,7 +2434,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     return [ApolloSettingsSection sectionWithTitle:@"Tab Bar"
                                             footer:footer
                                               rows:@[ profileTabAvatar, iconOnlyTabBar, hideUsernameTab,
-                                                      hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
+                                                      duoCoverTabBar, hideBarsOnScroll, hideStyle, hideTopBarToo, tabBarScrollBehavior,
                                                       iPadTabBarBottom, tabBarSwipeNavigation,
                                                       [ApolloSettingsRow disclosureRowWithID:@"interface.settingsShortcuts" title:@"Settings Shortcuts" detail:nil push:^UIViewController *{
                                                           return [[ApolloSettingsShortcutsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];

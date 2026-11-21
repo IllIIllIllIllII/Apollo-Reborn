@@ -86,6 +86,7 @@ BOOL sTabBarSwipeNavigation = NO;   // opt-in (default OFF via registerDefaults,
 NSInteger sDuoUnfoldedFeedLayout = 0;
 BOOL sDuoSubredditPanelGlassEnabled = NO;
 NSInteger sDuoLandscapeLayout = 0;
+BOOL sDuoCoverTabBar = NO;
 BOOL sSubredditSwitcherSheetEnabled = NO;
 BOOL sIPadPaneLayout = NO;     // opt-in (default OFF via registerDefaults, UDKeyIPadPaneLayout); iPad-gated, relaunch to apply
 BOOL sKeepSearchBarInPlace = NO;

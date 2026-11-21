@@ -409,6 +409,9 @@ static NSString *const UDKeyDuoLandscapeLayout = @"DuoLandscapePostsLayout";
 // post's comments, saved when its divider is released. Unset or invalid
 // means 0.5. See ApolloDuoSplitDivider.
 static NSString *const UDKeyDuoPostContentShare = @"DuoPostContentShare";
+// Closed Duo (cover display) tab bar: NO = UIKit's side rail (default), YES =
+// a bottom tab bar; the status bar stays vertical on the side (iOS 27.1+).
+static NSString *const UDKeyDuoCoverTabBar = @"DuoCoverTabBar";
 // Subreddit quick-switcher (feed title tap, Posts tab long press): YES = the
 // tweak's Modern search sheet (default on Duo), NO = Apollo's Classic inline popup
 // (default elsewhere; it doesn't carry over a Duo unfold).

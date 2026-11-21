@@ -215,6 +215,8 @@ extern NSInteger sDuoUnfoldedFeedLayout;
 extern BOOL sDuoSubredditPanelGlassEnabled;
 // Duo flat landscape Posts layout: 0 = Feed & Thread (default), 1 = Post & Thread.
 extern NSInteger sDuoLandscapeLayout;
+// Closed Duo uses a bottom tab bar instead of the side rail (UDKeyDuoCoverTabBar).
+extern BOOL sDuoCoverTabBar;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);

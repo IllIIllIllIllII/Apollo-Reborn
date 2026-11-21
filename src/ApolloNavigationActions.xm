@@ -1364,7 +1364,9 @@ static NSArray<UIBarButtonItem *> *ApolloActionsDuoNativeItems(UINavigationItem 
     // UIKit briefly publishes Phone while replacing a feed's navigation model.
     // Keep native items across that transient. Portrait restores the compact
     // composite so its original glyph spacing survives the axis change.
-    BOOL closedDuo = !ApolloDuoSplitIsUnfoldedPortrait()
+    // With the bottom tab bar the closed screen keeps a horizontal top bar,
+    // so it keeps the compact strip like any phone.
+    BOOL closedDuo = !ApolloDuoSplitIsUnfoldedPortrait() && !ApolloDuoCoverUsesTabBar()
         && (duoMode == ApolloDuoModeClosed || ApolloActionsHasTrailingTabRail()
             || (duoMode == ApolloDuoModePhone && generated != nil));
     if (!closedDuo) {

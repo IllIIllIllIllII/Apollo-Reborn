@@ -10,6 +10,7 @@
 #import "ApolloAutoHideTabBar.h"
 #import "ApolloClasses.h"
 #import "ApolloThemeRuntime.h"
+#import "ApolloState.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <string.h>
@@ -43,6 +44,25 @@ static BOOL ApolloDuoRailDualDisplays(void) {
     CGSize a = sizes[0].CGSizeValue;
     CGSize b = sizes[1].CGSizeValue;
     return ApolloDisplayScreensAreDual(a.width, a.height, b.width, b.height);
+}
+
+// The cover display: its short side is under the opened display's minimum.
+// Read from the screen, not the tab bar, so it holds whichever bar UIKit shows.
+static BOOL ApolloDuoScreenIsCover(UIScreen *screen) {
+    CGSize size = screen.bounds.size;
+    return size.width > 0.0 && size.height > 0.0
+        && MIN(size.width, size.height) < (CGFloat)ApolloDuoUnfoldedMinimumSide;
+}
+
+BOOL ApolloDuoCoverUsesTabBarInWindow(UIWindow *window) {
+    if (!sDuoCoverTabBar || !ApolloDeviceIsDuo()
+        || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return NO;
+    UIScreen *screen = (window ?: ApolloDeviceAppWindow()).windowScene.screen;
+    return screen && ApolloDuoScreenIsCover(screen);
+}
+
+BOOL ApolloDuoCoverUsesTabBar(void) {
+    return ApolloDuoCoverUsesTabBarInWindow(nil);
 }
 
 static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
@@ -102,11 +122,12 @@ BOOL ApolloDuoUsesAdaptiveBars(void) {
 }
 
 BOOL ApolloDuoAllowsTabBarScrollHiding(void) {
-    // Scroll hiding needs the bottom tab bar: the opened portrait display, or
-    // a short pane under a Picture in Picture, which keeps the bottom bar too.
+    // Scroll hiding needs the bottom tab bar: the opened portrait display, a
+    // short pane under a Picture in Picture, which keeps the bottom bar too,
+    // or the closed display set to use the bottom tab bar.
     return !ApolloDuoUsesAdaptiveBars() ||
         (!ApolloDuoSplitIsResizing()
-            && (ApolloDuoSplitIsUnfoldedPortrait() || ApolloDuoSplitIsShortPane()));
+            && (ApolloDuoSplitIsUnfoldedPortrait() || ApolloDuoSplitIsShortPane() || ApolloDuoCoverUsesTabBar()));
 }
 
 BOOL ApolloDuoRailHasVisibleSideBar(void) {
@@ -203,6 +224,13 @@ CGFloat ApolloDuoRailFeedContentWidth(UITableView *table) {
     if (ApolloDuoSplitIsUnfoldedPortrait()) return 0.0;
     if (ApolloDuoRailModeForTabs(tabs) != ApolloDuoModeClosed
         && !ApolloDuoRailHasVisibleSideBar()) return 0.0;
+    if (ApolloDuoCoverUsesTabBar()) {
+        // No rail to reserve: the vertical status bar's strip is the table's
+        // own safe area, live from the first layout.
+        if (!table.window) return 0.0;
+        UIEdgeInsets safe = table.safeAreaInsets;
+        return MAX(0.0, CGRectGetWidth(table.bounds) - safe.left - safe.right);
+    }
     CGFloat width = CGRectGetWidth(tabs.view.bounds) - ApolloDuoClosedContentRightInset(tabs);
     if (table.window) {
         // UIKit keeps the secondary table full-screen beneath the primary

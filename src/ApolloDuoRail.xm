@@ -7,6 +7,9 @@
 #import "ApolloTextureDecls.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloDeviceGeometry.h"
+#import "ApolloDeviceDisplay.h"
+#import "ApolloDuoCompatibility.h"
+#import "ApolloState.h"
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -376,6 +379,145 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
     sApolloDuoClampingFloatingButton = NO;
 }
 
+// With When Closed set to Bottom Tab Bar, the closed Duo is laid out like a
+// phone (tabs at the bottom, the back button and every bar item at the top,
+// pages the full width of the screen) while the status bar stays vertical on
+// the side, as it is with the rail.
+// - iOS 27.1's public UIVerticalBarBehaviorDisabled can't be used: it also
+//   turns the status bar horizontal, into the navigation bar's row.
+// - The private _UITraitVerticalBarSuppressed trait (what UIKit sets for a
+//   sheet) takes the vertical bar out of one subtree; set on each tab, the
+//   bars move back to the top while the tab bar controller keeps the vertical
+//   status bar.
+// - -[_UITabBarControllerAdaptiveVisualStyle tabBarPosition] answers 3 or 4
+//   (a vertical tab bar) while the traits name a vertical bar edge, and 1 (the
+//   floating bottom bar) otherwise; the cover answers 1.
+static const NSInteger kApolloDuoTabBarPositionBottom = 1;
+static BOOL sApolloDuoCoverTabBarSupported;
+
+BOOL ApolloDuoCoverTabBarSupported(void) { return sApolloDuoCoverTabBarSupported; }
+
+static UITabBarController *ApolloDuoStyleTabBarController(id style) {
+    id tabs = ApolloSendObject(style, @selector(tabBarController));
+    return [tabs isKindOfClass:UITabBarController.class] ? tabs : nil;
+}
+
+// Places the tab bar again: UIKit's own path when the vertical bar comes or
+// goes, which re-reads tabBarPosition and lays the tab bar out.
+static void ApolloDuoReplaceTabBar(UITabBarController *tabs) {
+    id style = ApolloSendObject(tabs, NSSelectorFromString(@"_visualStyle"));
+    SEL refresh = NSSelectorFromString(@"_verticalBarAvailabilityDidChange");
+    if (![style respondsToSelector:refresh]) {
+        ApolloLog(@"[DuoRail] tab bar placement refresh unavailable (style %@)", style ? NSStringFromClass([style class]) : @"none");
+        return;
+    }
+    ((void (*)(id, SEL))objc_msgSend)(style, refresh);
+}
+
+// Each tab's navigation controller takes the vertical bar out of its own
+// subtree, as UIKit does for a sheet: its bar keeps the back button and every
+// item at the top, and its pages lose the strip's safe area. The tab bar
+// controller above keeps the vertical bar, so the status bar stays vertical.
+static void ApolloDuoSuppressVerticalBarInTabs(UITabBarController *tabs, BOOL suppress) {
+    Class suppressed = objc_getClass("_UITraitVerticalBarSuppressed");
+    if (!suppressed || ![tabs isKindOfClass:UITabBarController.class]) return;
+    for (UIViewController *tab in tabs.viewControllers) {
+        if (@available(iOS 17.0, *)) {
+            id<UITraitOverrides> overrides = tab.traitOverrides;
+            BOOL has = [overrides containsTrait:suppressed];
+            if (suppress && (!has || [overrides valueForNSIntegerTrait:suppressed] != 1)) {
+                [overrides setNSIntegerValue:1 forTrait:suppressed];
+                ApolloLog(@"[DuoRail] vertical bar suppressed in %@", NSStringFromClass(tab.class));
+            } else if (!suppress && has) {
+                [overrides removeTrait:suppressed];
+                ApolloLog(@"[DuoRail] vertical bar restored in %@", NSStringFromClass(tab.class));
+            }
+        }
+    }
+}
+
+// The strip's safe area still reaches each tab from the tab bar controller.
+// Pages run the full width under the vertical status bar, as pages run under
+// the status bar on a phone; their navigation bar keeps the inset, so its
+// items stay clear of the clock. Each page's share is kept apart from any
+// other additionalSafeAreaInsets, so turning it off restores exactly those.
+static char kApolloDuoCoverPageInsetKey;
+
+static void ApolloDuoCoverSetPageInset(UIViewController *page, UIEdgeInsets cancel) {
+    NSValue *stored = objc_getAssociatedObject(page, &kApolloDuoCoverPageInsetKey);
+    UIEdgeInsets previous = stored ? stored.UIEdgeInsetsValue : UIEdgeInsetsZero;
+    if (fabs(previous.left - cancel.left) < 0.5 && fabs(previous.right - cancel.right) < 0.5) return;
+    UIEdgeInsets insets = page.additionalSafeAreaInsets;
+    insets.left += cancel.left - previous.left;
+    insets.right += cancel.right - previous.right;
+    BOOL none = fabs(cancel.left) < 0.5 && fabs(cancel.right) < 0.5;
+    // Stored first: the margin hook reads it while the new inset lays the page out.
+    objc_setAssociatedObject(page, &kApolloDuoCoverPageInsetKey, none ? nil : [NSValue valueWithUIEdgeInsets:cancel],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    page.additionalSafeAreaInsets = insets;
+}
+
+static BOOL ApolloDuoIsMainTab(UINavigationController *navigation) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    return [tabs isKindOfClass:UITabBarController.class] && navigation.tabBarController == tabs
+        && [tabs.viewControllers containsObject:navigation];
+}
+
+static void ApolloDuoCoverUpdatePages(UINavigationController *navigation, UIViewController *extra) {
+    if (!navigation.isViewLoaded) return;
+    BOOL cover = ApolloDuoIsMainTab(navigation) && ApolloDuoCoverUsesTabBarInWindow(navigation.view.window);
+    UIEdgeInsets safe = navigation.view.safeAreaInsets;
+    UIEdgeInsets cancel = cover ? UIEdgeInsetsMake(0, -safe.left, 0, -safe.right) : UIEdgeInsetsZero;
+    for (UIViewController *page in navigation.viewControllers) ApolloDuoCoverSetPageInset(page, cancel);
+    if (extra && ![navigation.viewControllers containsObject:extra]) ApolloDuoCoverSetPageInset(extra, cancel);
+}
+
+static void ApolloDuoUpdateVerticalBar(void) {
+    UITabBarController *tabs = (id)ApolloMainTabBarController();
+    if (![tabs isKindOfClass:UITabBarController.class]) return;
+    ApolloDuoSuppressVerticalBarInTabs(tabs, ApolloDuoCoverUsesTabBarInWindow(tabs.viewIfLoaded.window));
+    ApolloDuoReplaceTabBar(tabs);
+    for (UIViewController *tab in tabs.viewControllers) {
+        if ([tab isKindOfClass:UINavigationController.class]) ApolloDuoCoverUpdatePages((UINavigationController *)tab, nil);
+    }
+}
+
+void ApolloDuoCoverTabBarSettingChanged(void) {
+    ApolloLog(@"[DuoRail] closed tab bar %@ (applies now: %d)", sDuoCoverTabBar ? @"bottom" : @"side rail",
+              ApolloDuoCoverUsesTabBar());
+    ApolloDuoUpdateVerticalBar();
+    ApolloDuoRailSync();
+}
+
+%group ApolloDuoCoverTabBarHooks
+%hook ApolloDuoTabBarAdaptiveStyle
+- (NSInteger)tabBarPosition {
+    NSInteger position = %orig;
+    if ((position != 3 && position != 4) || !sDuoCoverTabBar) return position;
+    UITabBarController *tabs = ApolloDuoStyleTabBarController(self);
+    return tabs && ApolloDuoCoverUsesTabBarInWindow(tabs.viewIfLoaded.window) ? kApolloDuoTabBarPositionBottom : position;
+}
+%end
+%end
+
+// UIKit stores no minimum margin on the vertical bar's side, which the strip
+// normally pads. A cover page runs under the strip, so it gets the other
+// side's margin there (inset grouped tables would otherwise touch the edge).
+// The root view reads this private method, which reads the stored margins
+// directly (not through -systemMinimumLayoutMargins).
+%group ApolloDuoCoverMarginHooks
+%hook UIViewController
+- (UIEdgeInsets)_minimumLayoutMarginsForView {
+    UIEdgeInsets margins = %orig;
+    if (!sDuoCoverTabBar || !objc_getAssociatedObject(self, &kApolloDuoCoverPageInsetKey)) return margins;
+    CGFloat side = MAX(margins.left, margins.right);
+    margins.left = side;
+    margins.right = side;
+    return margins;
+}
+%end
+%end
+
 %group ApolloDuoRailTabs
 
 %hook _TtC6Apollo22ApolloTabBarController
@@ -391,6 +533,7 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     ApolloDuoRailSync();
+    if (sDuoCoverTabBar) ApolloDuoUpdateVerticalBar();
 }
 
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
@@ -418,6 +561,9 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
         ApolloDuoRailSync();
     } completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
         (void)context;
+        // A fold or unfold moves the app between displays; the cover's bottom
+        // tab bar applies on one only.
+        if (sDuoCoverTabBar) ApolloDuoUpdateVerticalBar();
         // Let the split host finish its resize before deciding whether the
         // resulting bottom bar can minimize again.
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -733,7 +879,14 @@ static CGRect ApolloDuoHollaBannerFrame(UIView *banner, CGRect frame) {
 
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
     ApolloDuoRailPrepareFeedContent(controller);
+    // Before the page lays out, so it never shows inset by the strip.
+    if (sDuoCoverTabBar) ApolloDuoCoverUpdatePages((UINavigationController *)self, controller);
     %orig(controller, animated);
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+    %orig;
+    if (sDuoCoverTabBar) ApolloDuoCoverUpdatePages((UINavigationController *)self, nil);
 }
 
 %end
@@ -753,6 +906,21 @@ static CGRect ApolloDuoHollaBannerFrame(UIView *banner, CGRect frame) {
         return;
     }
     %init;
+    Class adaptiveStyle = objc_getClass("_UITabBarControllerAdaptiveVisualStyle");
+    if ([adaptiveStyle instancesRespondToSelector:NSSelectorFromString(@"tabBarPosition")]
+        && [adaptiveStyle instancesRespondToSelector:@selector(tabBarController)]) {
+        %init(ApolloDuoCoverTabBarHooks, ApolloDuoTabBarAdaptiveStyle = adaptiveStyle);
+        sApolloDuoCoverTabBarSupported = YES;
+        ApolloLog(@"[DuoRail] closed tab bar position hook installed (closed tab bar %@)", sDuoCoverTabBar ? @"bottom" : @"side rail");
+        if ([UIViewController instancesRespondToSelector:NSSelectorFromString(@"_minimumLayoutMarginsForView")]) {
+            %init(ApolloDuoCoverMarginHooks);
+            ApolloLog(@"[DuoRail] closed tab bar page margin hook installed");
+        } else {
+            ApolloLog(@"[DuoRail] closed tab bar page margin hook skipped: method missing");
+        }
+    } else {
+        ApolloLog(@"[DuoRail] closed tab bar position hook skipped: adaptive style missing");
+    }
     Class fullThread = objc_getClass("_TtC6Apollo16ViewFullPostNode");
     if (fullThread) %init(ApolloDuoFullThreadHooks, ApolloDuoFullThreadNode = fullThread);
     Class composeText = objc_getClass("_TtC6Apollo17PasteableTextView");
