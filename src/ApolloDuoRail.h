@@ -67,6 +67,18 @@ void ApolloDuoRailPinSectionIndex(UITableView *tableView);
 /// YES on the compact Duo cover display. Regular iPhones return NO.
 BOOL ApolloDuoCoverChromeIsActive(void);
 
+/// YES while the closed Duo puts its tabs in a bottom tab bar instead of the
+/// side rail (Settings > Interface > Tab Bar > When Closed). The status bar
+/// stays vertical on the side; only the tab bar moves (see ApolloDuoRail.xm).
+BOOL ApolloDuoCoverUsesTabBar(void);
+/// The same for `window`'s screen; nil reads the app window.
+BOOL ApolloDuoCoverUsesTabBarInWindow(UIWindow *window);
+
+/// Asks UIKit to place the tab bar again after the setting changes.
+void ApolloDuoCoverTabBarSettingChanged(void);
+/// YES once the hook that moves the closed Duo's tab bar is installed.
+BOOL ApolloDuoCoverTabBarSupported(void);
+
 /// Cover content geometry, including when UIKit reports a regular width or
 /// exposes only the active UIScreen. Uses Duo capability and live fold size.
 BOOL ApolloDuoUsesCoverContentInsets(void);

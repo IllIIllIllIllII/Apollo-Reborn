@@ -213,6 +213,8 @@ extern BOOL sHideTopBarOnScroll;
 extern NSInteger sDuoUnfoldedFeedLayout;
 // Standard (default NO) or Liquid Glass for the open Duo subreddit panel.
 extern BOOL sDuoSubredditPanelGlassEnabled;
+// Closed Duo uses a bottom tab bar instead of the side rail (UDKeyDuoCoverTabBar).
+extern BOOL sDuoCoverTabBar;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);
