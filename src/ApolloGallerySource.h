@@ -26,5 +26,10 @@ NSDictionary * _Nullable ApolloGallerySourcePreparationState(UIViewController *s
 // a loading state, or retain a cursor if more category posts remain uninspected.
 BOOL ApolloGallerySeedFeedFromSource(ApolloGalleryFeed *feed, UIViewController *sourceViewController);
 
+// The compact post JSON Apollo parsed for `link` (an RDKLink), with its current
+// NSFW and spoiler flags, in the shape a gallery listing's `data` takes. nil for
+// a link built without a captured response (an archived or restored model).
+NSDictionary * _Nullable ApolloGallerySourcePostForLink(id link);
+
 __END_DECLS
 NS_ASSUME_NONNULL_END

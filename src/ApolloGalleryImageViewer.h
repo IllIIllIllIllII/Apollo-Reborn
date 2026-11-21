@@ -11,6 +11,7 @@
 // two never disagree about what has been loaded.
 
 #import <UIKit/UIKit.h>
+#import <CoreMedia/CoreMedia.h>
 
 @class ApolloGalleryFeed;
 @class ApolloGalleryImageViewer;
@@ -36,12 +37,43 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithCoder:(NSCoder *)coder NS_UNAVAILABLE;
 
 @property (nonatomic, weak, nullable) id<ApolloGalleryImageViewerDelegate> galleryDelegate;
+// Shown inside another screen (the Duo's post split) instead of presented:
+// no Done button, no swipe to close, no post card and no rotation offer. Set
+// before the view loads.
+@property (nonatomic) BOOL embedded;
 // Index of the picture currently on screen.
 @property (nonatomic, readonly) NSInteger currentIndex;
 
 // Called by the grid when IT loaded more, so the pager picks up the same items
 // without a second request.
 - (void)feedDidAppendItems;
+
+// Pauses the page's video, for an embedded viewer the screen around it hides.
+- (void)pausePlayback;
+
+// Embedded: the hold menu for the page on screen when the screen around the
+// viewer has its own (the feed's), in place of Gallery View's. Returning nil
+// keeps Gallery View's. `embeddedMenuDidEnd` runs once that menu closes.
+@property (nonatomic, copy, nullable) UIMenu *_Nullable (^embeddedMenu)(NSInteger index, UIView *sourceView);
+@property (nonatomic, copy, nullable) dispatch_block_t embeddedMenuDidEnd;
+
+// Embedded: whether a rightward drag starting at `point` (in the viewer's
+// view) is the viewer's own (paging back, panning a zoomed picture, the video
+// controls) rather than the screen's Back.
+- (BOOL)ownsRightwardDragAtPoint:(CGPoint)point;
+
+// Embedded: what the screen around the viewer already shows, so the viewer
+// picks up from it. A picture shows on its item's page until the viewer's own
+// full-size copy lands; the starting item's video starts at
+// `initialPlaybackTime` (kCMTimeInvalid, the default, starts it from the top).
+- (void)setPlaceholderImage:(UIImage *)image forItemAtIndex:(NSInteger)index;
+@property (nonatomic) CMTime initialPlaybackTime;
+// Embedded: whether videos start muted, in place of Gallery View's saved
+// choice. The mute button toggles it for this viewer and reports it.
+@property (nonatomic, strong, nullable) NSNumber *embeddedVideosMuted;
+@property (nonatomic, copy, nullable) void (^embeddedMuteChanged)(BOOL muted);
+// Where the video on screen is (kCMTimeInvalid without one).
+@property (nonatomic, readonly) CMTime currentPlaybackTime;
 
 @end
 

@@ -2411,6 +2411,44 @@ typedef NS_ENUM(NSInteger, Tag) {
                                                       }] ]];
 }
 
+// Interface → iPhone Duo: how Posts lays out on the flat display in landscape.
+- (ApolloSettingsSection *)buildInterfaceDuoSection {
+    __weak typeof(self) weakSelf = self;
+    NSArray<NSString *> *layouts = @[ @"Feed & Thread", @"Sidebar & Post" ];
+    ApolloSettingsRow *landscapeLayout =
+        [ApolloSettingsRow valueRowWithID:@"interface.duoLandscapeLayout"
+                                   title:@"Landscape Layout"
+                                  detail:^NSString * { return layouts[sDuoLandscapeLayout == 1 ? 1 : 0]; }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.duoLandscapeLayout"],
+                @"Landscape Layout", layouts, sDuoLandscapeLayout == 1 ? 1 : 0, ^(NSInteger picked) {
+                    NSInteger layout = picked == 1 ? 1 : 0;
+                    if (sDuoLandscapeLayout == layout) return;
+                    sDuoLandscapeLayout = layout;
+                    [NSUserDefaults.standardUserDefaults setInteger:layout forKey:UDKeyDuoLandscapeLayout];
+                    [weakSelf reloadRowWithID:@"interface.duoLandscapeLayout"];
+                    ApolloDuoSplitScheduleUpdate();
+                });
+        }];
+    ApolloSettingsSection *section =
+        [ApolloSettingsSection sectionWithTitle:@"iPhone Duo"
+                                         footer:@"How Posts looks when the Duo is open in landscape. With Split View on, Feed & Thread opens posts beside the feed, and Sidebar & Post opens a post's media or link beside its comments."
+                                           rows:@[ landscapeLayout ]];
+    // Headers are title-cased, which would print "Iphone".
+    section.headerDisplay = ^(UITableViewHeaderFooterView *view) {
+        if ([view.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
+            UIListContentConfiguration *configuration = [(UIListContentConfiguration *)view.contentConfiguration copy];
+            if ([configuration.text isEqualToString:@"iPhone Duo"]) return;
+            configuration.text = @"iPhone Duo";
+            view.contentConfiguration = configuration;
+        } else if (view.textLabel.text.length) {
+            view.textLabel.text = @"iPhone Duo";
+        }
+    };
+    section.visible = ^BOOL { return ApolloDuoUsesAdaptiveBars(); };
+    return section;
+}
+
 // Interface → Unread Badges: how the Inbox's unread badges look. Apollo still
 // decides what is unread; see ApolloUnreadBadges.h for where each one is drawn.
 - (ApolloSettingsSection *)buildInterfaceUnreadBadgesSection {
@@ -6193,6 +6231,7 @@ static NSURL *ApolloWriteExportedLogFile(NSString *logs) {
 - (NSString *)apollo_screenTitle { return @"Interface"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
     return @[ [self buildInterfaceTabBarSection],
+              [self buildInterfaceDuoSection],
               [self buildInterfaceUnreadBadgesSection],
               [self buildInterfaceDisplayNavigationSection],
               [self buildInterfaceLiquidGlassSection],
