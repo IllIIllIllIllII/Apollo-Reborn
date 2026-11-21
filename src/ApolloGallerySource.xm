@@ -117,6 +117,12 @@ static NSDictionary *ApolloGallerySourcePostWithLiveFlags(NSDictionary *post, id
     return current;
 }
 
+NSDictionary *ApolloGallerySourcePostForLink(id link) {
+    if (!ApolloClassRDKLink || ![link isKindOfClass:ApolloClassRDKLink]) return nil;
+    NSDictionary *post = objc_getAssociatedObject(link, &kApolloGallerySourcePostKey);
+    return post ? ApolloGallerySourcePostWithLiveFlags(post, link, YES) : nil;
+}
+
 #pragma mark - Reading a complete native listing
 
 static BOOL ApolloGallerySourceReadIvarBytes(id object, const char *name, void *bytes, size_t length) {

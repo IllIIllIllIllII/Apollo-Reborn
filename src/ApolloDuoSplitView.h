@@ -11,6 +11,17 @@ UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage);
 BOOL ApolloDuoSplitThreadBesideFeedLayer(UIViewController *page, CALayer *layer);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
+/// Post & Thread: the comments row a post's left column shows instead (its
+/// media row), folded to nothing, and its cell hidden while it is.
+BOOL ApolloDuoPostSplitHidesRow(UITableView *table, NSIndexPath *path);
+void ApolloDuoPostSplitDisplayCell(UITableView *table, UITableViewCell *cell, NSIndexPath *path);
+/// YES (and pauses its video if anything started it) for a folded media row's
+/// RichMediaHeaderCellNode or its RichMediaNode: it takes no visibility events
+/// or unpause-all resumes while the left column plays the post.
+BOOL ApolloDuoPostSplitSilencesHeader(id node);
+/// A link post's CommentsHeaderCellNode leaves out its link card while the
+/// left column shows the page. Safe off the main thread.
+BOOL ApolloDuoPostSplitDropsLinkCard(id headerCellNode);
 BOOL ApolloDuoSplitIsUnfoldedPortrait(void);
 /// The window size the Duo layout follows: while a field is edited, a
 /// height-only change keeps the size from before it.

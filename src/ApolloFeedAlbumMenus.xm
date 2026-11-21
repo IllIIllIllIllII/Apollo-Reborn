@@ -13,6 +13,7 @@
 #import "ApolloToast.h"
 #import "ApolloClasses.h"
 #import "ApolloMediaAutoplay.h"
+#import "ApolloFeedMediaMenu.h"
 
 // This is our own carousel class. Its native-open helper also serves its
 // ordinary tap recognizer, including the correct index for pages beyond 3.
@@ -27,6 +28,9 @@
 @property (nonatomic, strong) id link;
 @property (nonatomic, copy) NSURL *albumURL;
 @property (nonatomic, copy) NSArray<ApolloSaveAllMediaItem *> *items;
+// What the media's own viewer already resolved, for when the link can't be
+// (a text post's pictures, a post mixing text and media).
+@property (nonatomic, copy) NSArray<ApolloSaveAllMediaItem *> *fallbackItems;
 @property (nonatomic, strong) UIImage *previewImage;
 @property (nonatomic, weak) UIViewController *presenter;
 @property (nonatomic, weak) UIView *sourceView;
@@ -342,6 +346,11 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
     if (!context.albumOverview && !context.items.count) {
         UIDeferredMenuElement *loading = [UIDeferredMenuElement elementWithProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
             ApolloSaveAllMediaResolveLink(context.link, ^(NSArray *items, NSError *error) {
+                if ((error || context.index >= items.count) && context.index < context.fallbackItems.count) {
+                    context.items = context.fallbackItems;
+                    completion(ApolloFeedAlbumMenu(context).children);
+                    return;
+                }
                 if (error || context.index >= items.count) {
                     UIAction *unavailable = [UIAction actionWithTitle:@"Unable to Load Media" image:nil identifier:nil handler:^(__unused UIAction *action) {}];
                     unavailable.attributes = UIMenuElementAttributesDisabled;
@@ -401,6 +410,32 @@ static UIMenu *ApolloFeedAlbumMenu(ApolloFeedAlbumMenuContext *context) {
         [live.presenter presentViewController:sheet animated:YES completion:nil];
     });
     return [UIMenu menuWithTitle:@"" children:context.collection ? @[copy, save, saveAll, share] : @[copy, save, share]];
+}
+
+id ApolloFeedMediaMenuSession(id link, NSUInteger index, BOOL album, UIViewController *presenter, UIView *sourceView,
+                              NSArray<ApolloSaveAllMediaItem *> *fallbackItems) {
+    ApolloFeedAlbumMenuContext *context = [ApolloFeedAlbumMenuContext new];
+    context.link = link;
+    context.index = index;
+    context.collection = album;
+    context.presenter = presenter;
+    context.sourceView = sourceView;
+    context.fallbackItems = fallbackItems;
+    if (!link) context.items = fallbackItems;
+    return context;
+}
+
+UIMenu *ApolloFeedMediaMenuForSession(id session) {
+    return [session isKindOfClass:ApolloFeedAlbumMenuContext.class] ? ApolloFeedAlbumMenu(session) : [UIMenu menuWithChildren:@[]];
+}
+
+void ApolloFeedMediaMenuSessionDidEnd(id session) {
+    if (![session isKindOfClass:ApolloFeedAlbumMenuContext.class]) return;
+    ApolloFeedAlbumMenuContext *context = session;
+    context.ended = YES;
+    dispatch_block_t pending = context.pendingAction;
+    context.pendingAction = nil;
+    if (pending) pending();
 }
 
 %hook _TtC6Apollo19PostCellActionTaker

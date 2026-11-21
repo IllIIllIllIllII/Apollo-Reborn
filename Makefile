@@ -93,6 +93,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDuoNavigationGestures.m \
     $(SRC_DIR)/ApolloDuoSplitDivider.m \
     $(SRC_DIR)/ApolloDuoFeedRail.m \
+    $(SRC_DIR)/ApolloDuoPostContent.m \
     $(SRC_DIR)/ApolloDuoRail.xm \
     $(SRC_DIR)/ApolloDuoSubsChrome.m \
     $(SRC_DIR)/ApolloDuoSubsChromeHooks.xm \

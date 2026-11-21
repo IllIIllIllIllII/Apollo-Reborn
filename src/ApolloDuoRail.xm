@@ -483,6 +483,7 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 - (void)tableView:(UITableView *)table willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)path {
     %orig(table, cell, path);
     ApolloDuoAccountGridDisplayCell((UITableView *)self, cell, path);
+    ApolloDuoPostSplitDisplayCell((UITableView *)self, cell, path);
     if ([cell isKindOfClass:NSClassFromString(@"_ASTableViewCell")]) {
         ASCellNode *node = ((_ASTableViewCell *)cell).node;
         node.backgroundColor = ApolloDuoAccountFeedNodeBackground(node, node.backgroundColor);
@@ -492,6 +493,7 @@ static void ApolloDuoAdjustFloatingActionButton(UIView *button) {
 
 - (CGFloat)tableView:(UITableView *)table heightForRowAtIndexPath:(NSIndexPath *)path {
     if (ApolloDuoAccountHidesProfileRow((UITableView *)self, path)) return 0;
+    if (ApolloDuoPostSplitHidesRow((UITableView *)self, path)) return 0;
     CGFloat gridHeight = ApolloDuoAccountGridRowHeight((UITableView *)self, path);
     if (gridHeight >= 0) return gridHeight;
     return %orig(table, path);

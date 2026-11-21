@@ -390,6 +390,15 @@ static NSString *const UDKeyDuoUnfoldedFeedLayout = @"DuoLandscapeFeedLayout";
 // Open Duo subreddit panel appearance: NO = Standard
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
+// Duo's flat landscape Posts layout: 0 = Feed & Thread (default; the feed
+// column beside the open thread), 1 = Post & Thread (posts open full width
+// beside the sidebar; with Split View on, a post's media or link stands beside
+// its comments).
+static NSString *const UDKeyDuoLandscapeLayout = @"DuoLandscapePostsLayout";
+// Post & Thread: the left column's share (0–1) of the display beside a
+// post's comments, saved when its divider is released. Unset or invalid
+// means 0.5. See ApolloDuoSplitDivider.
+static NSString *const UDKeyDuoPostContentShare = @"DuoPostContentShare";
 // Subreddit quick-switcher (feed title tap, Posts tab long press): YES = the
 // tweak's Modern search sheet (default on Duo), NO = Apollo's Classic inline popup
 // (default elsewhere; it doesn't carry over a Duo unfold).

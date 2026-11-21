@@ -28,6 +28,12 @@ if 'UINavigationController *navigation,' not in functions[4]:
     functions[4] = functions[4].replace(
         'ApolloDuoSplitState *state, UIViewController *controller)',
         'ApolloDuoSplitState *state, __unused UINavigationController *navigation, UIViewController *controller)')
+# Post & Thread never pairs threads. The layout check and the pairing check
+# are one-liners, so this slice ends at ApolloDuoPostsPairsThreads' brace.
+pairing = 'static BOOL ApolloDuoPostsUsesPostAndThread(void)'
+if pairing in source:
+    start = source.index(pairing)
+    functions.insert(0, source[start:source.index('\n}', start) + 2])
 fixture = (root / 'tests/duo_feed_history_tests.m').read_text()
 (build / 'duo_feed_history_tests.m').write_text(
     fixture.replace('// INCLUDE_PRODUCTION_HISTORY', '\n\n'.join(functions)))
