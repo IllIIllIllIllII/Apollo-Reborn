@@ -857,8 +857,8 @@ static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
     self.pendingFeedControlsReveal = NO;
     self.feedControlsRevealMisses = 0;
     // Every control ends visible, also one its page hasn't put on screen yet:
-    // left transparent, its bar item showed an empty glass circle that still
-    // took taps. Only the ones on screen fade in.
+    // left transparent, its bar item shows an empty glass circle that still
+    // takes taps. Only the ones on screen fade in.
     for (UIButton *button in controls) button.alpha = 1;
     if (!buttons.count) return;
     BOOL visible = self.navigationController.topViewController == self
@@ -1024,8 +1024,8 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     CGSize size = self.view.bounds.size;
     return size.width > size.height;
 }
-// The rail now: in Feed & Thread a thread paired beside the feed takes its
-// place, and the List button comes back.
+// Whether the rail shows: in Feed & Thread a thread paired beside the feed
+// takes its place, and the List button comes back.
 - (BOOL)showsFeedRail {
     return [self usesFeedRail] && (ApolloDuoPostsUsesPostAndThread() || !self.postsColumnsPaired);
 }
@@ -3386,15 +3386,29 @@ static void ApolloDuoFeedRailNotePick(ApolloDuoSplitHost *host, NSInteger feed, 
     ApolloDuoFeedRailRefreshSoon(host);
 }
 
-BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table) {
-    if (!table || !NSThread.isMainThread) return NO;
+// The host whose drawer shows `table` as its subreddit list, or nil. Its
+// callers run for every subreddit list table on every device, so anything but
+// the Duo leaves at once.
+static ApolloDuoSplitHost *ApolloDuoSplitHostForListTable(UITableView *table) {
+    if (!table || !ApolloDeviceIsDuo() || !NSThread.isMainThread) return nil;
     UIViewController *owner = nil;
     for (UIResponder *responder = table.nextResponder; responder; responder = responder.nextResponder) {
         if ([responder isKindOfClass:UIViewController.class]) { owner = (id)responder; break; }
     }
     UINavigationController *nav = owner.navigationController;
     ApolloDuoSplitHost *host = nav ? ApolloDuoSplitStateForNavigation(nav, NO).host : nil;
-    return host && nav == host.subredditList && host.listOmitsRailRows;
+    return nav && nav == host.subredditList ? host : nil;
+}
+
+BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table) {
+    return ApolloDuoSplitHostForListTable(table).listOmitsRailRows;
+}
+
+void ApolloDuoSplitSubredditListDidReload(UITableView *table) {
+    ApolloDuoSplitHost *host = ApolloDuoSplitHostForListTable(table);
+    // The rail's Moderator shortcut follows the list's row (an account switch,
+    // the moderated subreddits arriving); layout reads it again.
+    if (host.feedRail) [host.viewIfLoaded setNeedsLayout];
 }
 
 // Picking what already shows scrolls the feed to the top instead, or goes

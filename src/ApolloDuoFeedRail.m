@@ -76,6 +76,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic, strong) ApolloGalleryImageRequest *iconRequest;
 // The subreddit info lookup has been asked for (once, when first in view).
 @property(nonatomic) BOOL infoRequested;
+// An icon is loading or shown.
 @property(nonatomic) BOOL hasIcon;
 @property(nonatomic) BOOL avatar;
 // A feed shortcut drawn as a tile, circle or Classic icon, at the avatars' size.
@@ -167,7 +168,12 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     __weak ApolloDuoFeedRailButton *weakSelf = self;
     self.iconRequest = [ApolloGalleryImageLoader.sharedLoader loadThumbnailAtURL:url completion:^(UIImage *image) {
         ApolloDuoFeedRailButton *button = weakSelf;
-        if (!button || !image) return;
+        if (!button) return;
+        if (!image) {
+            // A stale or broken URL: the info lookup may still find a working one.
+            button.hasIcon = NO;
+            return;
+        }
         button.icon.image = image;
         button.initial.hidden = YES;
     }];

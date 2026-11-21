@@ -2889,8 +2889,8 @@ static BOOL ApolloSubredditIndexListIsEditing(UITableView *tableView) {
     return [list isKindOfClass:UIViewController.class] && [(UIViewController *)list isEditing];
 }
 
-// The favorites section, kept per section count: it moves only when sections
-// come or go.
+// The favorites section, kept until the sections change in number or the
+// list reloads (the reloadData hook drops it).
 static NSInteger ApolloSubredditIndexRailFavoritesSection(UITableView *tableView) {
     id<UITableViewDataSource> dataSource = tableView.dataSource;
     NSInteger sections = [dataSource respondsToSelector:@selector(numberOfSectionsInTableView:)]
@@ -3407,6 +3407,10 @@ static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
         // Refresh the actual Apollo headers; UIKit's headerViewForSection:
         // does not return its plain RecreatedTableSectionHeaderView instances.
         for (UIView *header in ApolloSubredditIndexHeadersForTable(table)) {
+            // A hidden header shows nothing; it is styled again when displayed.
+            // Beside the Duo's feed rail the list keeps UIKit's own spare
+            // headers around hidden, and UIKit asserts when their color is set.
+            if (header.hidden) continue;
             if (objc_getAssociatedObject(header, &kApolloSubredditHeaderSectionKey)) {
                 ApolloSubredditIndexApplyHeaderSurfaceForPinnedState(header, table,
                     ApolloSubredditIndexHeaderIsPinned(header, table));
@@ -3416,9 +3420,16 @@ static BOOL ApolloNativeIndexHooksAreCompatible(Class indexClass) {
 }
 
 - (void)reloadData {
+    // Sections may have changed without changing in number.
+    if (objc_getAssociatedObject(self, &kApolloSubredditRailFavoritesSectionKey)) {
+        objc_setAssociatedObject(self, &kApolloSubredditRailFavoritesSectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     %orig;
     ApolloSubredditIndexInstallOrUpdate((UITableView *)self);
     ApolloSubredditIndexApplyNativeIndexAccent((UITableView *)self);
+    if ([sApolloSubredditKnownTables containsObject:(UITableView *)self]) {
+        ApolloDuoSplitSubredditListDidReload((UITableView *)self);
+    }
 }
 
 - (void)deleteRowsAtIndexPaths:(NSArray<NSIndexPath *> *)indexPaths withRowAnimation:(UITableViewRowAnimation)animation {
