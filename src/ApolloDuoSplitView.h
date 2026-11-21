@@ -11,7 +11,7 @@ UIViewController *ApolloDuoSplitThreadBesideFeed(UIViewController *feedPage);
 BOOL ApolloDuoSplitThreadBesideFeedLayer(UIViewController *page, CALayer *layer);
 BOOL ApolloDuoSplitIsUnfolded(void);
 BOOL ApolloDuoRequiresSubredditEnhancements(void);
-/// Sidebar & Post: the comments row a post's left column shows instead (its
+/// Post & Thread: the comments row a post's left column shows instead (its
 /// media row), folded to nothing, and its cell hidden while it is.
 BOOL ApolloDuoPostSplitHidesRow(UITableView *table, NSIndexPath *path);
 void ApolloDuoPostSplitDisplayCell(UITableView *table, UITableViewCell *cell, NSIndexPath *path);
@@ -29,9 +29,9 @@ CGSize ApolloDuoLayoutSize(CGSize liveSize);
 /// Apollo shares the opened display with a window stacked above or below it
 /// (Picture in Picture or another app on top): full width, but under 600pt tall.
 BOOL ApolloDuoSplitIsShortPane(void);
-/// Sidebar & Post: whether `table` is the subreddit list in the drawer that
-/// opens beside the feed rail. The rail already holds the feed shortcuts and
-/// the favorites, so the list leaves those rows out there.
+/// Whether `table` is the subreddit list in the drawer that opens beside the
+/// feed rail. The rail already holds the feed shortcuts and the favorites, so
+/// the list leaves those rows out there.
 BOOL ApolloDuoSplitListOmitsRailRows(UITableView *table);
 /// The Original/Focused feed layout applies: unfolded, or a short pane.
 BOOL ApolloDuoSplitShowsFeedLayout(void);

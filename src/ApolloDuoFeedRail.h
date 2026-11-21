@@ -2,13 +2,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Sidebar & Post (Duo, flat, landscape): the leading column beside the
-// full-width Posts feed. A full-height glass panel, inset like the subreddit
-// drawer, on a plain backdrop that ends in a divider where the feed begins:
-// the feed shortcuts the subreddit list shows (Home, Popular, All, Moderator,
-// in its icon style) and Subreddits, which opens the drawer beside it, at the
-// top, then the account's favorite subreddits and followed users. The host sizes the view to the column's
-// reserved width and shows it.
+// Duo, flat, landscape: the leading column beside the Posts feed. A
+// full-height glass panel, inset like the subreddit drawer, on a plain
+// backdrop that ends in a divider where the feed begins: the feed shortcuts
+// the subreddit list shows (Home, Popular, All, Moderator, in its icon style)
+// and Subreddits, which opens the drawer beside it, at the top, then the
+// account's favorite subreddits and followed users. The host sizes the view to
+// the column's reserved width and shows it.
 @interface ApolloDuoFeedRail : UIView
 /// Width the feed reserves for the column: the panel, its 12pt inset from
 /// the display edge and a 12pt gap before the feed.

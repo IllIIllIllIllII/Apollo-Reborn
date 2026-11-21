@@ -413,9 +413,9 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 @property(nonatomic, strong) UIButton *moreButton;
 @property(nonatomic, strong) UINavigationBar *sidebarNavigationBar;
 @property(nonatomic, strong) UIButton *profileBackButton;
-// Sidebar & Post: the leading column of feed shortcuts beside feed pages.
+// Landscape: the leading column of feed shortcuts beside feed pages.
 @property(nonatomic, strong) ApolloDuoFeedRail *feedRail;
-// Sidebar & Post: a plain backdrop under UIKit's trailing rail with a divider
+// Beside the rail: a plain backdrop under UIKit's trailing rail with a divider
 // on its leading edge, so the feed's rows end there instead of running behind
 // the rail. The feed rail draws its own on the leading side.
 @property(nonatomic, strong) UIView *trailingBackdrop;
@@ -436,7 +436,7 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 - (void)refreshFeedRailSelection;
 // Whether the drawer's list currently leaves out the rows the rail holds.
 @property(nonatomic) BOOL listOmitsRailRows;
-// Sidebar & Post with Split View on: the left column showing a post's content
+// Post & Thread with Split View on: the left column showing a post's content
 // beside its comments, the comments page it belongs to, and whether that page
 // keeps the column's width.
 @property(nonatomic) BOOL postContentSplitEnabled;
@@ -452,7 +452,7 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 // The Split View toggle is moving the columns; layout leaves them alone.
 @property(nonatomic) BOOL postContentAnimating;
 // Which meaning the Split button was last drawn for (nil before the first).
-@property(nonatomic, strong) NSNumber *splitButtonSidebar;
+@property(nonatomic, strong) NSNumber *splitButtonPostContent;
 // The divider between a post's left column and its comments, and the width
 // it shows while held.
 @property(nonatomic, strong) ApolloDuoSplitDivider *postContentDivider;
@@ -466,13 +466,13 @@ static void ApolloDuoSetThreadDragOffset(UIView *view, CGFloat offset) {
 - (void)toggleList;
 @end
 
-// Sidebar & Post (Settings > Interface > Landscape Layout): the feed never
-// pairs a thread beside it. Posts open full width on the feed's own stack, and
-// a rail of feed shortcuts stands beside feed pages. Feed & Thread keeps the
-// rail too, until a thread pairs beside the feed.
-static BOOL ApolloDuoPostsUsesSidebar(void) { return sDuoLandscapeLayout == 1; }
+// Post & Thread (Settings > Interface > Landscape Layout): the feed never
+// pairs a thread beside it. Posts open full width on the feed's own stack,
+// beside the rail, and with Split View on a post's content stands beside its
+// comments.
+static BOOL ApolloDuoPostsUsesPostAndThread(void) { return sDuoLandscapeLayout == 1; }
 static BOOL ApolloDuoPostsPairsThreads(ApolloDuoSplitHost *host) {
-    return host.postsSplitEnabled && !ApolloDuoPostsUsesSidebar();
+    return host.postsSplitEnabled && !ApolloDuoPostsUsesPostAndThread();
 }
 static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
 
@@ -781,8 +781,8 @@ static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
 }
 - (void)updateSplitButton {
     UIImage *symbol = [UIImage systemImageNamed:@"rectangle.split.2x1"];
-    BOOL sidebar = [self usesPostContent];
-    BOOL enabled = sidebar ? self.postContentSplitEnabled : self.postsSplitEnabled;
+    BOOL postContent = [self usesPostContent];
+    BOOL enabled = postContent ? self.postContentSplitEnabled : self.postsSplitEnabled;
     if (!enabled) {
         // One template image lets the glass button resolve the slash and the
         // symbol together, including appearance and accessibility changes.
@@ -809,7 +809,7 @@ static void ApolloDuoColumnScrubFinishNow(ApolloDuoSplitHost *host);
     self.splitButton.configuration = configuration;
     self.splitBarItem.image = symbol;
     self.splitButton.accessibilityValue = enabled ? @"On" : @"Off";
-    self.splitButton.accessibilityLabel = sidebar ? @"Toggle Post and Comments Split" : @"Toggle Feed and Comments Split";
+    self.splitButton.accessibilityLabel = postContent ? @"Toggle Post and Comments Split" : @"Toggle Feed and Comments Split";
 }
 - (void)toggleSplit {
     // Beside the sidebar, Split View puts a post's content beside its comments.
@@ -1027,11 +1027,11 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 // The rail now: in Feed & Thread a thread paired beside the feed takes its
 // place, and the List button comes back.
 - (BOOL)showsFeedRail {
-    return [self usesFeedRail] && (ApolloDuoPostsUsesSidebar() || !self.postsColumnsPaired);
+    return [self usesFeedRail] && (ApolloDuoPostsUsesPostAndThread() || !self.postsColumnsPaired);
 }
-// Sidebar & Post's left column, a post's content beside its comments.
+// Post & Thread's left column, a post's content beside its comments.
 - (BOOL)usesPostContent {
-    return [self usesFeedRail] && ApolloDuoPostsUsesSidebar();
+    return [self usesFeedRail] && ApolloDuoPostsUsesPostAndThread();
 }
 - (void)refreshFeedRailSelection {
     UINavigationController *feed = self.postsNavigation;
@@ -1431,12 +1431,12 @@ static BOOL ApolloDuoSafeAreaInsetsMatch(UIEdgeInsets a, UIEdgeInsets b) {
         // navigation items installed so opening it never reflows the bar.
         // The rail's Subreddits button stands in for List.
         self.listButton.hidden = rail;
-        // Split stays on every page: in Sidebar & Post it puts a post's
+        // Split stays on every page: in Post & Thread it puts a post's
         // content beside its comments, in Feed & Thread it decides how posts open.
         self.splitButton.hidden = portrait;
         BOOL postContent = [self usesPostContent];
-        if (!self.splitButtonSidebar || self.splitButtonSidebar.boolValue != postContent) {
-            self.splitButtonSidebar = @(postContent);
+        if (!self.splitButtonPostContent || self.splitButtonPostContent.boolValue != postContent) {
+            self.splitButtonPostContent = @(postContent);
             [self updateSplitButton];
         }
         [self layoutFeedRail:rail];
@@ -2214,7 +2214,7 @@ static NSUInteger ApolloDuoFeedStackKeptCount(UINavigationController *feed) {
     return kept;
 }
 
-// Sidebar & Post's Split View: a post's content in the left column beside its
+// Post & Thread's Split View: a post's content in the left column beside its
 // comments. The pages' reserves read it too, so they follow the button at once.
 static BOOL ApolloDuoPostContentSplitOn(void) {
     return ![NSUserDefaults.standardUserDefaults boolForKey:@"ApolloDuoPostContentSplitDisabled"];
@@ -2222,7 +2222,7 @@ static BOOL ApolloDuoPostContentSplitOn(void) {
 
 // Feed pages keep the rail's width beside them whether or not they are on top,
 // so opening and closing a post never re-measures the feed. So does a post
-// that shows whole (in Sidebar & Post a text post with no pictures, or any post
+// that shows whole (in Post & Thread a text post with no pictures, or any post
 // while Split View is off; in Feed & Thread any post on the feed's own stack),
 // which keeps the rail beside it. Every other page uses the full width.
 static char kDuoFeedRailInset;
@@ -2232,7 +2232,7 @@ static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page) {
     if (page.class == UIViewController.class || ApolloDuoIsFeedPage(page)
         || [objc_getAssociatedObject(page, &kDuoFeedLinkPage) boolValue]) return YES;
     return ApolloClassCommentsViewController && [page isKindOfClass:ApolloClassCommentsViewController]
-        && (!ApolloDuoPostsUsesSidebar() || !ApolloDuoPostContentSplitOn() || !ApolloDuoPostContentCandidate(page));
+        && (!ApolloDuoPostsUsesPostAndThread() || !ApolloDuoPostContentSplitOn() || !ApolloDuoPostContentCandidate(page));
 }
 
 // The rail's share of a controller's additionalSafeAreaInsets.left. Applied
@@ -2248,7 +2248,7 @@ static void ApolloDuoSetFeedRailInset(UIViewController *controller, CGFloat inse
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Sidebar & Post: UIKit lays the feed's bar out flush against its trailing
+// Beside the rail, UIKit lays the feed's bar out flush against its trailing
 // rail (no margin past the safe area there, 20pt on the leading side), which
 // put the search field and the bar's buttons right on the divider. The feed
 // navigation takes this much more on its trailing edge and each page gives it
@@ -2266,7 +2266,7 @@ static void ApolloDuoSetFeedRailTrailingInset(UIViewController *controller, CGFl
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-#pragma mark - Sidebar & Post: a post's content beside its comments
+#pragma mark - Post & Thread: a post's content beside its comments
 
 // A column kept off screen for its post (one under another post, or one out
 // of room: folded, portrait, the cover-sized snapshot iOS takes on the way to
@@ -2478,7 +2478,7 @@ static void ApolloDuoPostContentHoldVideo(UIViewController *page, BOOL hold) {
     objc_setAssociatedObject(table, &kDuoPostSplitHoldTimer, timer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-// Whether a post on top of the Sidebar & Post feed can take its left column
+// Whether a post on top of the Post & Thread feed can take its left column
 // now: it has one, isn't showing it (the column there, if any, is a covered
 // post's), and nothing is moving.
 static BOOL ApolloDuoPostContentCanJoin(ApolloDuoSplitHost *host, UIViewController *page) {
@@ -5398,11 +5398,17 @@ BOOL ApolloDuoSplitPopRevealsContent(UINavigationController *nav) {
 }
 
 // The Posts thread pane shows a thread right above its backstop, so a Back
-// there closes the thread column (popViewControllerAnimated: below).
+// there closes the thread column (popViewControllerAnimated: below). Beside
+// the sidebar in landscape, a Back at the feed's root closes it too, as the
+// thread's Back button does, and the sidebar comes back; the List button
+// opens the drawer meanwhile.
 BOOL ApolloDuoSplitCanDragThreadClosed(UINavigationController *nav) {
     ApolloDuoSplitState *state = ApolloDuoSplitStateForNavigation(nav, NO);
-    return state.split && state.feed && !state.changing && nav == state.secondary && !state.host.columnScrub
-        && state.host.postsShowingDetail && nav.viewControllers.count == 2 && state.host.view.window;
+    if (!state.split || !state.feed || state.changing || state.host.columnScrub || !state.host.postsShowingDetail
+        || state.secondary.viewControllers.count != 2 || !state.host.view.window) return NO;
+    if (nav == state.secondary) return YES;
+    return nav == state.feed && nav.viewControllers.count == 1 && state.host.postsColumnsPaired
+        && [state.host usesFeedRail];
 }
 
 // Starts a thread drag: its starting offset, or -1 if it can't close.

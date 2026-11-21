@@ -544,7 +544,7 @@ static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeed
     CGFloat availableWidth = range.max.width;
     ApolloDuoFeedGeometry *geometry = ApolloDuoCommentsPrepareCell(self, &range);
     id spec = %orig(range);
-    // Sidebar & Post shows a link post's page beside its comments; the header
+    // Post & Thread shows a link post's page beside its comments; the header
     // keeps its title, details and actions but leaves out the link card.
     if (ApolloDuoPostSplitDropsLinkCard(self)) {
         id card = ApolloDuoMediaObjectIvar(self, "linkButtonNode");

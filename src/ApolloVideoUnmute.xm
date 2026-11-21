@@ -1319,7 +1319,7 @@ static void RestoreInlineVideoSilencedForViewer(id viewer, BOOL handedToPiP) {
 - (void)cellNodeVisibilityEvent:(unsigned long long)event
                    inScrollView:(id)scrollView
                   withCellFrame:(CGRect)frame {
-    // Sidebar & Post folds this row away while the left column plays the
+    // Post & Thread folds this row away while the left column plays the
     // post: its video sits out (no play, unmute or Picture in Picture).
     if (ApolloDuoPostSplitSilencesHeader(self)) return;
     id richMediaNode = GetIvarObject(self, "richMediaNode");
@@ -1417,7 +1417,7 @@ static BOOL PlayerWasDeliberatelyStopped(AVPlayer *player);
 // unmute toggle) since it's a native bug fix.
 // ---------------------------------------------------------------------------
 - (void)unpauseAllAVPlayersNotificationReceivedWithNotification:(id)notification {
-    // A folded comments media row (Sidebar & Post) stays paused, Apollo's own
+    // A folded comments media row (Post & Thread) stays paused, Apollo's own
     // resume included; Back or Split View off resumes it.
     if (ApolloDuoPostSplitSilencesHeader(self)) return;
     %orig;

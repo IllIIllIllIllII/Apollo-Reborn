@@ -401,10 +401,11 @@ static NSString *const UDKeyDuoUnfoldedFeedLayout = @"DuoLandscapeFeedLayout";
 // (default), YES = Liquid Glass. The panel keeps the same size and navigation.
 static NSString *const UDKeyDuoSubredditPanelGlassEnabled = @"DuoSubredditPanelGlassEnabled";
 // Duo's flat landscape Posts layout: 0 = Feed & Thread (default; the feed
-// column beside the open thread), 1 = Sidebar & Post (a leading rail of feed
-// shortcuts beside a full-width feed; posts open full width).
+// column beside the open thread), 1 = Post & Thread (posts open full width
+// beside the sidebar; with Split View on, a post's media or link stands beside
+// its comments).
 static NSString *const UDKeyDuoLandscapeLayout = @"DuoLandscapePostsLayout";
-// Sidebar & Post: the left column's share (0–1) of the display beside a
+// Post & Thread: the left column's share (0–1) of the display beside a
 // post's comments, saved when its divider is released. Unset or invalid
 // means 0.5. See ApolloDuoSplitDivider.
 static NSString *const UDKeyDuoPostContentShare = @"DuoPostContentShare";

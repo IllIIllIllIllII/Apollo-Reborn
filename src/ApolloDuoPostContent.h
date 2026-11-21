@@ -3,7 +3,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Sidebar & Post (Duo, flat, landscape, Split View on): what a post shows in
+// Post & Thread (Duo, flat, landscape, Split View on): what a post shows in
 // the left column beside its comments. Media posts (images, galleries, videos,
 // GIFs) and text posts with pictures play in Gallery View's own pager,
 // embedded; link posts load their page in Safari's view controller, as

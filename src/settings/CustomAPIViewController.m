@@ -2414,7 +2414,7 @@ typedef NS_ENUM(NSInteger, Tag) {
 // Interface → iPhone Duo: how Posts lays out on the flat display in landscape.
 - (ApolloSettingsSection *)buildInterfaceDuoSection {
     __weak typeof(self) weakSelf = self;
-    NSArray<NSString *> *layouts = @[ @"Feed & Thread", @"Sidebar & Post" ];
+    NSArray<NSString *> *layouts = @[ @"Feed & Thread", @"Post & Thread" ];
     ApolloSettingsRow *landscapeLayout =
         [ApolloSettingsRow valueRowWithID:@"interface.duoLandscapeLayout"
                                    title:@"Landscape Layout"
@@ -2432,7 +2432,7 @@ typedef NS_ENUM(NSInteger, Tag) {
         }];
     ApolloSettingsSection *section =
         [ApolloSettingsSection sectionWithTitle:@"iPhone Duo"
-                                         footer:@"How Posts looks when the Duo is open in landscape. With Split View on, Feed & Thread opens posts beside the feed, and Sidebar & Post opens a post's media or link beside its comments."
+                                         footer:@"How Posts looks when the Duo is open in landscape. With Split View on, Feed & Thread opens posts beside the feed, and Post & Thread opens a post's media or link beside its comments."
                                            rows:@[ landscapeLayout ]];
     // Headers are title-cased, which would print "Iphone".
     section.headerDisplay = ^(UITableViewHeaderFooterView *view) {

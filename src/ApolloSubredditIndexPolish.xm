@@ -2874,7 +2874,7 @@ static void ApolloSubredditIndexHeaderLayoutSubviewsHook(id self, SEL _cmd) {
     ApolloSubredditIndexStyleHeaderView(header, tableView);
 }
 
-// --- Sidebar & Post's drawer ---------------------------------------------
+// --- The drawer beside the Duo's feed rail --------------------------------
 // It opens beside the Duo's feed rail, which already holds the feed shortcuts
 // and the favorites (ApolloDuoSplitListOmitsRailRows). Those rows and the
 // Favorites header collapse there; the rest of the list is unchanged.

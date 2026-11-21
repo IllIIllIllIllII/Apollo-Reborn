@@ -79,7 +79,7 @@
 static Class ApolloClassPostsViewController;
 static char kDuoFeedLinkReturnDetail, kDuoFeedLinkPage;
 static NSObject *sDuoSplitResizingTabs;
-static NSInteger sDuoLandscapeLayout __attribute__((unused)); // 0 = Feed & Thread, 1 = Sidebar & Post
+static NSInteger sDuoLandscapeLayout __attribute__((unused)); // 0 = Feed & Thread, 1 = Post & Thread
 static CGSize sDuoSplitTargetSize;
 static NSIndexPath *(*sApolloDuoListWillSelectOriginal)(id, SEL, UITableView *, NSIndexPath *);
 static NSUInteger syncs, detailWrites, checks, failures;
@@ -239,7 +239,7 @@ int main(void) { @autoreleasepool {
     TestGallery();
     TestDrawer();
     sDuoLandscapeLayout = 1;
-    Check(!ApolloDuoPostsUsesSplit(State(NO)), @"Sidebar & Post never pairs a thread beside the feed");
+    Check(!ApolloDuoPostsUsesSplit(State(NO)), @"Post & Thread never pairs a thread beside the feed");
     sDuoLandscapeLayout = 0;
     printf("Duo feed history: %lu checks, %lu failures\n", (unsigned long)checks, (unsigned long)failures);
     return failures ? 1 : 0;
