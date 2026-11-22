@@ -12,6 +12,8 @@
 // like the subreddit drawer that opens beside it.
 static const CGFloat kRailInset = 12;
 static const CGFloat kRailColumnWidth = 76;
+// Filled: the buttons span the column this far from its edges.
+static const CGFloat kRailFilledMargin = 4;
 static const CGFloat kRailGap = 12;
 static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
@@ -394,8 +396,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 }
 
 // Rounded is glass, its corners following the display's concentrically as
-// the drawer's do. Filled is square and solid, on the subreddit list's own
-// background like the drawer's Standard style.
+// the drawer's do. Filled is solid, on the subreddit list's own background
+// like the drawer's Standard style, and square at the divider; its left
+// corners follow the display, which rounds them there anyway, so the top
+// highlight can follow it too.
 - (void)applyPanelStyle {
     UIVisualEffect *effect = nil;
     if (!self.filled) {
@@ -404,9 +408,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     }
     self.panel.effect = effect;
     if (@available(iOS 26.0, *)) {
-        UICornerRadius *radius = self.filled ? [UICornerRadius fixedRadius:0]
-            : [UICornerRadius containerConcentricRadiusWithMinimum:24];
-        self.panel.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:radius];
+        self.panel.cornerConfiguration = self.filled
+            ? [UICornerConfiguration configurationWithUniformLeftRadius:[UICornerRadius containerConcentricRadius]
+                                                      uniformRightRadius:[UICornerRadius fixedRadius:0]]
+            : [UICornerConfiguration configurationWithUniformRadius:[UICornerRadius containerConcentricRadiusWithMinimum:24]];
     } else {
         self.panel.layer.cornerRadius = self.filled ? 0 : 24;
         self.panel.layer.cornerCurve = kCACornerCurveContinuous;
@@ -418,22 +423,27 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat height = MAX(0, self.bounds.size.height - kRailInset * 2);
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
-    // Filled, the panel runs to the display edges and the divider, and its
-    // contents keep the rounded panel's place.
-    CGFloat contentX = 0, contentY = 0;
+    // Filled, the panel runs to the display edges and the divider, and the
+    // buttons span it so names get the extra width; they keep the rounded
+    // panel's distance from the top and bottom.
+    CGFloat contentX = 0, contentY = 0, columnWidth = kRailColumnWidth;
     if (self.filled) {
-        self.panel.frame = CGRectMake(0, 0, MAX(0, self.bounds.size.width - hairline), self.bounds.size.height);
-        contentX = kRailInset;
+        CGFloat panelWidth = MAX(0, self.bounds.size.width - hairline);
+        self.panel.frame = CGRectMake(0, 0, panelWidth, self.bounds.size.height);
+        contentX = kRailFilledMargin;
         contentY = kRailInset;
+        columnWidth = MAX(0, panelWidth - kRailFilledMargin * 2);
     } else {
         self.panel.frame = CGRectMake(kRailInset, kRailInset, kRailColumnWidth, height);
     }
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
-    // The top button's highlight follows the panel's rounded top, the same
-    // distance inside it all the way round.
-    CGFloat panelRadius = kRailColumnWidth / 2;
-    if (@available(iOS 26.0, *)) panelRadius = MIN(panelRadius, [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft]);
-    CGFloat topRadius = MAX(kRailSelectionRadius, panelRadius - kRailSelectionInset);
+    // The top button's highlight follows the panel's rounded top-left from
+    // inside it, no closer to it than the highlight sits from its edges.
+    CGFloat cornerRadius = self.filled ? 0 : columnWidth / 2;
+    if (@available(iOS 26.0, *)) cornerRadius = [self.panel effectiveRadiusForCorner:UIRectCornerTopLeft];
+    CGFloat cornerInset = MAX(contentX, contentY) + kRailSelectionInset;
+    CGFloat topRadius = MAX(kRailSelectionRadius,
+                            MIN(columnWidth / 2 - kRailSelectionInset, cornerRadius - cornerInset));
     // Home, Popular and All, then Subreddits, which opens the drawer.
     NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [self.feedButtons mutableCopy] ?: [NSMutableArray array];
     [buttons addObject:self.subredditsButton];
@@ -444,19 +454,19 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
             button.selectionTopRadius = radius;
             [button setNeedsLayout];
         }
-        button.frame = CGRectMake(contentX, contentY + y, kRailColumnWidth, kRailButtonHeight);
+        button.frame = CGRectMake(contentX, contentY + y, columnWidth, kRailButtonHeight);
         y += kRailButtonHeight;
     }
-    self.separator.frame = CGRectMake(contentX + 16, contentY + y + 6, kRailColumnWidth - 32, hairline * 2);
+    self.separator.frame = CGRectMake(contentX + 16, contentY + y + 6, columnWidth - 32, hairline * 2);
     y += 12;
     // The favorites fill the rest of the panel and scroll when they don't fit.
-    self.favorites.frame = CGRectMake(contentX, contentY + y, kRailColumnWidth, MAX(0, height - y));
+    self.favorites.frame = CGRectMake(contentX, contentY + y, columnWidth, MAX(0, height - y));
     CGFloat favoriteY = 0;
     for (ApolloDuoFeedRailButton *button in self.favoriteButtons) {
-        button.frame = CGRectMake(0, favoriteY, kRailColumnWidth, kRailFavoriteHeight);
+        button.frame = CGRectMake(0, favoriteY, columnWidth, kRailFavoriteHeight);
         favoriteY += kRailFavoriteHeight;
     }
-    self.favorites.contentSize = CGSizeMake(kRailColumnWidth, favoriteY);
+    self.favorites.contentSize = CGSizeMake(columnWidth, favoriteY);
     self.favorites.alwaysBounceVertical = favoriteY + kRailFavoritesBottomInset > self.favorites.bounds.size.height;
     self.separator.hidden = self.favoriteButtons.count == 0;
     [self requestVisibleIcons];
