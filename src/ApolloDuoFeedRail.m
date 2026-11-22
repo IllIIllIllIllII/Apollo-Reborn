@@ -267,12 +267,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
     _selectedFeed = -1;
-    UIVisualEffect *effect = nil;
-    if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
-    else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
-    self.panel = [[UIVisualEffectView alloc] initWithEffect:effect];
+    self.panel = [[UIVisualEffectView alloc] initWithEffect:nil];
     self.panel.clipsToBounds = YES;
-    [self applyPanelCorners];
+    [self applyPanelStyle];
     [self addSubview:self.panel];
     self.favorites = [UIScrollView new];
     self.favorites.delegate = self;
@@ -391,12 +388,21 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 - (void)setFilled:(BOOL)filled {
     if (_filled == filled) return;
     _filled = filled;
-    [self applyPanelCorners];
+    [self applyPanelStyle];
+    [self refreshColors];
     [self setNeedsLayout];
 }
 
-// Rounded follows the display's corners concentrically, as the drawer does.
-- (void)applyPanelCorners {
+// Rounded is glass, its corners following the display's concentrically as
+// the drawer's do. Filled is square and solid, on the subreddit list's own
+// background like the drawer's Standard style.
+- (void)applyPanelStyle {
+    UIVisualEffect *effect = nil;
+    if (!self.filled) {
+        if (@available(iOS 26.0, *)) effect = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
+        else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+    }
+    self.panel.effect = effect;
     if (@available(iOS 26.0, *)) {
         UICornerRadius *radius = self.filled ? [UICornerRadius fixedRadius:0]
             : [UICornerRadius containerConcentricRadiusWithMinimum:24];
@@ -525,6 +531,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     // The column has its own plain backdrop, so the feed's rows end at the
     // divider instead of running behind the panel.
     self.backgroundColor = ApolloThemePageBackgroundColor() ?: UIColor.systemBackgroundColor;
+    self.panel.backgroundColor = self.filled
+        ? (ApolloThemeSubredditListBackgroundColor() ?: UIColor.secondarySystemBackgroundColor) : nil;
     for (ApolloDuoFeedRailButton *button in self.feedButtons) {
         button.chosen = button.tag == self.selectedFeed;
         [button applyAccent:accent neutral:neutral];
