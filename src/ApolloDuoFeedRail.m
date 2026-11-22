@@ -30,12 +30,12 @@ static const CGFloat kRailAvatarSize = 32;
 static const CGFloat kRailSelectionInset = 4;
 // The highlight's distance from the button's sides, and the name's from the
 // highlight's: as close as they go, so long names keep the most room.
-static const CGFloat kRailSelectionSideInset = 2;
-static const CGFloat kRailLabelInset = 2;
+static const CGFloat kRailSelectionSideInset = 0;
+static const CGFloat kRailLabelInset = 1;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
 // into the names along its bottom; at this radius a name kRailLabelInset in
 // clears the bottom corners.
-static const CGFloat kRailSelectionRadius = 10;
+static const CGFloat kRailSelectionRadius = 8;
 // Room under the last favorite, so its highlight clears the panel's rounded
 // bottom when the list is scrolled to the end.
 static const CGFloat kRailFavoritesBottomInset = 10;
@@ -163,7 +163,14 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.avatar = YES;
     self.subreddit = subreddit;
     self.accessibilityLabel = username ? subreddit : [@"r/" stringByAppendingString:subreddit];
+    // Condensed, and a name that still doesn't fit shrinks a little before it
+    // is cut off.
     self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+    if (@available(iOS 16.0, *)) {
+        self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium width:UIFontWidthCondensed];
+    }
+    self.label.adjustsFontSizeToFitWidth = YES;
+    self.label.minimumScaleFactor = 0.85;
     self.icon.contentMode = UIViewContentModeScaleAspectFill;
     self.icon.clipsToBounds = YES;
     self.icon.layer.cornerRadius = kRailAvatarSize / 2;
