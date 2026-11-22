@@ -217,6 +217,8 @@ extern BOOL sDuoSubredditPanelGlassEnabled;
 extern NSInteger sDuoLandscapeLayout;
 // Closed Duo uses a bottom tab bar instead of the side rail (UDKeyDuoCoverTabBar).
 extern BOOL sDuoCoverTabBar;
+// The feed sidebar beside Posts on the open Duo in landscape (default NO).
+extern BOOL sDuoFeedSidebarEnabled;
 // Modern sheet or Apollo's Classic popup for the subreddit quick-switcher.
 extern BOOL sSubredditSwitcherSheetEnabled;
 BOOL ApolloSupportsNativeTabBarScrollBehavior(void);

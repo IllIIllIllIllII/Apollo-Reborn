@@ -2632,6 +2632,19 @@ typedef NS_ENUM(NSInteger, Tag) {
         return ApolloPaneLayoutDeviceSupported();
     };
 
+    // The Standard build has no Duo layout. Checks the hardware, so a cold
+    // launch on the closed screen still shows it.
+    ApolloSettingsRow *duoFeedSidebar =
+        [ApolloSettingsRow switchRowWithID:@"interface.duoFeedSidebar"
+                                     title:@"Feed Sidebar"
+                                      isOn:^BOOL { return sDuoFeedSidebarEnabled; }
+                                  onToggle:^(UISwitch *sender) {
+            sDuoFeedSidebarEnabled = sender.isOn;
+            [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoFeedSidebarEnabled];
+            ApolloDuoSplitFeedSidebarChanged();
+        }];
+    duoFeedSidebar.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass(); };
+
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
     // has nothing to preview/explain on a non-Glass device.
@@ -2801,12 +2814,15 @@ typedef NS_ENUM(NSInteger, Tag) {
     if (IsLiquidGlass()) {
         footer = [footer stringByAppendingString:@" Group navigation buttons under •••. Tap to expand."];
     }
+    if (ApolloDeviceIsDuo() && IsLiquidGlass()) {
+        footer = [footer stringByAppendingString:@" On iPhone Duo, Feed Sidebar shows your feeds and favorites beside Posts in landscape, in place of the List button."];
+    }
     if (searchBarsRow) {
         footer = [footer stringByAppendingString:@"\n\nSearch Bars: the search field under a feed's title and Find in Comments on threads. Hidden keeps them out of the way until you pull down at the top of the list. Off removes them; Find in Comments stays in the thread's ••• menu."];
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, scrollEdgeEffect, searchBars ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, scrollEdgeEffect, searchBars ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden
