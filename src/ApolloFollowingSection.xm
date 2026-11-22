@@ -1021,6 +1021,16 @@ NSIndexPath *ApolloFollowingVisibleIndexPathForNative(UITableView *tableView, NS
 static __unsafe_unretained UITableView *sFollowingCellTable;
 static NSIndexPath *sFollowingCellNativePath;
 static NSIndexPath *sFollowingCellVisiblePath;
+// The same for a header Apollo is measuring: the native section it was handed
+// and the visible one it stands for.
+static __unsafe_unretained UITableView *sFollowingHeaderTable;
+static NSInteger sFollowingHeaderNative = NSNotFound;
+static NSInteger sFollowingHeaderVisible = NSNotFound;
+
+NSInteger ApolloFollowingVisibleSectionForCallout(UITableView *tableView, NSInteger section) {
+    if (tableView && tableView == sFollowingHeaderTable && section == sFollowingHeaderNative) return sFollowingHeaderVisible;
+    return section;
+}
 
 %group ApolloFollowingList
 
@@ -1086,13 +1096,26 @@ static NSIndexPath *sFollowingCellVisiblePath;
         if (map.entries.count == 0) return 0.0;
         // Borrow the height Apollo uses for the first entry's own (non-empty)
         // native section, so the band matches every other section exactly.
-        return %orig(tableView, map.entries.firstObject.nativeSection);
+        nativeSection = map.entries.firstObject.nativeSection;
+    } else {
+        if (nativeSection == NSNotFound) return 0.0;
+        // A collation section whose only rows were u_ entries must fully collapse
+        // even though Apollo still counts its native rows.
+        if (ApolloFollowingCollationSectionCollapsed(map, nativeSection)) return 0.0;
     }
-    if (nativeSection == NSNotFound) return 0.0;
-    // A collation section whose only rows were u_ entries must fully collapse
-    // even though Apollo still counts its native rows.
-    if (ApolloFollowingCollationSectionCollapsed(map, nativeSection)) return 0.0;
-    return %orig(tableView, nativeSection);
+    // See ApolloFollowingVisibleSectionForCallout.
+    __unsafe_unretained UITableView *outerTable = sFollowingHeaderTable;
+    NSInteger outerNative = sFollowingHeaderNative, outerVisible = sFollowingHeaderVisible;
+    sFollowingHeaderTable = tableView;
+    sFollowingHeaderNative = nativeSection;
+    sFollowingHeaderVisible = section;
+    @try {
+        return %orig(tableView, nativeSection);
+    } @finally {
+        sFollowingHeaderTable = outerTable;
+        sFollowingHeaderNative = outerNative;
+        sFollowingHeaderVisible = outerVisible;
+    }
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {

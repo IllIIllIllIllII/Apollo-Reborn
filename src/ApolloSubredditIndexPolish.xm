@@ -2980,7 +2980,9 @@ static void ApolloSubredditIndexRefreshRailFavorites(UITableView *tableView, BOO
 }
 
 static CGFloat ApolloSubredditIndexHeightForHeaderHook(id self, SEL _cmd, UITableView *tableView, NSInteger section) {
-    if (ApolloSubredditIndexHeaderIsOnDuoRail(tableView, section)) return 0.01;
+    // Under a custom section order the remap may call in here with Apollo's
+    // native section; the rail sections are visible ones.
+    if (ApolloSubredditIndexHeaderIsOnDuoRail(tableView, ApolloFollowingVisibleSectionForCallout(tableView, section))) return 0.01;
     if (orig_ApolloRedditListHeightForHeader) return orig_ApolloRedditListHeightForHeader(self, _cmd, tableView, section);
     return tableView.sectionHeaderHeight;
 }
