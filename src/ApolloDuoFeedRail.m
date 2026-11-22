@@ -14,13 +14,10 @@
 // The panel sits 12pt in from the display's top and bottom, like the
 // subreddit drawer that opens beside it.
 static const CGFloat kRailInset = 12;
-// The buttons' width in either style. With kRailSideInset each side the
-// column is 84pt, as wide as the tab rail across the feed, so the feed sits
-// centered between them.
+// The column's width in either style, from the display edge to the feed; the
+// feed keeps as much clear of the tab rail on its other side (see
+// ApolloDuoFeedRailApplyInsets), so it sits centered.
 static const CGFloat kRailColumnWidth = 76;
-// The buttons' distance from the display edge and from the divider before
-// the feed; the rounded panel's too.
-static const CGFloat kRailSideInset = 4;
 static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
 static const CGFloat kRailGlyphSize = 24;
@@ -297,10 +294,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 
 @implementation ApolloDuoFeedRail
 
-+ (CGFloat)reservedWidth { return kRailSideInset * 2 + kRailColumnWidth; }
-+ (CGFloat)panelMaxXFilled:(BOOL)filled {
-    return filled ? ApolloDuoFeedRail.reservedWidth : kRailSideInset + kRailColumnWidth;
-}
++ (CGFloat)reservedWidth { return kRailColumnWidth; }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;
@@ -504,16 +498,18 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGFloat height = MAX(0, self.bounds.size.height - kRailInset * 2);
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
-    // Filled, the panel runs to the display edges and the divider; the
-    // buttons keep the rounded panel's place.
+    // Both styles span the column from the display edge to the feed. Rounded
+    // is inset from the top and bottom; filled runs to them and to the
+    // divider, and its buttons keep the rounded panel's place. The rounded
+    // panel meets the feed itself, so it has no divider.
     CGFloat contentX = 0, contentY = 0, columnWidth = kRailColumnWidth;
     if (self.filled) {
         self.panel.frame = CGRectMake(0, 0, MAX(0, self.bounds.size.width - hairline), self.bounds.size.height);
-        contentX = kRailSideInset;
         contentY = kRailInset;
     } else {
-        self.panel.frame = CGRectMake(kRailSideInset, kRailInset, kRailColumnWidth, height);
+        self.panel.frame = CGRectMake(0, kRailInset, kRailColumnWidth, height);
     }
+    self.divider.hidden = !self.filled;
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
     // The top button's highlight follows the panel's rounded top-left from
     // inside it, no closer to it than the highlight sits from its edges.
