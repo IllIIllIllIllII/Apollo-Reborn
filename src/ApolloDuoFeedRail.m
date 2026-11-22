@@ -30,8 +30,8 @@ static const CGFloat kRailAvatarSize = 32;
 static const CGFloat kRailSelectionInset = 4;
 // The highlight's distance from the button's sides, and the name's from the
 // highlight's: as close as they go, so long names keep the most room.
-static const CGFloat kRailSelectionSideInset = 1;
-static const CGFloat kRailLabelInset = 4;
+static const CGFloat kRailSelectionSideInset = 2;
+static const CGFloat kRailLabelInset = 2;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
 // into the names along its bottom; at this radius a name kRailLabelInset in
 // clears the bottom corners.
