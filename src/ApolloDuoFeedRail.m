@@ -11,7 +11,8 @@
 // The panel sits 12pt in from the display's top, bottom and leading edges,
 // like the subreddit drawer that opens beside it.
 static const CGFloat kRailInset = 12;
-static const CGFloat kRailColumnWidth = 76;
+// The buttons' width in either style: room for a subreddit name under its icon.
+static const CGFloat kRailColumnWidth = 92;
 // Filled: the buttons span the column this far from its edges.
 static const CGFloat kRailFilledMargin = 4;
 static const CGFloat kRailGap = 12;
@@ -264,7 +265,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 
 @implementation ApolloDuoFeedRail
 
-+ (CGFloat)reservedWidth { return kRailInset + kRailColumnWidth + kRailGap; }
++ (CGFloat)reservedWidthFilled:(BOOL)filled {
+    return filled ? kRailColumnWidth + kRailFilledMargin * 2 : kRailInset + kRailColumnWidth + kRailGap;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if (!(self = [super initWithFrame:frame])) return nil;

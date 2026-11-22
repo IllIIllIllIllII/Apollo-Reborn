@@ -100,6 +100,15 @@ static NSArray<ApolloDuoTextFade *> *ApolloDuoCrossfadeTextLayout(NSArray<UIView
 static void ApolloDuoEndTextCrossfade(NSArray<ApolloDuoTextFade *> *fades, BOOL redraw);
 static void ApolloDuoScheduleRetarget(UIView *feed, BOOL (^stillMoving)(void));
 
+// Sidebar Style, read live like Feed Sidebar, so the width is right before
+// the rail is built.
+static BOOL ApolloDuoFeedRailFilled(void) {
+    return sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled;
+}
+static CGFloat ApolloDuoFeedRailWidth(void) {
+    return [ApolloDuoFeedRail reservedWidthFilled:ApolloDuoFeedRailFilled()];
+}
+
 @protocol ApolloDuoLayoutControl <NSObject>
 - (void)updateFeedLayoutButton;
 @end
@@ -977,7 +986,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 // filled rail's divider.
 - (CGFloat)listLeading {
     if (![self showsFeedRail]) return 12;
-    return ApolloDuoFeedRail.reservedWidth + (self.feedRail.filled ? 12 : 0);
+    return ApolloDuoFeedRailWidth() + (ApolloDuoFeedRailFilled() ? 12 : 0);
 }
 // The display's corner radius, which container-concentric corners follow.
 // UIWindow reports 0 and a view resolves its radius only after a layout pass,
@@ -1050,7 +1059,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 - (void)setFeedRailShown:(BOOL)shown {
     self.feedRail.alpha = shown ? 1 : 0;
     self.feedRail.transform = shown ? CGAffineTransformIdentity
-        : CGAffineTransformMakeTranslation(-ApolloDuoFeedRail.reservedWidth / 2, 0);
+        : CGAffineTransformMakeTranslation(-ApolloDuoFeedRailWidth() / 2, 0);
     self.feedRail.userInteractionEnabled = shown;
 }
 - (void)layoutTrailingBackdrop:(BOOL)rail {
@@ -1094,7 +1103,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     }
     if (!self.feedRail && self.listContainer) [self installFeedRail];
     if (!self.feedRail) return;
-    self.feedRail.filled = sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled;
+    self.feedRail.filled = ApolloDuoFeedRailFilled();
     [self layoutTrailingBackdrop:rail];
     if (self.listOmitsRailRows != rail) {
         // The list measures those rows again (ApolloDuoSplitListOmitsRailRows).
@@ -1105,8 +1114,8 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
             [ApolloDuoSplitFindTable(list.viewIfLoaded) reloadData];
         });
     }
-    self.feedRail.bounds = CGRectMake(0, 0, ApolloDuoFeedRail.reservedWidth, self.view.bounds.size.height);
-    self.feedRail.center = CGPointMake(ApolloDuoFeedRail.reservedWidth / 2, self.view.bounds.size.height / 2);
+    self.feedRail.bounds = CGRectMake(0, 0, ApolloDuoFeedRailWidth(), self.view.bounds.size.height);
+    self.feedRail.center = CGPointMake(ApolloDuoFeedRailWidth() / 2, self.view.bounds.size.height / 2);
     self.feedRail.showsModerator = ApolloDuoListShowsModerator(self.subredditList);
     [self.feedRail reloadShortcuts];
     [self refreshFeedRailSelection];
@@ -1772,7 +1781,7 @@ CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset
         // Feed pages sit beside the leading rail while it's on, unless a thread pairs.
         CGFloat rail = sDuoFeedSidebarEnabled && landscape && !feedColumn && state.host.subredditList
             && owner.navigationController == state.feed
-            && ApolloDuoFeedRailReservesPage(owner) ? ApolloDuoFeedRail.reservedWidth : 0;
+            && ApolloDuoFeedRailReservesPage(owner) ? ApolloDuoFeedRailWidth() : 0;
         return MAX(0, width - rail - (!feedColumn && landscape ? trailingInset : 0));
     }
     if (state.split && width >= 800.0 && width > sDuoSplitTargetSize.height) {
@@ -2338,7 +2347,7 @@ static void ApolloDuoPostContentPlace(ApolloDuoSplitHost *host, CGFloat width) {
 // pages, the left column beside the post it shows, nothing elsewhere.
 static CGFloat ApolloDuoPostsLeadingReserve(ApolloDuoSplitHost *host, UIViewController *page) {
     if (!page || ![host showsFeedRail]) return 0;
-    if (ApolloDuoFeedRailReservesPage(page)) return ApolloDuoFeedRail.reservedWidth;
+    if (ApolloDuoFeedRailReservesPage(page)) return ApolloDuoFeedRailWidth();
     if ((page == host.postContentPage && host.postContent && host.postContentReserved)
         || (page == host.leavingPostContentPage && host.leavingPostContent)) {
         // Half open like a book, the comments start past the hinge.
@@ -2372,7 +2381,7 @@ static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewControl
     if (!thread || thread == feed) return;
     BOOL besideRail = [host showsFeedRail] && host.postsShowingDetail && !host.postsColumnsPaired;
     CGFloat threadGap = besideRail ? gap : 0;
-    ApolloDuoSetFeedRailInset(thread, besideRail ? ApolloDuoFeedRail.reservedWidth : 0);
+    ApolloDuoSetFeedRailInset(thread, besideRail ? ApolloDuoFeedRailWidth() : 0);
     ApolloDuoSetFeedRailTrailingInset(thread, threadGap);
     for (UIViewController *page in thread.viewControllers) {
         ApolloDuoSetFeedRailInset(page, 0);
@@ -2913,7 +2922,7 @@ static void ApolloDuoFeedTransitionTick(ApolloDuoSplitHost *host) {
     if (thread.isViewLoaded && [host showsFeedRail]) {
         CGFloat shown = MAX(0, MIN(1, ApolloDuoPresentedOffset(thread.view, container) / travel));
         host.feedRail.alpha = shown;
-        host.feedRail.transform = CGAffineTransformMakeTranslation(-(1 - shown) * ApolloDuoFeedRail.reservedWidth / 2, 0);
+        host.feedRail.transform = CGAffineTransformMakeTranslation(-(1 - shown) * ApolloDuoFeedRailWidth() / 2, 0);
     }
 }
 
@@ -4998,7 +5007,7 @@ static NSArray<CALayer *> *ApolloDuoFeedRailScrubChange(ApolloDuoSplitHost *host
     BOOL shown = host.feedRail.alpha > 0.5;
     if (host.feedRail && shown != railWasShown) {
         // setFeedRailShown: hides the rail half its width to the left.
-        CGFloat hidden = -ApolloDuoFeedRail.reservedWidth / 2;
+        CGFloat hidden = -ApolloDuoFeedRailWidth() / 2;
         CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:@"opacity"];
         fade.fromValue = @(railWasShown ? 1.0 : 0.0);
         fade.toValue = @(shown ? 1.0 : 0.0);

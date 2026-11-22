@@ -11,9 +11,10 @@ NS_ASSUME_NONNULL_BEGIN
 // account's favorite subreddits and followed users. The host sizes the view to
 // the column's reserved width and shows it.
 @interface ApolloDuoFeedRail : UIView
-/// Width the feed reserves for the column: the panel, its 12pt inset from
-/// the display edge and a 12pt gap before the feed.
-@property(class, nonatomic, readonly) CGFloat reservedWidth;
+/// Width the feed reserves for the column. Rounded: the panel, its 12pt
+/// inset from the display edge and a 12pt gap before the feed. Filled: the
+/// same buttons with a small margin each side, so names get the same room.
++ (CGFloat)reservedWidthFilled:(BOOL)filled;
 /// The panel fills the column from the display edge to the divider, square
 /// and solid, instead of a rounded glass panel inset like the drawer.
 @property(nonatomic) BOOL filled;
