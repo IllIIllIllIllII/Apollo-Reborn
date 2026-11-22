@@ -272,14 +272,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     else effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
     self.panel = [[UIVisualEffectView alloc] initWithEffect:effect];
     self.panel.clipsToBounds = YES;
-    // Follow the display's rounded corners concentrically, as the drawer does.
-    if (@available(iOS 26.0, *)) {
-        self.panel.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:
-            [UICornerRadius containerConcentricRadiusWithMinimum:24]];
-    } else {
-        self.panel.layer.cornerRadius = 24;
-        self.panel.layer.cornerCurve = kCACornerCurveContinuous;
-    }
+    [self applyPanelCorners];
     [self addSubview:self.panel];
     self.favorites = [UIScrollView new];
     self.favorites.delegate = self;
@@ -395,12 +388,40 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [self setNeedsLayout];
 }
 
+- (void)setFilled:(BOOL)filled {
+    if (_filled == filled) return;
+    _filled = filled;
+    [self applyPanelCorners];
+    [self setNeedsLayout];
+}
+
+// Rounded follows the display's corners concentrically, as the drawer does.
+- (void)applyPanelCorners {
+    if (@available(iOS 26.0, *)) {
+        UICornerRadius *radius = self.filled ? [UICornerRadius fixedRadius:0]
+            : [UICornerRadius containerConcentricRadiusWithMinimum:24];
+        self.panel.cornerConfiguration = [UICornerConfiguration configurationWithUniformRadius:radius];
+    } else {
+        self.panel.layer.cornerRadius = self.filled ? 0 : 24;
+        self.panel.layer.cornerCurve = kCACornerCurveContinuous;
+    }
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat height = MAX(0, self.bounds.size.height - kRailInset * 2);
-    self.panel.frame = CGRectMake(kRailInset, kRailInset, kRailColumnWidth, height);
     CGFloat scale = self.window.screen.scale ?: UIScreen.mainScreen.scale;
     CGFloat hairline = 1 / scale;
+    // Filled, the panel runs to the display edges and the divider, and its
+    // contents keep the rounded panel's place.
+    CGFloat contentX = 0, contentY = 0;
+    if (self.filled) {
+        self.panel.frame = CGRectMake(0, 0, MAX(0, self.bounds.size.width - hairline), self.bounds.size.height);
+        contentX = kRailInset;
+        contentY = kRailInset;
+    } else {
+        self.panel.frame = CGRectMake(kRailInset, kRailInset, kRailColumnWidth, height);
+    }
     self.divider.frame = CGRectMake(self.bounds.size.width - hairline, 0, hairline, self.bounds.size.height);
     // The top button's highlight follows the panel's rounded top, the same
     // distance inside it all the way round.
@@ -417,13 +438,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
             button.selectionTopRadius = radius;
             [button setNeedsLayout];
         }
-        button.frame = CGRectMake(0, y, kRailColumnWidth, kRailButtonHeight);
+        button.frame = CGRectMake(contentX, contentY + y, kRailColumnWidth, kRailButtonHeight);
         y += kRailButtonHeight;
     }
-    self.separator.frame = CGRectMake(16, y + 6, kRailColumnWidth - 32, hairline * 2);
+    self.separator.frame = CGRectMake(contentX + 16, contentY + y + 6, kRailColumnWidth - 32, hairline * 2);
     y += 12;
     // The favorites fill the rest of the panel and scroll when they don't fit.
-    self.favorites.frame = CGRectMake(0, y, kRailColumnWidth, MAX(0, height - y));
+    self.favorites.frame = CGRectMake(contentX, contentY + y, kRailColumnWidth, MAX(0, height - y));
     CGFloat favoriteY = 0;
     for (ApolloDuoFeedRailButton *button in self.favoriteButtons) {
         button.frame = CGRectMake(0, favoriteY, kRailColumnWidth, kRailFavoriteHeight);

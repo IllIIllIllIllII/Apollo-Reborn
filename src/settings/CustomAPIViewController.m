@@ -2642,8 +2642,28 @@ typedef NS_ENUM(NSInteger, Tag) {
             sDuoFeedSidebarEnabled = sender.isOn;
             [NSUserDefaults.standardUserDefaults setBool:sender.isOn forKey:UDKeyDuoFeedSidebarEnabled];
             ApolloDuoSplitFeedSidebarChanged();
+            [weakSelf visibilityDidChange];
         }];
     duoFeedSidebar.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass(); };
+    ApolloSettingsRow *duoFeedSidebarStyle =
+        [ApolloSettingsRow valueRowWithID:@"interface.duoFeedSidebarStyle"
+                                   title:@"Sidebar Style"
+                                  detail:^NSString * {
+            return sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled ? @"Filled" : @"Rounded";
+        }
+                                onSelect:^{
+            ApolloSettingsPresentPicker(weakSelf, [weakSelf cellForRowID:@"interface.duoFeedSidebarStyle"],
+                @"Sidebar Style", @[ @"Rounded", @"Filled" ],
+                sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled ? 1 : 0, ^(NSInteger picked) {
+                    NSInteger style = picked == 1 ? ApolloDuoFeedSidebarStyleFilled : ApolloDuoFeedSidebarStyleRounded;
+                    if (sDuoFeedSidebarStyle == style) return;
+                    sDuoFeedSidebarStyle = style;
+                    [NSUserDefaults.standardUserDefaults setInteger:style forKey:UDKeyDuoFeedSidebarStyle];
+                    [weakSelf reloadRowWithID:@"interface.duoFeedSidebarStyle"];
+                    ApolloDuoSplitFeedSidebarChanged();
+                });
+        }];
+    duoFeedSidebarStyle.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass() && sDuoFeedSidebarEnabled; };
 
     // Overrides the top scroll-edge glass under the nav bar (iOS 26+). Liquid
     // Glass only — hidden otherwise rather than shown-disabled, since the row
@@ -2822,7 +2842,7 @@ typedef NS_ENUM(NSInteger, Tag) {
     }
     return [ApolloSettingsSection sectionWithTitle:@"Display & Navigation"
                                             footer:footer
-                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, scrollEdgeEffect, searchBars ]];
+                                              rows:@[ spelling, scrollReturnButton, trueBlackKeyboard, collapseActions, centerBetween, switcherStyle, iPadPaneLayout, duoFeedSidebar, duoFeedSidebarStyle, scrollEdgeEffect, searchBars ]];
 }
 
 // Display order differs from stored values; Blur is optional, while Hidden

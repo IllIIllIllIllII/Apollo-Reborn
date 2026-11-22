@@ -3855,6 +3855,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
                                     UDKeyDuoLandscapeLayout: @0,
                                     UDKeyDuoCoverTabBar: @NO,
                                     UDKeyDuoFeedSidebarEnabled: @NO,
+                                    UDKeyDuoFeedSidebarStyle: @(ApolloDuoFeedSidebarStyleRounded),
                                     UDKeySubredditSwitcherSheetEnabled: @(ApolloDeviceIsDuo()),
                                     UDKeyIPadPaneLayout: @NO,
                                     UDKeyLiquidGlassEnabled: @YES,
@@ -4191,6 +4192,7 @@ static void ApolloShowRedditRateLimitToast(NSTimeInterval seconds) {
     sDuoLandscapeLayout = [standardDefaults integerForKey:UDKeyDuoLandscapeLayout] == 1 ? 1 : 0;
     sDuoCoverTabBar = [standardDefaults boolForKey:UDKeyDuoCoverTabBar];
     sDuoFeedSidebarEnabled = [standardDefaults boolForKey:UDKeyDuoFeedSidebarEnabled];
+    sDuoFeedSidebarStyle = [standardDefaults integerForKey:UDKeyDuoFeedSidebarStyle];
     sSubredditSwitcherSheetEnabled = [standardDefaults boolForKey:UDKeySubredditSwitcherSheetEnabled];
     // Value 1 belonged to the removed side-by-side experiment. Keep Focused
     // feed at 2 so existing selections survive this menu cleanup.
