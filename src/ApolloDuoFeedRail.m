@@ -29,9 +29,9 @@ static const CGFloat kRailAvatarSize = 32;
 // sits 2pt inside its button's top and bottom.
 static const CGFloat kRailSelectionInset = 4;
 // The highlight's distance from the button's sides, and the name's from the
-// highlight's: as close as they go, so long names keep the most room.
-static const CGFloat kRailSelectionSideInset = 0;
-static const CGFloat kRailLabelInset = 1;
+// highlight's, close so long names keep the most room.
+static const CGFloat kRailSelectionSideInset = 4;
+static const CGFloat kRailLabelInset = 2;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
 // into the names along its bottom; at this radius a name kRailLabelInset in
 // clears the bottom corners.
@@ -163,9 +163,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.avatar = YES;
     self.subreddit = subreddit;
     self.accessibilityLabel = username ? subreddit : [@"r/" stringByAppendingString:subreddit];
-    // A name that doesn't fit shrinks a little before it is cut off.
+    // A name that doesn't fit shrinks a little, then runs out at the edge
+    // rather than ending in an ellipsis.
     self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
     self.label.adjustsFontSizeToFitWidth = YES;
+    self.label.lineBreakMode = NSLineBreakByClipping;
     self.label.minimumScaleFactor = 0.85;
     self.icon.contentMode = UIViewContentModeScaleAspectFill;
     self.icon.clipsToBounds = YES;
