@@ -44,6 +44,7 @@
 #import "ApolloWebSessionStore.h"
 #import "ApolloClasses.h"
 #import "ApolloDuoRail.h"
+#import "ApolloMediaHinge.h"
 #import "ApolloDuoNavigationGestures.h"
 #import "ApolloHighlightsCarouselGesturePolicy.h"
 #import "ApolloSpelling.h"
@@ -1820,8 +1821,19 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
         [center addObserver:self selector:@selector(readStateChanged:) name:ApolloPostReadStateDidChangeNotification object:nil];
         [center addObserver:self selector:@selector(readStateChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
         [center addObserver:self selector:@selector(readStateChanged:) name:NSSystemClockDidChangeNotification object:nil];
+        // Focused/Original and Duo resizes move the post column it lines up with.
+        [center addObserver:self selector:@selector(ahlFeedGeometryChanged:) name:ApolloDuoFeedGeometryDidChangeNotification object:nil];
     }
     return self;
+}
+- (UITableView *)ahlFeedTable {
+    for (UIView *view = self.superview; view; view = view.superview) {
+        if ([view isKindOfClass:UITableView.class]) return (UITableView *)view;
+    }
+    return nil;
+}
+- (void)ahlFeedGeometryChanged:(NSNotification *)note {
+    if (note.object && note.object == [self ahlFeedTable]) [self setNeedsLayout];
 }
 - (void)dealloc {
     [self.badgeExpiryTimer invalidate];
@@ -1915,6 +1927,13 @@ static void ApolloHLToggleCollapsed(NSString *sub); // fwd (defined after ApplyI
         ? self.safeAreaInsets : UIEdgeInsetsZero;
     CGFloat leading = insets.left;
     width = MAX(0.0, width - leading - insets.right);
+    // Focused narrows the feed's post column; the carousel narrows with it.
+    CGFloat columnLeading = 0.0, columnWidth = 0.0;
+    UITableView *table = self.settingsPreview ? nil : [self ahlFeedTable];
+    if (table && ApolloDuoFeedFocusedColumn(table, width, &columnLeading, &columnWidth)) {
+        leading += columnLeading;
+        width = columnWidth;
+    }
     self.pinView.frame = CGRectMake(leading + kApolloHLSidePadding, 6.0, 12.0, 14.0);
     self.titleLabel.frame = CGRectMake(leading + kApolloHLSidePadding + 18.0, 2.0,
                                        MAX(0.0, width - kApolloHLSidePadding * 2 - 18.0 - 20.0),

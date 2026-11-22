@@ -124,6 +124,7 @@ static NSNumber *ApolloDuoMediaCurrentHeight(id node) {
 }
 
 static void ApolloDuoMediaRefreshAfterGeometryChange(UITableView *table);
+NSString *const ApolloDuoFeedGeometryDidChangeNotification = @"ApolloDuoFeedGeometryDidChangeNotification";
 
 static UIViewController *ApolloDuoMediaTableController(UITableView *table) {
     for (UIResponder *responder = table; responder; responder = responder.nextResponder) {
@@ -250,7 +251,10 @@ static BOOL ApolloDuoMediaUpdateViewport(UITableView *table) {
         geometry.columnWidth = columnWidth;
         objc_setAssociatedObject(node, &kApolloDuoFeedGeometryKey, geometry, OBJC_ASSOCIATION_RETAIN);
     }
-    if (changed) ApolloDuoMediaRefreshAfterGeometryChange(table);
+    if (changed) {
+        ApolloDuoMediaRefreshAfterGeometryChange(table);
+        [NSNotificationCenter.defaultCenter postNotificationName:ApolloDuoFeedGeometryDidChangeNotification object:table];
+    }
     return changed;
 }
 
@@ -484,14 +488,35 @@ static ApolloDuoFeedGeometry *ApolloDuoCommentsPrepareCell(id cell, struct Apoll
     return ApolloDuoFeedPrepareCell(cell, range);
 }
 
+// The Focused column within `availableWidth`: its width, the spare space
+// either side of it, and how far it moves off center toward its target.
+static BOOL ApolloDuoFeedColumnPlacement(ApolloDuoFeedGeometry *geometry, CGFloat availableWidth,
+                                         CGFloat *columnWidth, CGFloat *margin, CGFloat *offset) {
+    if (geometry.layout != 2 || !isfinite(availableWidth) || availableWidth <= 0.0) return NO;
+    *columnWidth = MIN(availableWidth, geometry.columnWidth);
+    *margin = MAX(0.0, (availableWidth - *columnWidth) * 0.5);
+    *offset = MIN(*margin, MAX(-*margin, geometry.centerOffset));
+    return YES;
+}
+
+BOOL ApolloDuoFeedFocusedColumn(UITableView *table, CGFloat availableWidth, CGFloat *leading, CGFloat *width) {
+    SEL selector = NSSelectorFromString(@"tableNode");
+    id node = [table respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(table, selector) : nil;
+    ApolloDuoFeedGeometry *geometry = node ? objc_getAssociatedObject(node, &kApolloDuoFeedGeometryKey) : nil;
+    CGFloat columnWidth = 0.0, margin = 0.0, offset = 0.0;
+    if (!geometry || geometry.comments
+        || !ApolloDuoFeedColumnPlacement(geometry, availableWidth, &columnWidth, &margin, &offset)) return NO;
+    if (leading) *leading = margin + offset;
+    if (width) *width = columnWidth;
+    return YES;
+}
+
 static id ApolloDuoFeedLayoutSpec(id spec, CGFloat availableWidth, ApolloDuoFeedGeometry *geometry) {
-    if (!spec || geometry.layout != 2 || !isfinite(availableWidth) || availableWidth <= 0.0) return spec;
+    CGFloat columnWidth = 0.0, margin = 0.0, offset = 0.0;
+    if (!spec || !ApolloDuoFeedColumnPlacement(geometry, availableWidth, &columnWidth, &margin, &offset)) return spec;
     // Wrap either native post style wholesale: compact keeps its thumbnail,
     // title, metadata, vote controls, and gestures in their original hierarchy.
-    CGFloat columnWidth = MIN(availableWidth, geometry.columnWidth);
     id column = ApolloDuoFeedColumn(spec, columnWidth);
-    CGFloat margin = MAX(0.0, (availableWidth - columnWidth) * 0.5);
-    CGFloat offset = MIN(margin, MAX(-margin, geometry.centerOffset));
     if (fabs(offset) <= 0.5) return ApolloDuoMediaCentered(column);
     // Consume only the spare space around the card. If the pane is too narrow
     // to reach its target center, clamp at its edge instead of entering the rail.
