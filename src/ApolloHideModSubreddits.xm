@@ -188,6 +188,15 @@ static NSArray *ApolloHideModFilteredList(NSArray *full) {
     return filtered;
 }
 
+// Section 0 holds Home, Popular, All and the Moderator feed. Apollo adds the
+// Moderator row only while you moderate something, so filtering its count
+// made hiding every moderated subreddit drop the Moderator feed too, and Edit
+// (which shows hidden rows) brought it back and changed the section's row
+// count mid-edit. The filter is only for the MODERATOR section's rows.
+static BOOL ApolloHideModFiltersSection(NSInteger section) {
+    return section != 0;
+}
+
 %hook RDKUser
 
 // Source of truth for moderator powers app-wide. Return the full list normally;
@@ -587,6 +596,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 // through the whole push would reintroduce the PR #500 mod-tools bug.
 
 - (long long)tableView:(UITableView *)tableView numberOfRowsInSection:(long long)section {
+    if (!ApolloHideModFiltersSection(section)) return %orig;
     sListFilterDepth++;
     long long result = %orig;
     sListFilterDepth--;
@@ -594,6 +604,7 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(long long)section {
+    if (!ApolloHideModFiltersSection(section)) return %orig;
     sListFilterDepth++;
     CGFloat result = %orig;
     sListFilterDepth--;
@@ -633,6 +644,10 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (!ApolloHideModFiltersSection(indexPath.section)) {
+        %orig;
+        return;
+    }
     sListFilterDepth++;
     %orig;
     sListFilterDepth--;
@@ -670,9 +685,10 @@ static void ApolloHideModDecorateCell(UIViewController *viewController, UITableV
 // The %orig is run inside the display-scope window so the filtered getter
 // produces the right row content; decoration afterwards only reads the cell.
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    sListFilterDepth++;
+    BOOL filtered = ApolloHideModFiltersSection(indexPath.section);
+    if (filtered) sListFilterDepth++;
     UITableViewCell *cell = %orig;
-    sListFilterDepth--;
+    if (filtered) sListFilterDepth--;
 
     NSString *sectionTitle = ApolloHideModSectionTitle(self, tableView, indexPath.section);
     BOOL isModeratorRow = [sectionTitle isEqualToString:@"MODERATOR"];
