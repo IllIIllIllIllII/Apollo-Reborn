@@ -33,9 +33,8 @@ static const CGFloat kRailSelectionInset = 4;
 static const CGFloat kRailSelectionSideInset = 4;
 static const CGFloat kRailLabelInset = 2;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
-// into the names along its bottom; at this radius a name kRailLabelInset in
-// clears the bottom corners.
-static const CGFloat kRailSelectionRadius = 8;
+// into the names along its bottom.
+static const CGFloat kRailSelectionRadius = 16;
 // Room under the last favorite, so its highlight clears the panel's rounded
 // bottom when the list is scrolled to the end.
 static const CGFloat kRailFavoritesBottomInset = 10;
@@ -229,14 +228,16 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGRect selection = CGRectInset(bounds, kRailSelectionSideInset, 2);
     self.selection.frame = selection;
     [self shapeSelection];
-    // Icon and name sit in the middle of the highlight, the name well above
-    // its rounded bottom corners and inset from its sides.
+    // Icon and name sit in the middle of the highlight, the name inset from
+    // its sides. A favorite's name can run to those sides, so it and its
+    // avatar sit higher, keeping the name above the rounded bottom corners.
     BOOL large = self.avatar || self.styled;
     CGFloat iconSize = large ? kRailAvatarSize : kRailGlyphSize;
-    CGFloat iconTop = CGRectGetMinY(selection) + (large ? 5 : 8);
+    CGFloat iconTop = CGRectGetMinY(selection) + (self.avatar ? 3 : large ? 5 : 8);
     self.icon.frame = CGRectMake((bounds.size.width - iconSize) / 2, iconTop, iconSize, iconSize);
     self.initial.frame = self.icon.frame;
-    self.label.frame = CGRectMake(CGRectGetMinX(selection) + kRailLabelInset, CGRectGetMaxY(self.icon.frame) + (large ? 3 : 5),
+    CGFloat labelGap = self.avatar ? 2 : large ? 3 : 5;
+    self.label.frame = CGRectMake(CGRectGetMinX(selection) + kRailLabelInset, CGRectGetMaxY(self.icon.frame) + labelGap,
                                   CGRectGetWidth(selection) - kRailLabelInset * 2, self.avatar ? 12 : 13);
 }
 // Under the panel's rounded top, the highlight's top follows it in circular
