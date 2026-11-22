@@ -47,7 +47,6 @@ static void ApolloDuoToggleVisibleFeedLayout(UIViewController *controller, BOOL 
 static BOOL ApolloDuoFeedRailReservesPage(UIViewController *page);
 static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewController *top, UIViewController *leaving);
 static void ApolloDuoFeedRailRelease(ApolloDuoSplitHost *host);
-static CGFloat ApolloDuoFeedRailTrailingGive(ApolloDuoSplitHost *host);
 static CGFloat ApolloDuoPostsLeadingReserve(ApolloDuoSplitHost *host, UIViewController *page);
 static void ApolloDuoFeedRailSelect(ApolloDuoSplitHost *host, NSInteger feed);
 static void ApolloDuoFeedRailOpenSubreddit(ApolloDuoSplitHost *host, NSString *subreddit);
@@ -975,9 +974,10 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
     self.listScrollTop = @(table.contentOffset.y + table.adjustedContentInset.top);
 }
 // The drawer's leading edge when shown: 12pt in from the display, or 12pt
-// clear of the feed rail.
+// clear of the feed rail's panel.
 - (CGFloat)listLeading {
-    return [self showsFeedRail] ? ApolloDuoFeedRail.reservedWidth + 12 : 12;
+    if (![self showsFeedRail]) return 12;
+    return [ApolloDuoFeedRail panelMaxXFilled:sDuoFeedSidebarStyle == ApolloDuoFeedSidebarStyleFilled] + 12;
 }
 // The display's corner radius, which container-concentric corners follow.
 // UIWindow reports 0 and a view resolves its radius only after a layout pass,
@@ -1055,7 +1055,7 @@ static void ApolloDuoEnableListCloseDrags(UIView *view, BOOL enabled) {
 }
 - (void)layoutTrailingBackdrop:(BOOL)rail {
     CGRect bounds = self.view.bounds;
-    CGFloat inset = self.view.safeAreaInsets.right - (rail ? ApolloDuoFeedRailTrailingGive(self) : 0);
+    CGFloat inset = self.view.safeAreaInsets.right;
     self.trailingBackdrop.hidden = !rail || inset < 1;
     if (self.trailingBackdrop.hidden) return;
     self.trailingBackdrop.frame = CGRectMake(CGRectGetMaxX(bounds) - inset, 0, inset, CGRectGetHeight(bounds));
@@ -1774,9 +1774,7 @@ CGFloat ApolloDuoSplitTransitionContentWidth(UIView *view, CGFloat trailingInset
         CGFloat rail = sDuoFeedSidebarEnabled && landscape && !feedColumn && state.host.subredditList
             && owner.navigationController == state.feed
             && ApolloDuoFeedRailReservesPage(owner) ? ApolloDuoFeedRail.reservedWidth : 0;
-        // Beside the feed rail the feed keeps only its width clear of the tab rail.
-        CGFloat trailing = !feedColumn && landscape ? (rail > 0 ? MIN(trailingInset, rail) : trailingInset) : 0;
-        return MAX(0, width - rail - trailing);
+        return MAX(0, width - rail - (!feedColumn && landscape ? trailingInset : 0));
     }
     if (state.split && width >= 800.0 && width > sDuoSplitTargetSize.height) {
         UISplitViewController *split = state.split;
@@ -2281,14 +2279,6 @@ static void ApolloDuoSetFeedRailInset(UIViewController *controller, CGFloat inse
 // back, so the bar keeps 20pt from the divider while the posts keep their width.
 static const CGFloat kDuoFeedRailTrailingGap = 20;
 static char kDuoFeedRailTrailingInset;
-// How much of the tab rail's safe area the feed takes back beside the feed
-// rail, so it keeps as much clear on that side as the feed rail takes on the
-// other and sits centered between them.
-static CGFloat ApolloDuoFeedRailTrailingGive(ApolloDuoSplitHost *host) {
-    if (![host showsFeedRail]) return 0;
-    return MAX(0, host.view.safeAreaInsets.right - ApolloDuoFeedRail.reservedWidth);
-}
-
 static void ApolloDuoSetFeedRailTrailingInset(UIViewController *controller, CGFloat inset) {
     if (!controller) return;
     CGFloat previous = [objc_getAssociatedObject(controller, &kDuoFeedRailTrailingInset) doubleValue];
@@ -2369,10 +2359,7 @@ static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewControl
     CGFloat navigation = ApolloDuoPostsLeadingReserve(host, top);
     ApolloDuoSetFeedRailInset(feed, navigation);
     CGFloat gap = [host showsFeedRail] && host.view.safeAreaInsets.right >= 1 ? kDuoFeedRailTrailingGap : 0;
-    // The pages give the rail's safe area back down to the feed rail's width;
-    // the bar keeps its gap from the divider that moves with them.
-    CGFloat give = ApolloDuoFeedRailTrailingGive(host);
-    ApolloDuoSetFeedRailTrailingInset(feed, gap - give);
+    ApolloDuoSetFeedRailTrailingInset(feed, gap);
     NSMutableArray<UIViewController *> *pages = [feed.viewControllers mutableCopy];
     if (leaving && ![pages containsObject:leaving]) [pages addObject:leaving];
     for (UIViewController *page in pages) {
@@ -2387,7 +2374,7 @@ static void ApolloDuoFeedRailApplyInsets(ApolloDuoSplitHost *host, UIViewControl
     BOOL besideRail = [host showsFeedRail] && host.postsShowingDetail && !host.postsColumnsPaired;
     CGFloat threadGap = besideRail ? gap : 0;
     ApolloDuoSetFeedRailInset(thread, besideRail ? ApolloDuoFeedRail.reservedWidth : 0);
-    ApolloDuoSetFeedRailTrailingInset(thread, threadGap - (besideRail ? give : 0));
+    ApolloDuoSetFeedRailTrailingInset(thread, threadGap);
     for (UIViewController *page in thread.viewControllers) {
         ApolloDuoSetFeedRailInset(page, 0);
         ApolloDuoSetFeedRailTrailingInset(page, -threadGap);
