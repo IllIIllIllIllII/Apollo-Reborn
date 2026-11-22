@@ -2664,7 +2664,7 @@ typedef NS_ENUM(NSInteger, Tag) {
                 });
         }];
     duoFeedSidebarStyle.visible = ^BOOL { return ApolloDeviceIsDuo() && IsLiquidGlass() && sDuoFeedSidebarEnabled; };
-    NSArray<NSString *> *sidebarContents = @[ @"Favorites", @"Multireddits", @"Favorites & Multireddits" ];
+    NSArray<NSString *> *sidebarContents = @[ @"Favorites", @"Multireddits", @"Both" ];
     ApolloSettingsRow *duoFeedSidebarContent =
         [ApolloSettingsRow valueRowWithID:@"interface.duoFeedSidebarContent"
                                    title:@"Sidebar Shows"
