@@ -163,12 +163,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.avatar = YES;
     self.subreddit = subreddit;
     self.accessibilityLabel = username ? subreddit : [@"r/" stringByAppendingString:subreddit];
-    // Condensed, and a name that still doesn't fit shrinks a little before it
-    // is cut off.
+    // A name that doesn't fit shrinks a little before it is cut off.
     self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
-    if (@available(iOS 16.0, *)) {
-        self.label.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium width:UIFontWidthCondensed];
-    }
     self.label.adjustsFontSizeToFitWidth = YES;
     self.label.minimumScaleFactor = 0.85;
     self.icon.contentMode = UIViewContentModeScaleAspectFill;
