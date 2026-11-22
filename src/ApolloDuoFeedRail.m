@@ -29,9 +29,10 @@ static const CGFloat kRailAvatarSize = 32;
 // sits 2pt inside its button's top and bottom.
 static const CGFloat kRailSelectionInset = 4;
 // The highlight's distance from the button's sides, and the name's from the
-// highlight's, close so long names keep the most room.
+// highlight's: the closest a name comes while it clears the highlight's
+// rounded bottom corners.
 static const CGFloat kRailSelectionSideInset = 4;
-static const CGFloat kRailLabelInset = 2;
+static const CGFloat kRailLabelInset = 5;
 // A rounded rectangle rather than the lens's capsule, whose curve would cut
 // into the names along its bottom.
 static const CGFloat kRailSelectionRadius = 16;
@@ -229,15 +230,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     self.selection.frame = selection;
     [self shapeSelection];
     // Icon and name sit in the middle of the highlight, the name inset from
-    // its sides. A favorite's name can run to those sides, so it and its
-    // avatar sit higher, keeping the name above the rounded bottom corners.
+    // its sides far enough to clear its rounded bottom corners.
     BOOL large = self.avatar || self.styled;
     CGFloat iconSize = large ? kRailAvatarSize : kRailGlyphSize;
-    CGFloat iconTop = CGRectGetMinY(selection) + (self.avatar ? 3 : large ? 5 : 8);
+    CGFloat iconTop = CGRectGetMinY(selection) + (large ? 5 : 8);
     self.icon.frame = CGRectMake((bounds.size.width - iconSize) / 2, iconTop, iconSize, iconSize);
     self.initial.frame = self.icon.frame;
-    CGFloat labelGap = self.avatar ? 2 : large ? 3 : 5;
-    self.label.frame = CGRectMake(CGRectGetMinX(selection) + kRailLabelInset, CGRectGetMaxY(self.icon.frame) + labelGap,
+    self.label.frame = CGRectMake(CGRectGetMinX(selection) + kRailLabelInset, CGRectGetMaxY(self.icon.frame) + (large ? 3 : 5),
                                   CGRectGetWidth(selection) - kRailLabelInset * 2, self.avatar ? 12 : 13);
 }
 // Under the panel's rounded top, the highlight's top follows it in circular
