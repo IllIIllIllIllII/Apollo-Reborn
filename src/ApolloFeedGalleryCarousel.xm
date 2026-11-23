@@ -7,8 +7,9 @@
 //
 // Safety / scope:
 //   * Reddit-native galleries only (ImgurAlbum is a Swift value-type ivar and
-//     keeps Apollo's native mosaic). A GIF page shows its still preview with a
-//     GIF badge, as Apollo's mosaic shows it as a still, and the viewer plays it.
+//     keeps Apollo's native mosaic). A GIF page plays, muted and looping, while
+//     the card is on screen and Apollo's Autoplay GIFs/Videos allows it: one
+//     player per card, for the page showing, over its still preview.
 //   * Comments media headers retain Apollo's native presentation.
 //   * NSFW/spoiler galleries ARE supported. No image is requested or decoded
 //     until the user reveals the cover. Reveal state rides on the RDKLink
@@ -18,6 +19,7 @@
 //     PINRemoteImage pipeline. Decoded images outside a small retention window
 //     are released, and every image is released when the card leaves a window.
 
+#import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -27,6 +29,7 @@
 #import "ApolloFeedGalleryCarousel.h"
 #import "ApolloSwiftRuntime.h"
 #import "ApolloFeedGalleryGesturePolicy.h"
+#import "ApolloMediaAutoplay.h"
 #import "ApolloState.h"
 #import "ApolloThemeRuntime.h"
 #import "Tweak.h"
@@ -98,23 +101,6 @@ extern "C" void ApolloMediaAssignThumbnails(void *, const void *);
 // don't hide anything — the fullscreen viewer always shows the full image.
 static const CGFloat kApolloFeedGalleryRatio = 9.0 / 16.0;
 static const CGFloat kApolloFeedGalleryMaxRatio = 5.0 / 4.0;
-
-// The GIF pill Apollo draws on its own media: black text on white.
-static const NSInteger kApolloFeedGalleryGIFBadgeTag = 0x474946; // 'GIF'
-
-static UILabel *ApolloFeedGalleryGIFBadge(void) {
-    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(0.0, 0.0, 34.0, 20.0)];
-    badge.tag = kApolloFeedGalleryGIFBadgeTag;
-    badge.text = @"GIF";
-    badge.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightBold];
-    badge.textColor = UIColor.blackColor;
-    badge.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.92];
-    badge.textAlignment = NSTextAlignmentCenter;
-    badge.layer.cornerRadius = 5.0;
-    badge.clipsToBounds = YES;
-    badge.isAccessibilityElement = NO;
-    return badge;
-}
 
 // Letterbox/placeholder surface behind carousel pages. Under aspect-fill this
 // was a debug backstop that only flashed during loads; with aspect-fit it is
@@ -296,10 +282,11 @@ static NSArray<NSDictionary *> *ApolloFeedGalleryItems(id albumNode) {
         }
         double aspect = (source.width > 0.0 && source.height > 0.0)
             ? source.height / source.width : 0.0;
-        // A GIF item carries only its animated URL; the page shows a still
-        // preview and the viewer plays the GIF.
-        [result addObject:@{ @"previewURL": previewURL, @"aspect": @(aspect),
-                             @"animated": @(source.mp4URL != nil) }];
+        // A GIF item carries no still URL, only its animated one (an MP4
+        // rendition); the page shows a still preview until that plays.
+        NSMutableDictionary *entry = [@{ @"previewURL": previewURL, @"aspect": @(aspect) } mutableCopy];
+        if ([source.mp4URL isKindOfClass:[NSURL class]]) entry[@"mp4URL"] = source.mp4URL;
+        [result addObject:[entry copy]];
     }
     NSArray *items = result.count >= 2 ? [result copy] : nil;
     objc_setAssociatedObject(gallery, &kApolloFeedGalleryItemsCacheKey, items ?: NSNull.null,
@@ -452,6 +439,16 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 @property (nonatomic) BOOL contentIsObscured;
 @property (nonatomic) CGSize lastLayoutSize;
 @property (nonatomic) BOOL needsPageGeometry;
+// The current page's GIF, when it has one and may play (apollo_updateGIFPlayback).
+@property (nonatomic, strong) AVPlayer *gifPlayer;
+@property (nonatomic, strong) AVPlayerLayer *gifLayer;
+@property (nonatomic, strong) AVPlayerItem *gifItem;
+@property (nonatomic) NSInteger gifPage;
+@property (nonatomic, strong) NSMutableIndexSet *failedGIFPages;
+@property (nonatomic) BOOL pausedByApollo;
+@property (nonatomic) BOOL viewerOpen;
+- (void)apollo_updateGIFPlayback;
+- (void)apollo_setViewerOpen:(BOOL)open;
 - (void)configureWithItems:(NSArray<NSDictionary *> *)items
                  albumNode:(id)albumNode
                       nsfw:(BOOL)nsfw
@@ -511,11 +508,172 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 
     _imageViews = [NSMutableArray array];
     _loadedURLs = [NSMutableArray array];
+    _gifPage = NSNotFound;
+    _failedGIFPages = [NSMutableIndexSet indexSet];
+    // Apollo briefly pauses every feed player when a video leaves the screen
+    // or its viewer closes; the GIF follows like Apollo's own players.
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(apollo_pauseAllPlayers:)
+                   name:@"com.christianselig.PauseAllAVPlayerInstances" object:nil];
+    [center addObserver:self selector:@selector(apollo_unpauseAllPlayers:)
+                   name:@"com.christianselig.UnpauseAllAVPlayerInstances" object:nil];
+    [center addObserver:self selector:@selector(apollo_resumeAfterForeground:)
+                   name:UIApplicationWillEnterForegroundNotification object:nil];
     return self;
 }
 
 - (void)dealloc {
     [self apollo_cancelRequests];
+    [self apollo_stopGIF];
+}
+
+#pragma mark GIF playback
+
+static char kApolloFeedGalleryGIFStatusContext;
+
+static BOOL ApolloFeedGalleryHostIsVisible(id albumNode) {
+    ASDisplayNode *host = albumNode ? objc_getAssociatedObject(albumNode, &kApolloFeedGalleryHostNodeKey) : nil;
+    // Without isVisible, fall back to the window check the caller already made.
+    if (![host respondsToSelector:@selector(isVisible)]) return host != nil;
+    return ((BOOL (*)(id, SEL))objc_msgSend)(host, @selector(isVisible));
+}
+
+// Plays the current page's GIF only while the card is on screen (Texture's
+// visible state, not just in the window: cells in the preload range are in
+// the window too), uncovered, and allowed by Apollo's own feed autoplay
+// setting. Every other state leaves the still preview.
+- (void)apollo_updateGIFPlayback {
+    NSInteger page = self.currentIndex;
+    NSURL *url = page >= 0 && page < (NSInteger)self.items.count ? self.items[page][@"mp4URL"] : nil;
+    BOOL play = url && self.window && !self.contentIsObscured && !self.viewerOpen
+        && ![self.failedGIFPages containsIndex:page]
+        && ApolloFeedGalleryHostIsVisible(self.albumNode) && !ApolloNativeAutoplayEffectivelyOff();
+    if (!play) {
+        [self apollo_stopGIF];
+        return;
+    }
+    if (self.gifPlayer && self.gifPage == page) {
+        if (!self.pausedByApollo) [self.gifPlayer play];
+        return;
+    }
+    [self apollo_stopGIF];
+    [self apollo_startGIFWithURL:url page:page];
+}
+
+- (void)apollo_startGIFWithURL:(NSURL *)url page:(NSInteger)page {
+    UIImageView *pageView = self.imageViews[page];
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
+    item.preferredForwardBufferDuration = 2.0;
+    AVPlayer *player = [AVPlayer playerWithPlayerItem:item];
+    player.muted = YES;
+    player.allowsExternalPlayback = NO;
+    player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    if (@available(iOS 15.0, *)) {
+        player.audiovisualBackgroundPlaybackPolicy = AVPlayerAudiovisualBackgroundPlaybackPolicyPauses;
+    }
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(apollo_gifDidPlayToEnd:)
+                   name:AVPlayerItemDidPlayToEndTimeNotification object:item];
+    [center addObserver:self selector:@selector(apollo_gifFailed:)
+                   name:AVPlayerItemFailedToPlayToEndTimeNotification object:item];
+    // A rendition that never loads only reaches AVPlayerItemStatusFailed.
+    [item addObserver:self forKeyPath:@"status" options:0 context:&kApolloFeedGalleryGIFStatusContext];
+
+    AVPlayerLayer *layer = [AVPlayerLayer playerLayerWithPlayer:player];
+    layer.videoGravity = AVLayerVideoGravityResizeAspect;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    layer.frame = pageView.bounds;
+    // Draws nothing until its first frame, so the still shows meanwhile and
+    // stays if the GIF never starts.
+    [pageView.layer addSublayer:layer];
+    [CATransaction commit];
+
+    self.gifItem = item;
+    self.gifPlayer = player;
+    self.gifLayer = layer;
+    self.gifPage = page;
+    if (!self.pausedByApollo) [player play];
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] GIF page %ld playing", (long)page);
+}
+
+- (void)apollo_stopGIF {
+    if (!self.gifItem) return;
+    NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+    [center removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.gifItem];
+    [center removeObserver:self name:AVPlayerItemFailedToPlayToEndTimeNotification object:self.gifItem];
+    [self.gifItem removeObserver:self forKeyPath:@"status" context:&kApolloFeedGalleryGIFStatusContext];
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] GIF page %ld stopped", (long)self.gifPage);
+    [self.gifPlayer pause];
+    [self.gifLayer removeFromSuperlayer];
+    self.gifItem = nil;
+    self.gifPlayer = nil;
+    self.gifLayer = nil;
+    self.gifPage = NSNotFound;
+    // A pause Apollo never lifted ends with this player; the next one plays.
+    self.pausedByApollo = NO;
+}
+
+- (void)apollo_gifDidPlayToEnd:(NSNotification *)note {
+    if (note.object != self.gifItem) return;
+    [self.gifPlayer seekToTime:kCMTimeZero];
+    if (!self.pausedByApollo) [self.gifPlayer play];
+}
+
+// A GIF that can't play keeps its still for the rest of this card's life.
+- (void)apollo_gifFailed:(NSNotification *)note {
+    if (note.object != self.gifItem) return;
+    [self apollo_giveUpOnGIF];
+}
+
+- (void)apollo_giveUpOnGIF {
+    if (self.gifPage == NSNotFound) return;
+    ApolloLog(@"[FeedGallery] GIF page %ld failed to play; keeping its still", (long)self.gifPage);
+    [self.failedGIFPages addIndex:(NSUInteger)self.gifPage];
+    [self apollo_stopGIF];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+    if (context != &kApolloFeedGalleryGIFStatusContext) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+    AVPlayerItem *item = object;
+    if (item.status != AVPlayerItemStatusFailed) return;
+    // KVO may arrive off the main thread; the teardown touches layers.
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf.gifItem == item) [strongSelf apollo_giveUpOnGIF];
+    });
+}
+
+// The viewer this carousel opened plays the same GIF full screen; the card
+// stays in Texture's visible state behind it, so it stops until that closes.
+- (void)apollo_setViewerOpen:(BOOL)open {
+    self.viewerOpen = open;
+    [self apollo_updateGIFPlayback];
+}
+
+- (void)apollo_pauseAllPlayers:(NSNotification *)note {
+    if (!self.gifPlayer) return;
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] GIF page %ld paused with Apollo's players", (long)self.gifPage);
+    self.pausedByApollo = YES;
+    [self.gifPlayer pause];
+}
+
+- (void)apollo_unpauseAllPlayers:(NSNotification *)note {
+    if (!self.pausedByApollo) return;
+    os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] GIF page %ld resumed with Apollo's players", (long)self.gifPage);
+    self.pausedByApollo = NO;
+    [self apollo_updateGIFPlayback];
+}
+
+- (void)apollo_resumeAfterForeground:(NSNotification *)note {
+    if (self.gifPlayer) [self apollo_updateGIFPlayback];
 }
 
 - (void)layoutSubviews {
@@ -540,13 +698,13 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 
     [self.imageViews enumerateObjectsUsingBlock:^(UIImageView *imageView, NSUInteger index, BOOL *stop) {
         imageView.frame = CGRectMake(width * index, 0.0, width, height);
-        UIView *badge = [imageView viewWithTag:kApolloFeedGalleryGIFBadgeTag];
-        if (badge) {
-            CGSize badgeSize = badge.bounds.size;
-            badge.frame = CGRectMake(width - badgeSize.width - 10.0, height - badgeSize.height - 10.0,
-                                     badgeSize.width, badgeSize.height);
-        }
     }];
+    if (self.gifLayer) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        self.gifLayer.frame = self.gifLayer.superlayer.bounds;
+        [CATransaction commit];
+    }
     self.scrollView.contentSize = CGSizeMake(width * self.imageViews.count, height);
     // The offset is only written on a real geometry change (the same-size
     // early-return above guarantees that), preserving the fractional page so
@@ -569,6 +727,8 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     self.albumNode = albumNode;
 
     if (self.items != items) {
+        [self apollo_stopGIF];
+        [self.failedGIFPages removeAllIndexes];
         [self apollo_cancelRequests];
         [self.imageViews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         [self.imageViews removeAllObjects];
@@ -585,11 +745,9 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
             imageView.contentMode = UIViewContentModeScaleAspectFit;
             imageView.clipsToBounds = YES;
             imageView.isAccessibilityElement = YES;
-            BOOL animated = [items[index][@"animated"] boolValue];
             imageView.accessibilityLabel = [NSString stringWithFormat:@"Gallery %@ %lu of %lu",
-                                            animated ? @"GIF" : @"image",
+                                            items[index][@"mp4URL"] ? @"GIF" : @"image",
                                             (unsigned long)index + 1, (unsigned long)items.count];
-            if (animated) [imageView addSubview:ApolloFeedGalleryGIFBadge()];
             imageView.accessibilityTraits = UIAccessibilityTraitImage | UIAccessibilityTraitButton;
             [self.scrollView addSubview:imageView];
             [self.imageViews addObject:imageView];
@@ -604,6 +762,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     self.pageControl.currentPage = self.currentIndex;
     [self apollo_updateCount];
     [self setNeedsLayout];
+    [self apollo_updateGIFPlayback];
 }
 
 - (void)apollo_setObscured:(BOOL)obscured nsfw:(BOOL)nsfw spoiler:(BOOL)spoiler {
@@ -634,9 +793,11 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
             }
         }
         if (self.window) [self apollo_loadNearIndex:self.currentIndex];
+        [self apollo_updateGIFPlayback];
         return;
     }
 
+    [self apollo_stopGIF];
     // This is both a privacy boundary and a memory/performance win: obscured
     // NSFW/spoiler cards do not download or retain pixels behind the cover.
     [self apollo_releaseImagesOutsideLowerBound:NSNotFound upperBound:NSNotFound];
@@ -840,6 +1001,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
     self.pageControl.currentPage = index;
     [self apollo_updateCount];
     [self apollo_loadNearIndex:index];
+    [self apollo_updateGIFPlayback];
     CGFloat width = CGRectGetWidth(self.scrollView.bounds);
     if (width > 0.0) {
         [self.scrollView setContentOffset:CGPointMake(width * index, 0.0) animated:NO];
@@ -886,6 +1048,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     self.pageControl.currentPage = index;
     [self apollo_updateCount];
+    [self apollo_updateGIFPlayback];
     // A fast fling crosses many pages; starting +/-1 downloads for each one
     // wastes the network on images that are never seen.
     // scrollViewWillEndDragging: already prefetched the landing page and
@@ -926,6 +1089,7 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 - (void)didMoveToWindow {
     [super didMoveToWindow];
     if (self.window && !self.contentIsObscured) [self apollo_loadNearIndex:self.currentIndex];
+    [self apollo_updateGIFPlayback];
 }
 
 // The carousel owns every touch that lands inside it; none may reach the feed
@@ -967,6 +1131,36 @@ static NSHashTable *ApolloFeedGalleryTrackedNodes(void) {
     return nodes;
 }
 
+// The carousel's host node reports Texture's visible state, which tells a card
+// actually on screen from one only preloaded; Apollo's album node doesn't
+// implement those callbacks. Interface state passes down to subnodes, so the
+// host follows its cell. Built at runtime: ASDisplayNode lives in Apollo's binary.
+static void ApolloFeedGalleryHostVisibilityChanged(id host, SEL _cmd) {
+    struct objc_super parent = { host, ApolloClassASDisplayNode };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&parent, _cmd);
+    ApolloFeedGalleryCarouselView *carousel = objc_getAssociatedObject(host, &kApolloFeedGalleryViewKey);
+    [carousel apollo_updateGIFPlayback];
+}
+
+static Class ApolloFeedGalleryHostNodeClass(void) {
+    static Class hostClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class base = ApolloClassASDisplayNode;
+        if (!base) return;
+        Class subclass = objc_allocateClassPair(base, "ApolloFeedGalleryHostNode", 0);
+        if (!subclass) {
+            hostClass = objc_getClass("ApolloFeedGalleryHostNode") ?: base;
+            return;
+        }
+        class_addMethod(subclass, @selector(didEnterVisibleState), (IMP)ApolloFeedGalleryHostVisibilityChanged, "v@:");
+        class_addMethod(subclass, @selector(didExitVisibleState), (IMP)ApolloFeedGalleryHostVisibilityChanged, "v@:");
+        objc_registerClassPair(subclass);
+        hostClass = subclass;
+    });
+    return hostClass;
+}
+
 static ASDisplayNode *ApolloFeedGalleryEnsureHostNode(id albumNode) {
     ASDisplayNode *host = nil;
     BOOL created = NO;
@@ -976,7 +1170,7 @@ static ASDisplayNode *ApolloFeedGalleryEnsureHostNode(id albumNode) {
     @synchronized (albumNode) {
         host = objc_getAssociatedObject(albumNode, &kApolloFeedGalleryHostNodeKey);
         if (!host) {
-            Class nodeClass = ApolloClassASDisplayNode;
+            Class nodeClass = ApolloFeedGalleryHostNodeClass();
             if (!nodeClass) return nil;
             host = [[nodeClass alloc] init];
             host.userInteractionEnabled = YES;
@@ -1230,10 +1424,19 @@ static void ApolloFeedGalleryRememberViewerPage(UIPageViewController *pager) {
     %orig;
 }
 
+// Not viewWillDisappear: a cancelled swipe-to-dismiss sends that and keeps the
+// viewer up.
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    ApolloFeedGalleryOwnerBox *box = objc_getAssociatedObject(self, &kApolloFeedGalleryReturnCarouselKey);
+    [(ApolloFeedGalleryCarouselView *)box.owner apollo_setViewerOpen:NO];
+}
+
 - (void)viewDidLoad {
     if (sApolloFeedGalleryOpeningCarousel) {
         objc_setAssociatedObject(self, &kApolloFeedGalleryReturnCarouselKey,
                                  sApolloFeedGalleryOpeningCarousel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [(ApolloFeedGalleryCarouselView *)sApolloFeedGalleryOpeningCarousel.owner apollo_setViewerOpen:YES];
         os_log_debug(ApolloFixLog(), "[ApolloFix] [FeedGallery] bound fullscreen return carousel");
     }
     RDKLink *link = ApolloObjectIvar(self, "link");
