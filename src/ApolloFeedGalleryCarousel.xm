@@ -6,8 +6,9 @@
 // only replaces the in-feed presentation.
 //
 // Safety / scope:
-//   * Reddit-native image galleries only. ImgurAlbum is a Swift value-type ivar
-//     and mixed image/video galleries retain Apollo's native mosaic.
+//   * Reddit-native galleries only (ImgurAlbum is a Swift value-type ivar and
+//     keeps Apollo's native mosaic). A GIF page shows its still preview with a
+//     GIF badge, as Apollo's mosaic shows it as a still, and the viewer plays it.
 //   * Comments media headers retain Apollo's native presentation.
 //   * NSFW/spoiler galleries ARE supported. No image is requested or decoded
 //     until the user reveals the cover. Reveal state rides on the RDKLink
@@ -97,6 +98,23 @@ extern "C" void ApolloMediaAssignThumbnails(void *, const void *);
 // don't hide anything — the fullscreen viewer always shows the full image.
 static const CGFloat kApolloFeedGalleryRatio = 9.0 / 16.0;
 static const CGFloat kApolloFeedGalleryMaxRatio = 5.0 / 4.0;
+
+// The GIF pill Apollo draws on its own media: black text on white.
+static const NSInteger kApolloFeedGalleryGIFBadgeTag = 0x474946; // 'GIF'
+
+static UILabel *ApolloFeedGalleryGIFBadge(void) {
+    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake(0.0, 0.0, 34.0, 20.0)];
+    badge.tag = kApolloFeedGalleryGIFBadgeTag;
+    badge.text = @"GIF";
+    badge.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightBold];
+    badge.textColor = UIColor.blackColor;
+    badge.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.92];
+    badge.textAlignment = NSTextAlignmentCenter;
+    badge.layer.cornerRadius = 5.0;
+    badge.clipsToBounds = YES;
+    badge.isAccessibilityElement = NO;
+    return badge;
+}
 
 // Letterbox/placeholder surface behind carousel pages. Under aspect-fill this
 // was a debug backstop that only flashed during loads; with aspect-fit it is
@@ -267,9 +285,7 @@ static NSArray<NSDictionary *> *ApolloFeedGalleryItems(id albumNode) {
         }
         RDKGalleryItem *item = rawItem;
         RDKGalleryItemImage *source = item.image;
-        // Mixed/video galleries stay native for this first scope. A static
-        // poster is not an honest representation of a playable gallery page.
-        if (![source isKindOfClass:ApolloClassRDKGalleryItemImage] || source.mp4URL) {
+        if (![source isKindOfClass:ApolloClassRDKGalleryItemImage]) {
             result = nil;
             break;
         }
@@ -280,7 +296,10 @@ static NSArray<NSDictionary *> *ApolloFeedGalleryItems(id albumNode) {
         }
         double aspect = (source.width > 0.0 && source.height > 0.0)
             ? source.height / source.width : 0.0;
-        [result addObject:@{ @"previewURL": previewURL, @"aspect": @(aspect) }];
+        // A GIF item carries only its animated URL; the page shows a still
+        // preview and the viewer plays the GIF.
+        [result addObject:@{ @"previewURL": previewURL, @"aspect": @(aspect),
+                             @"animated": @(source.mp4URL != nil) }];
     }
     NSArray *items = result.count >= 2 ? [result copy] : nil;
     objc_setAssociatedObject(gallery, &kApolloFeedGalleryItemsCacheKey, items ?: NSNull.null,
@@ -521,6 +540,12 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
 
     [self.imageViews enumerateObjectsUsingBlock:^(UIImageView *imageView, NSUInteger index, BOOL *stop) {
         imageView.frame = CGRectMake(width * index, 0.0, width, height);
+        UIView *badge = [imageView viewWithTag:kApolloFeedGalleryGIFBadgeTag];
+        if (badge) {
+            CGSize badgeSize = badge.bounds.size;
+            badge.frame = CGRectMake(width - badgeSize.width - 10.0, height - badgeSize.height - 10.0,
+                                     badgeSize.width, badgeSize.height);
+        }
     }];
     self.scrollView.contentSize = CGSizeMake(width * self.imageViews.count, height);
     // The offset is only written on a real geometry change (the same-size
@@ -560,8 +585,11 @@ static BOOL ApolloFeedGalleryCanGoForward(UINavigationController *navigationCont
             imageView.contentMode = UIViewContentModeScaleAspectFit;
             imageView.clipsToBounds = YES;
             imageView.isAccessibilityElement = YES;
-            imageView.accessibilityLabel = [NSString stringWithFormat:@"Gallery image %lu of %lu",
+            BOOL animated = [items[index][@"animated"] boolValue];
+            imageView.accessibilityLabel = [NSString stringWithFormat:@"Gallery %@ %lu of %lu",
+                                            animated ? @"GIF" : @"image",
                                             (unsigned long)index + 1, (unsigned long)items.count];
+            if (animated) [imageView addSubview:ApolloFeedGalleryGIFBadge()];
             imageView.accessibilityTraits = UIAccessibilityTraitImage | UIAccessibilityTraitButton;
             [self.scrollView addSubview:imageView];
             [self.imageViews addObject:imageView];
