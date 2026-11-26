@@ -3343,6 +3343,31 @@ static NSInteger ApolloHeaderStylePickerValue(NSInteger index, BOOL blurAvailabl
                                               rows:@[ feedSidebar, feedSidebarStyle, feedSidebarContent ]];
 }
 
+// The sidebar follows two Subreddits settings rather than copying them: its
+// feeds and their icon style come from Feed Shortcuts, and its order and icons
+// from Subreddit List Sections.
+- (ApolloSettingsSection *)buildDuoSidebarSharedSection {
+    ApolloSettingsRow *feedShortcuts =
+        [ApolloSettingsRow disclosureRowWithID:@"duo.feedShortcuts"
+                                         title:@"Feed Shortcuts"
+                                        detail:^NSString * { return @"Which feeds show and their icons"; }
+                                          push:^UIViewController * { return ApolloSettingsRouteInstantiate(@"feed-shortcuts"); }];
+    feedShortcuts.detailAsSubtitle = YES;
+    ApolloSettingsRow *subredditSections =
+        [ApolloSettingsRow disclosureRowWithID:@"duo.subredditSections"
+                                         title:@"Subreddit List Sections"
+                                        detail:^NSString * { return @"Icons and section order"; }
+                                          push:^UIViewController * { return ApolloSettingsRouteInstantiate(@"subreddit-sections"); }];
+    subredditSections.detailAsSubtitle = YES;
+
+    ApolloSettingsSection *section =
+        [ApolloSettingsSection sectionWithTitle:@"Shared Settings"
+                                         footer:@"The sidebar shows the feeds you pick in Feed Shortcuts, and lists favorites and multireddits in your Subreddits list's order, with its icons."
+                                           rows:@[ feedShortcuts, subredditSections ]];
+    section.visible = ^BOOL { return sDuoFeedSidebarEnabled; };
+    return section;
+}
+
 - (ApolloSettingsSection *)buildDuoSubredditPanelSection {
     __weak typeof(self) weakSelf = self;
     ApolloSettingsRow *panelStyle =
@@ -6416,7 +6441,7 @@ static double ApolloBudgetPauseLimit(void) {
 @implementation ApolloDuoSettingsViewController
 - (NSString *)apollo_screenTitle { return @"iPhone Duo"; }
 - (NSArray<ApolloSettingsSection *> *)buildForm {
-    return @[ [self buildDuoSidebarSection], [self buildDuoSubredditPanelSection] ];
+    return @[ [self buildDuoSidebarSection], [self buildDuoSidebarSharedSection], [self buildDuoSubredditPanelSection] ];
 }
 @end
 

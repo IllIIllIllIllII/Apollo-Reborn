@@ -23,6 +23,10 @@ static const CGFloat kRailColumnWidth = 76;
 static const CGFloat kRailSideInset = 4;
 static const CGFloat kRailButtonHeight = 62;
 static const CGFloat kRailFavoriteHeight = 60;
+// A favorite shown by name alone (Show Subreddit Icons off): room for two
+// lines with space around them, a hairline between one name and the next.
+static const CGFloat kRailNameOnlyHeight = 52;
+static const CGFloat kRailNameOnlyFontSize = 12;
 static const CGFloat kRailGlyphSize = 24;
 static const CGFloat kRailAvatarSize = 32;
 // The first highlight sits this far below the panel's top; every highlight
@@ -64,6 +68,86 @@ static NSString *ApolloDuoFeedRailUsername(NSString *favorite) {
     return [favorite.lowercaseString hasPrefix:@"u/"] && favorite.length > 2 ? [favorite substringFromIndex:2] : nil;
 }
 
+// The sidebar follows the Subreddits list's Show Subreddit Icons (Subreddit
+// List Sections). Off, every favorite and multireddit shows its name alone.
+static BOOL ApolloDuoFeedRailShowsIcons(void) {
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:UDKeyShowSubredditIconsInSubredditList];
+    return value ? [value boolValue] : YES;
+}
+
+// A name too wide for one line, split for two. A word break comes first:
+// at a space, after "_", "/" or "-", at a lowercase-to-uppercase step, after a number
+// ("switch2|hacks"), or before the last capital of a run ("SBC|Gaming"),
+// taking the most even split whose lines both fit. A name without one that
+// shrinking a little won't fit is hyphenated as wrapped text is, with as much
+// on the first line as fits ("classy-|women"). Failing both, the most even
+// split of either kind ("ninten-|doswitchlite"), which the label shrinks; a
+// name with no break at all stays on one line, shrunk or truncated.
+static NSString *ApolloDuoFeedRailSplitName(NSString *name, UIFont *font, CGFloat width) {
+    NSDictionary<NSAttributedStringKey, id> *attributes = @{ NSFontAttributeName: font };
+    CGFloat nameWidth = [name sizeWithAttributes:attributes].width;
+    if (nameWidth <= width) return name;
+    NSUInteger length = name.length;
+    // Each candidate's two lines and the wider of them.
+    NSMutableArray<NSArray *> *words = [NSMutableArray array];
+    NSMutableArray<NSArray *> *syllables = [NSMutableArray array];
+    void (^add)(NSMutableArray<NSArray *> *, NSUInteger, BOOL) = ^(NSMutableArray<NSArray *> *list, NSUInteger index, BOOL hyphen) {
+        NSCharacterSet *spaces = NSCharacterSet.whitespaceCharacterSet;
+        NSString *head = [[name substringToIndex:index] stringByTrimmingCharactersInSet:spaces];
+        NSString *tail = [[name substringFromIndex:index] stringByTrimmingCharactersInSet:spaces];
+        if (hyphen) head = [head stringByAppendingString:@"-"];
+        CGFloat wider = MAX([head sizeWithAttributes:attributes].width, [tail sizeWithAttributes:attributes].width);
+        [list addObject:@[ head, tail, @(wider) ]];
+    };
+    NSCharacterSet *upper = NSCharacterSet.uppercaseLetterCharacterSet;
+    NSCharacterSet *lower = NSCharacterSet.lowercaseLetterCharacterSet;
+    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+    NSCharacterSet *letters = NSCharacterSet.letterCharacterSet;
+    for (NSUInteger index = 1; index < length; index++) {
+        unichar previous = [name characterAtIndex:index - 1], current = [name characterAtIndex:index];
+        BOOL boundary = (previous == ' ' || previous == '_' || previous == '/' || previous == '-')
+            && current != ' ' && current != '_' && current != '/' && current != '-';
+        boundary = boundary || ([lower characterIsMember:previous] && [upper characterIsMember:current]);
+        boundary = boundary || ([digits characterIsMember:previous] && [letters characterIsMember:current]);
+        boundary = boundary || (index + 1 < length && [upper characterIsMember:previous] && [upper characterIsMember:current]
+                                && [lower characterIsMember:[name characterAtIndex:index + 1]]);
+        if (boundary) add(words, index, NO);
+    }
+    NSArray *(^evenest)(NSArray<NSArray *> *, BOOL) = ^NSArray *(NSArray<NSArray *> *list, BOOL fitting) {
+        NSArray *best = nil;
+        for (NSArray *candidate in list) {
+            if (fitting && [candidate[2] doubleValue] > width) continue;
+            if (!best || [candidate[2] doubleValue] < [best[2] doubleValue]) best = candidate;
+        }
+        return best;
+    };
+    NSArray *split = evenest(words, YES);
+    if (!split && nameWidth * 0.85 > width) {
+        // Subreddit names are mostly English, whatever the device's language.
+        static CFLocaleRef locale;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ locale = CFLocaleCreate(kCFAllocatorDefault, CFSTR("en_US")); });
+        CFStringRef string = (__bridge CFStringRef)name;
+        // Last to first; two letters at least on either line.
+        CFIndex before = (CFIndex)length - 1;
+        while (before > 2) {
+            CFIndex point = CFStringGetHyphenationLocationBeforeIndex(string, before, CFRangeMake(0, (CFIndex)length), 0, locale, NULL);
+            if (point == kCFNotFound || point < 2 || point >= before) break;
+            before = point;
+            add(syllables, (NSUInteger)point, YES);
+        }
+        // The fullest first line whose lines both fit, then the most even.
+        for (NSArray *candidate in syllables) {
+            if ([candidate[2] doubleValue] <= width) {
+                split = candidate;
+                break;
+            }
+        }
+        if (!split) split = evenest([words arrayByAddingObjectsFromArray:syllables], NO);
+    }
+    return split ? [NSString stringWithFormat:@"%@\n%@", split[0], split[1]] : name;
+}
+
 // A glyph scaled into a square template image, so Apollo's bundled art and SF
 // Symbols share one size.
 static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
@@ -95,6 +179,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 // An icon is loading or shown.
 @property(nonatomic) BOOL hasIcon;
 @property(nonatomic) BOOL avatar;
+// Show Subreddit Icons off: the name alone (-showNameOnly), with a hairline
+// under it unless the next entry starts a new group or there is none.
+@property(nonatomic) BOOL nameOnly;
+@property(nonatomic, strong) UIView *divider;
+@property(nonatomic) BOOL showsDivider;
 // A feed shortcut drawn as a tile, circle or Classic icon, at the avatars' size.
 @property(nonatomic) BOOL styled;
 @property(nonatomic) BOOL chosen;
@@ -156,8 +245,8 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     return self;
 }
 - (instancetype)initWithSubreddit:(NSString *)subreddit iconURL:(NSURL *)iconURL {
-    // A followed user shows without "u/", for room; its avatar and the spoken
-    // label still say it is a user.
+    // A followed user shows without "u/", for room; its avatar (with icons on)
+    // and the spoken label still say it is a user.
     NSString *username = ApolloDuoFeedRailUsername(subreddit);
     if (!(self = [self initWithTitle:username ?: subreddit])) return nil;
     self.avatar = YES;
@@ -203,8 +292,31 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     }
     return self;
 }
+// Show Subreddit Icons off: no icon or letter, the name a size up instead,
+// centered in its row and on two lines when it needs them.
+- (void)showNameOnly {
+    self.nameOnly = YES;
+    [self.iconRequest cancel];
+    self.icon.hidden = YES;
+    self.initial.hidden = YES;
+    self.divider = [UIView new];
+    self.divider.userInteractionEnabled = NO;
+    // Fainter than the separators between groups, but still visible on the
+    // glass panel, where the separator colors nearly vanish.
+    self.divider.backgroundColor = [UIColor.labelColor colorWithAlphaComponent:0.14];
+    [self addSubview:self.divider];
+    UIFont *font = [UIFont systemFontOfSize:kRailNameOnlyFontSize weight:UIFontWeightMedium];
+    CGFloat width = kRailColumnWidth - (kRailSelectionSideInset + kRailLabelInset) * 2;
+    self.label.text = ApolloDuoFeedRailSplitName(self.label.text ?: @"", font, width);
+    self.label.font = font;
+    self.label.numberOfLines = [self.label.text containsString:@"\n"] ? 2 : 1;
+    self.label.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.label.adjustsFontSizeToFitWidth = YES;
+    self.label.minimumScaleFactor = 0.75;
+    [self setNeedsLayout];
+}
 - (void)loadIconFromURL:(NSURL *)url {
-    if (!url || self.hasIcon) return;
+    if (!url || self.hasIcon || self.nameOnly) return;
     self.hasIcon = YES;
     [self.iconRequest cancel];
     __weak ApolloDuoFeedRailButton *weakSelf = self;
@@ -229,6 +341,13 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     CGRect selection = CGRectInset(bounds, kRailSelectionSideInset, 2);
     self.selection.frame = selection;
     [self shapeSelection];
+    if (self.nameOnly) {
+        self.label.frame = CGRectInset(selection, kRailLabelInset, 2);
+        CGFloat hairline = 1 / (self.window.screen.scale ?: UIScreen.mainScreen.scale);
+        self.divider.frame = CGRectMake(16, bounds.size.height - hairline, bounds.size.width - 32, hairline);
+        self.divider.hidden = !self.showsDivider;
+        return;
+    }
     // Icon and name sit in the middle of the highlight, the name inset from
     // its sides far enough to clear its rounded bottom corners.
     BOOL large = self.avatar || self.styled;
@@ -300,6 +419,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 @property(nonatomic) NSInteger shortcutStyle;
 // What the listed entries were built from, to rebuild only on a change.
 @property(nonatomic, copy) NSArray<NSString *> *favoriteKeys;
+@property(nonatomic) BOOL showsIcons;
 // Favorites and multireddits both listed: the hairline between them, and the
 // index in favoriteButtons where the second group starts (NSNotFound alone).
 @property(nonatomic, strong) UIView *groupSeparator;
@@ -345,7 +465,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     [self.panel.contentView addSubview:self.subredditsButton];
     self.accessibilityLabel = @"Feeds";
     for (NSString *name in @[ApolloFavoriteSubredditsUpdatedNotification, ApolloFeedShortcutsChangedNotification,
-                             ApolloMultiredditsCapturedNotification]) {
+                             ApolloMultiredditsCapturedNotification, ApolloSubredditListIconsChangedNotification]) {
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadShortcuts) name:name object:nil];
     }
     // Apollo saves a star from the subreddit list (or a confirmed unfavorite)
@@ -406,7 +526,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
     }
     [keys insertObjects:multiredditKeys atIndexes:[NSIndexSet indexSetWithIndexesInRange:
         NSMakeRange(multiredditsFirst ? 0 : keys.count, multiredditKeys.count)]];
-    BOOL favoritesChanged = !self.favoriteButtons || ![keys isEqualToArray:self.favoriteKeys ?: @[]];
+    BOOL showsIcons = ApolloDuoFeedRailShowsIcons();
+    BOOL favoritesChanged = !self.favoriteButtons || showsIcons != self.showsIcons
+        || ![keys isEqualToArray:self.favoriteKeys ?: @[]];
     if (!shortcutsChanged && !favoritesChanged) return;
     if (shortcutsChanged) {
         self.shortcuts = shortcuts;
@@ -433,10 +555,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         if (self.favoriteKeys) ApolloLog(@"[DuoFeedRail] entries changed: %lu favorites, %lu multireddits",
                                          (unsigned long)names.count, (unsigned long)multireddits.count);
         self.favoriteKeys = keys;
+        self.showsIcons = showsIcons;
         for (UIView *view in self.favoriteButtons) [view removeFromSuperview];
         // The subreddit list's own icon cache first, then Apollo's icon
         // tracker. Either way the image itself usually comes out of a cache.
-        NSDictionary<NSString *, NSURL *> *icons = names.count || multireddits.count
+        NSDictionary<NSString *, NSURL *> *icons = showsIcons && (names.count || multireddits.count)
             ? ApolloNativeSubredditIconURLs([NSUserDefaults.standardUserDefaults dataForKey:@"SubredditIconData"]) : @{};
         ApolloSubredditInfoCache *cache = ApolloSubredditInfoCache.sharedCache;
         NSMutableArray<ApolloDuoFeedRailButton *> *buttons = [NSMutableArray array];
@@ -444,9 +567,11 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
             // A followed user's avatar comes from the profile cache Apollo's
             // comment and feed avatars use.
             NSString *username = ApolloDuoFeedRailUsername(name);
-            NSURL *iconURL = username ? [ApolloUserProfileCache.sharedCache cachedInfoForUsername:username].iconURL
+            NSURL *iconURL = !showsIcons ? nil
+                : username ? [ApolloUserProfileCache.sharedCache cachedInfoForUsername:username].iconURL
                 : ([cache cachedInfoForSubreddit:name].iconURL ?: icons[name.lowercaseString]);
             ApolloDuoFeedRailButton *button = [[ApolloDuoFeedRailButton alloc] initWithSubreddit:name iconURL:iconURL];
+            if (!showsIcons) [button showNameOnly];
             button.tag = kRailFavoriteTag;
             [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
             [self.favorites addSubview:button];
@@ -455,8 +580,10 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         NSMutableArray<ApolloDuoFeedRailButton *> *multiredditButtons = [NSMutableArray array];
         for (NSDictionary<NSString *, id> *entry in multireddits) {
             NSString *member = entry[ApolloMultiredditEntrySubreddit];
-            NSURL *iconURL = member ? ([cache cachedInfoForSubreddit:member].iconURL ?: icons[member.lowercaseString]) : nil;
+            NSURL *iconURL = showsIcons && member
+                ? ([cache cachedInfoForSubreddit:member].iconURL ?: icons[member.lowercaseString]) : nil;
             ApolloDuoFeedRailButton *button = [[ApolloDuoFeedRailButton alloc] initWithMultireddit:entry iconURL:iconURL];
+            if (!showsIcons) [button showNameOnly];
             button.tag = kRailFavoriteTag;
             [button addTarget:self action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
             [self.favorites addSubview:button];
@@ -467,6 +594,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
         [buttons insertObjects:multiredditButtons atIndexes:[NSIndexSet indexSetWithIndexesInRange:
             NSMakeRange(multiredditsFirst ? 0 : buttons.count, multiredditButtons.count)]];
         self.groupSeparator.hidden = !bothGroups;
+        for (NSUInteger index = 0; index < buttons.count; index++) {
+            buttons[index].showsDivider = index + 1 < buttons.count && index + 1 != self.groupBreak;
+        }
         self.favoriteButtons = buttons;
     }
     [self refreshColors];
@@ -564,8 +694,9 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
             self.groupSeparator.frame = CGRectMake(16, favoriteY + 5, columnWidth - 32, hairline * 2);
             favoriteY += 12;
         }
-        self.favoriteButtons[index].frame = CGRectMake(0, favoriteY, columnWidth, kRailFavoriteHeight);
-        favoriteY += kRailFavoriteHeight;
+        CGFloat rowHeight = self.showsIcons ? kRailFavoriteHeight : kRailNameOnlyHeight;
+        self.favoriteButtons[index].frame = CGRectMake(0, favoriteY, columnWidth, rowHeight);
+        favoriteY += rowHeight;
     }
     self.favorites.contentSize = CGSizeMake(columnWidth, favoriteY);
     self.favorites.alwaysBounceVertical = favoriteY + bottomInset > self.favorites.bounds.size.height;
@@ -578,7 +709,7 @@ static UIImage *ApolloDuoFeedRailGlyph(UIImage *source) {
 // the profile cache. Both coalesce and keep what they learn, so this costs at
 // most one lookup per favorite.
 - (void)requestVisibleIcons {
-    if (!self.window || self.hidden || self.alpha < 0.01) return;
+    if (!self.showsIcons || !self.window || self.hidden || self.alpha < 0.01) return;
     CGRect visible = self.favorites.bounds;
     for (ApolloDuoFeedRailButton *button in self.favoriteButtons) {
         if (button.hasIcon || button.infoRequested || !CGRectIntersectsRect(button.frame, visible)) continue;
